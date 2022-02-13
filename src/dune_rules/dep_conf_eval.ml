@@ -59,6 +59,7 @@ let dep_on_alias_rec alias ~loc =
 
 let dep expander = function
   | File s -> (
+    let s = String_with_vars.drop_suffix ~suffix:"/*" s in
     match Expander.With_deps_if_necessary.expand_path expander s with
     | Without path ->
       (* This special case is to support this pattern:

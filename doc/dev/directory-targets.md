@@ -20,7 +20,7 @@ There are two ways to depend on a directory target:
 
 * An **opaque dependency** on the whole file tree `docs/*`. Opaque dependencies
   are invalidated if the contents of the tree is changed in any way. To declare
-  an opaque dependency on `docs/*`, use the syntax `(dep (dir docs))` in a rule
+  an opaque dependency on `docs/*`, use the syntax `(dep docs/*)` in a rule
   stanza.
 
 * A **projection dependency** on a specific file in the tree, e.g.

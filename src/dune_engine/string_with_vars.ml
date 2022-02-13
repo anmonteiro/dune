@@ -200,6 +200,20 @@ let is_prefix t ~prefix:want =
     else if String.is_prefix ~prefix:have want then Unknown { source_pform }
     else No
 
+let drop_suffix t ~suffix:want =
+  match List.rev t.parts with
+  | Text s :: xs ->
+    let s' = Option.value ~default:s (String.drop_suffix ~suffix:want s) in
+    { t with parts = List.rev (Text s' :: xs) }
+  | _ -> t
+
+let drop_prefix t ~prefix:want =
+  match t.parts with
+  | Text s :: xs ->
+    let s' = Option.value ~default:s (String.drop_prefix ~prefix:want s) in
+    { t with parts = Text s' :: xs }
+  | _ -> t
+
 module type Expander = sig
   type 'a app
 

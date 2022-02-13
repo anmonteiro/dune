@@ -96,6 +96,10 @@ val is_suffix : t -> suffix:string -> yes_no_unknown
 
 val is_prefix : t -> prefix:string -> yes_no_unknown
 
+val drop_suffix : t -> suffix:string -> t
+
+val drop_prefix : t -> prefix:string -> t
+
 val fold_pforms :
      t
   -> init:'a
