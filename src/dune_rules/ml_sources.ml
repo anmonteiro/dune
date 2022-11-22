@@ -67,8 +67,11 @@ module Modules = struct
     in
     let melange_emits =
       match
-        String.Map.of_list_map emits ~f:(fun (mel, m, obj_dir) ->
-            (mel.target, (m, obj_dir)))
+        String.Map.of_list_map emits ~f:(fun (_mel, m, obj_dir) ->
+            let emit_dir =
+              Path.Build.drop_build_context_exn (Obj_dir.dir obj_dir)
+            in
+            (Path.Source.to_string emit_dir, (m, obj_dir)))
       with
       | Ok x -> x
       | Error (name, _, (mel, _, _)) ->
@@ -205,13 +208,14 @@ let modules_of_files ~dialects ~dir ~files =
 type for_ =
   | Library of Lib_name.t
   | Exe of { first_exe : string }
-  | Melange of { target : string }
+  | Melange of { emit_dir : Path.Source.t }
 
 let modules_and_obj_dir t ~for_ =
   match for_ with
   | Library name -> Lib_name.Map.find_exn t.modules.libraries name
   | Exe { first_exe } -> String.Map.find_exn t.modules.executables first_exe
-  | Melange { target } -> String.Map.find_exn t.modules.melange_emits target
+  | Melange { emit_dir } ->
+    String.Map.find_exn t.modules.melange_emits (Path.Source.to_string emit_dir)
 
 let modules t ~for_ = modules_and_obj_dir t ~for_ |> fst
 
@@ -385,7 +389,11 @@ let modules_of_stanzas dune_file ~dir ~scope ~lookup_vlib ~modules =
           in
           Modules_group.make_wrapped ~src_dir:dir ~modules `Melange
         in
-        let obj_dir = Obj_dir.make_melange_emit ~dir ~name:mel.target in
+        let obj_dir =
+          Obj_dir.make_melange_emit ~dir
+            ~name:
+              (Path.Build.drop_build_context_exn dir |> Path.Source.to_string)
+        in
         let modules =
           let src_dir = Path.build (Obj_dir.obj_dir obj_dir) in
           (* We need to relocate the source of the alias module to its own
