@@ -33,10 +33,14 @@ type rules =
   ; rules : Rules.t Memo.t
   }
 
+val empty_rules : rules
+
+val combine_rules : rules -> rules -> rules
+
 type gen_rules_result =
   | Rules of rules
   | Unknown_context_or_install
-  | Redirect_to_parent
+  | Redirect_to_parent of rules
       (** [Redirect_to_parent] means that the parent will generate the rules for
           this directory. *)
 

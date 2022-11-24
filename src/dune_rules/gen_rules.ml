@@ -392,7 +392,8 @@ let rec has_melange_emit_parent dir =
       | true -> Memo.return true
       | false -> has_melange_emit_parent parent_dir))
 
-let redirect_to_parent = Memo.return Build_config.Redirect_to_parent
+let redirect_to_parent =
+  Memo.return (Build_config.Redirect_to_parent Build_config.empty_rules)
 
 (* Once [gen_rules] has decided what to do with the directory, it should end
    with [has_rules] or [redirect_to_parent] *)

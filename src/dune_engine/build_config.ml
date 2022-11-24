@@ -17,10 +17,28 @@ type rules =
   ; rules : Rules.t Memo.t
   }
 
+let empty_rules =
+  { build_dir_only_sub_dirs = Subdir_set.empty
+  ; directory_targets = Path.Build.Map.empty
+  ; rules = Memo.return Rules.empty
+  }
+
+let combine_rules r { build_dir_only_sub_dirs; directory_targets; rules } =
+  { build_dir_only_sub_dirs =
+      Subdir_set.union r.build_dir_only_sub_dirs build_dir_only_sub_dirs
+  ; directory_targets =
+      Path.Build.Map.union_exn r.directory_targets directory_targets
+  ; rules =
+      (let open Memo.O in
+      let+ r = r.rules
+      and+ r' = rules in
+      Rules.union r r')
+  }
+
 type gen_rules_result =
   | Rules of rules
   | Unknown_context_or_install
-  | Redirect_to_parent
+  | Redirect_to_parent of rules
 
 module type Rule_generator = sig
   val gen_rules :
