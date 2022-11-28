@@ -5,36 +5,36 @@ Test (javascript_extension) field on melange.emit stanzas
   > (using melange 0.1)
   > EOF
 
-  $ cat > hello.ml <<EOF
+  $ mkdir output
+  $ cat > output/hello.ml <<EOF
   > let () =
   >   print_endline "hello"
   > EOF
 
 Can use extension with dots
 
-  $ cat > dune <<EOF
+  $ cat > output/dune <<EOF
   > (melange.emit
-  >  (target output)
   >  (module_system commonjs)
   >  (javascript_extension bs.js))
   > EOF
 
-  $ dune build output/hello.bs.js
-  $ node _build/default/output/hello.bs.js
+  $ output=output/output
+  $ dune build $output/hello.bs.js
+  $ node _build/default/$output/hello.bs.js
   hello
 
 Errors out if extension starts with dot
 
-  $ cat > dune <<EOF
+  $ cat > output/dune <<EOF
   > (melange.emit
-  >  (target output)
   >  (module_system commonjs)
   >  (javascript_extension .bs.js))
   > EOF
 
-  $ dune build output/hello.js
-  File "dune", line 4, characters 23-29:
-  4 |  (javascript_extension .bs.js))
+  $ dune build $output/hello.js
+  File "output/dune", line 3, characters 23-29:
+  3 |  (javascript_extension .bs.js))
                              ^^^^^^
   Error: extension must not start with '.'
   [1]
