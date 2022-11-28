@@ -21,7 +21,6 @@ Test melange.emit promotion
   >  (alias dist)
   >  (entries hello)
   >  (promote (until-clean))
-  >  (target dist)
   >  (libraries mylib)
   >  (module_system commonjs))
   > EOF
@@ -32,22 +31,33 @@ Test melange.emit promotion
   >   print_endline "hello"
   > EOF
 
-  $ dune build @dist
+  $ dune build @dist --auto-promote
 
 Targets are promoted to the source tree
 
-  $ ls ./dist
+  $ ls .
+  _build
+  dune
+  dune-project
   hello.js
+  hello.ml
   lib
-  $ ls ./dist/lib
+  $ ls ./lib
+  dune
   mylib.js
+  mylib.ml
 
-  $ node ./dist/hello.js
+  $ node ./hello.js
   hello
 
 (until-clean) causes JS file targets to be deleted after calling dune clean
 
   $ dune clean
-  $ ls ./dist
+  $ ls .
+  dune
+  dune-project
+  hello.ml
   lib
-  $ ls ./dist/lib
+  $ ls ./lib
+  dune
+  mylib.ml
