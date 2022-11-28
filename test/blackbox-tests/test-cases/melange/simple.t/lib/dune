@@ -2,9 +2,3 @@
  (name lib)
  (modules y)
  (modes melange))
-
-(melange.emit
- (target simple)
- (entries x)
- (libraries lib)
- (module_system commonjs))
