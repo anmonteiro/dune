@@ -7,9 +7,9 @@ Test flags and compile_flags fields on melange.emit stanza
 
 Using flags field in melange.emit stanzas is not supported
 
-  $ cat > dune <<EOF
+  $ mkdir output
+  $ cat > output/dune <<EOF
   > (melange.emit
-  >  (target output)
   >  (entries main)
   >  (module_system commonjs)
   >  (flags -w -14-26))
@@ -17,7 +17,7 @@ Using flags field in melange.emit stanzas is not supported
 
 The code in main contains unused var (warning 26) and illegal backlash (warning 14)
 
-  $ cat > main.ml <<EOF
+  $ cat > output/main.ml <<EOF
   > let t = "\e\n" in
   > print_endline "hello"
   > EOF
@@ -25,22 +25,22 @@ The code in main contains unused var (warning 26) and illegal backlash (warning 
 Building should not fail as warnings are silenced
 
   $ dune build output/main.js
-  File "dune", line 5, characters 2-7:
-  5 |  (flags -w -14-26))
+  File "output/dune", line 4, characters 2-7:
+  4 |  (flags -w -14-26))
         ^^^^^
   Error: Unknown field flags
   [1]
 
 Should use compile_flags
 
-  $ cat > dune <<EOF
+  $ cat > output/dune <<EOF
   > (melange.emit
-  >  (target output)
   >  (entries main)
   >  (module_system commonjs)
   >  (compile_flags -w -14-26))
   > EOF
 
-  $ dune build output/main.js
-  $ node _build/default/output/main.js
+  $ output=output/output
+  $ dune build $output/main.js
+  $ node _build/default/$output/main.js
   hello
