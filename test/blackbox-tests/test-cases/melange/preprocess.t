@@ -5,9 +5,9 @@ Test (preprocess) field on melange.emit stanza
   > (using melange 0.1)
   > EOF
 
-  $ cat > dune <<EOF
+  $ mkdir output
+  $ cat > output/dune <<EOF
   > (melange.emit
-  >  (target output)
   >  (entries main)
   >  (module_system commonjs)
   >  (preprocess
@@ -15,11 +15,12 @@ Test (preprocess) field on melange.emit stanza
   >    (run cat %{input-file}))))
   > EOF
 
-  $ cat > main.ml <<EOF
+  $ cat > output/main.ml <<EOF
   > let () =
   >   print_endline "hello"
   > EOF
 
-  $ dune build output/main.js
-  $ node _build/default/output/main.js
+  $ output=output/output
+  $ dune build $output/main.js
+  $ node _build/default/$output/main.js
   hello
