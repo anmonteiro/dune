@@ -382,11 +382,7 @@ let rec has_melange_emit_parent dir =
     | Some { Dune_file.stanzas; dir = _; project = _ } -> (
       match
         List.exists stanzas ~f:(function
-          | Melange_emit mel ->
-            (* current dir, e.g. `_build/default/lib/output must be equal to
-               melange.emit target, e.g. `_build/default/lib` with
-               `(melange.emit (target output))` *)
-            Path.Build.equal (Path.Build.relative parent_dir mel.target) dir
+          | Melange_emit _ -> true
           | _ -> false)
       with
       | true -> Memo.return true
@@ -486,9 +482,9 @@ let gen_rules ~sctx ~dir components : Build_config.gen_rules_result Memo.t =
               (String.Set.of_list [ ".js"; "_doc"; ".ppx"; ".dune"; ".topmod" ])
           | _ -> subdirs
         in
-        let* directory_targets =
+        let+ directory_targets =
           collect_directory_targets ~dir ~init:directory_targets
-        and* has_melange_emit_parent = has_melange_emit_parent dir in
+        and+ has_melange_emit_parent = has_melange_emit_parent dir in
 
         let rules =
           { Build_config.build_dir_only_sub_dirs = S.These subdirs
