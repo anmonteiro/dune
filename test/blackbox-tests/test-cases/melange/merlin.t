@@ -47,7 +47,8 @@ All 3 entries (Foo, Foo__ and Bar) contain a ppx directive
   $ touch output/main.ml
   $ dune build @check
   $ dune ocaml merlin dump-config "$PWD/output" | grep -i output
-    $TESTCASE_ROOT/_build/default/.output.mobjs/melange)
+    $TESTCASE_ROOT/_build/default/output/.output.mobjs/melange)
+    $TESTCASE_ROOT/output)
 
 The melange.emit entry contains a ppx directive
 
@@ -57,7 +58,16 @@ The melange.emit entry contains a ppx directive
   $ dune ocaml dump-dot-merlin $PWD
   EXCLUDE_QUERY_DIR
   STDLIB /MELC_WHERE
-  B $TESTCASE_ROOT/_build/default/.output.mobjs/melange
+  B $TESTCASE_ROOT/_build/default/.foo.objs/melange
   S $TESTCASE_ROOT
   # FLG -ppx '/MELC_COMPILER -as-ppx -bs-jsx 3'
+  # FLG -open Foo__ -w @1..3@5..28@30..39@43@46..47@49..57@61..62@67@69-40 -strict-sequence -strict-formats -short-paths -keep-locs
+
+  $ dune ocaml dump-dot-merlin $PWD/output
+  EXCLUDE_QUERY_DIR
+  STDLIB /MELC_WHERE
+  B $TESTCASE_ROOT/_build/default/output/.output.mobjs/melange
+  S $TESTCASE_ROOT/output
+  # FLG -ppx '/MELC_COMPILER -as-ppx -bs-jsx 3'
   # FLG -w @1..3@5..28@30..39@43@46..47@49..57@61..62@67@69-40 -strict-sequence -strict-formats -short-paths -keep-locs
+
