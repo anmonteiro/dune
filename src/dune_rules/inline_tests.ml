@@ -240,7 +240,10 @@ include Sub_system.Register_end_point (struct
                  Sandbox_config.no_special_requirements
                else Sandbox_config.needs_sandboxing
              in
-             Dep_conf_eval.unnamed ~sandbox info.deps ~expander
+             let deps, sandbox =
+               Dep_conf_eval.unnamed ~sandbox info.deps ~expander
+             in
+             (Action_builder.ignore deps, sandbox)
            in
            let+ () = deps
            and+ () = Action_builder.paths source_files

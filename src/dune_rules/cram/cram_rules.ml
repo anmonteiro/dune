@@ -152,7 +152,8 @@ let rules ~sctx ~expander ~dir tests =
                     let+ expander = Super_context.expander sctx ~dir in
                     Dep_conf_eval.named ~expander deps
                   in
-                  (deps :: acc.deps, Sandbox_config.inter acc.sandbox sandbox)
+                  ( Action_builder.ignore deps :: acc.deps
+                  , Sandbox_config.inter acc.sandbox sandbox )
               in
               let enabled_if = spec.enabled_if :: acc.enabled_if in
               let alias =

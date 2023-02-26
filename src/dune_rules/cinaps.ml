@@ -153,7 +153,10 @@ let gen_rules sctx t ~dir ~scope =
         if t.cinaps_version >= (1, 1) then Sandbox_config.needs_sandboxing
         else Sandbox_config.no_special_requirements
       in
-      Dep_conf_eval.unnamed ~sandbox ~expander t.runtime_deps
+      let runtime_deps, sandbox =
+        Dep_conf_eval.unnamed ~sandbox ~expander t.runtime_deps
+      in
+      (Action_builder.ignore runtime_deps, sandbox)
     in
     let* () = runtime_deps in
     let+ () = Action_builder.path cinaps_exe in

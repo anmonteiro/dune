@@ -343,7 +343,10 @@ let gen_rules_for_single_file stanza ~sctx ~dir ~expander ~mdx_prog
             ] )
       in
       let deps, sandbox =
-        Dep_conf_eval.unnamed ~expander (mdx_package_deps @ mdx_generic_deps)
+        let deps, sandbox =
+          Dep_conf_eval.unnamed ~expander (mdx_package_deps @ mdx_generic_deps)
+        in
+        (Action_builder.ignore deps, sandbox)
       in
       Action_builder.with_no_targets deps
       >>> Action_builder.with_no_targets

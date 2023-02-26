@@ -275,8 +275,11 @@ let named ~expander l =
 
 let unnamed ?(sandbox = Sandbox_config.no_special_requirements) ~expander l =
   let expander = prepare_expander expander in
-  ( List.fold_left l ~init:(Action_builder.return ()) ~f:(fun acc x ->
-        let+ () = acc
-        and+ _x = to_action_builder (dep expander x) in
-        ())
+  ( (let+ paths =
+       List.fold_left l ~init:(Action_builder.return []) ~f:(fun acc x ->
+           let+ acc = acc
+           and+ paths = to_action_builder (dep expander x) in
+           paths :: acc)
+     in
+     List.concat paths)
   , List.fold_left l ~init:sandbox ~f:add_sandbox_config )

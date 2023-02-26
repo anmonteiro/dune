@@ -139,7 +139,10 @@ let executables_rules ~sctx ~dir ~expander ~dir_contents ~scope ~compile_info
   let* dep_graphs =
     (* Building an archive for foreign stubs, we link the corresponding object
        files directly to improve perf. *)
-    let link_deps, sandbox = Dep_conf_eval.unnamed ~expander exes.link_deps in
+    let link_deps, sandbox =
+      let link_deps, sandbox = Dep_conf_eval.unnamed ~expander exes.link_deps in
+      (Action_builder.ignore link_deps, sandbox)
+    in
     let link_args =
       let use_standard_cxx_flags =
         match Dune_project.use_standard_c_and_cxx_flags project with
