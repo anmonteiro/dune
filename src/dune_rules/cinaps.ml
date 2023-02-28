@@ -155,7 +155,7 @@ let gen_rules sctx t ~dir ~scope =
       in
       Dep_conf_eval.unnamed ~sandbox ~expander t.runtime_deps
     in
-    let* () = runtime_deps in
+    let* (_ : Path.t list) = runtime_deps in
     let+ () = Action_builder.path cinaps_exe in
     Action.Full.make ~sandbox
     @@ A.chdir (Path.build dir)

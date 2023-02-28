@@ -148,7 +148,7 @@ let executables_rules ~sctx ~dir ~expander ~dir_contents ~scope ~compile_info
       in
       let open Action_builder.O in
       let link_flags =
-        let* () = link_deps in
+        let* (_ : Path.t list) = link_deps in
         let* link_flags =
           Action_builder.of_memo
             (Super_context.link_flags sctx ~dir exes.link_flags)

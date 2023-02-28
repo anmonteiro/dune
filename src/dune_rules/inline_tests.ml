@@ -242,7 +242,7 @@ include Sub_system.Register_end_point (struct
              in
              Dep_conf_eval.unnamed ~sandbox info.deps ~expander
            in
-           let+ () = deps
+           let+ (_ : Path.t list) = deps
            and+ () = Action_builder.paths source_files
            and+ () = Action_builder.path exe
            and+ action =
