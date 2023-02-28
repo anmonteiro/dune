@@ -42,7 +42,7 @@ Test simple interactions between melange.emit and copy_files
   $ cat lib/_build/install/default/lib/foo/dune-package | grep melange_runtime_deps
    (melange_runtime_deps nested/hello.txt index.txt))
 
-  $ dune install --root lib --prefix $PWD/prefix
+  $ dune install --display short --root lib --prefix $PWD/prefix
   Installing $TESTCASE_ROOT/prefix/lib/foo/META
   Installing $TESTCASE_ROOT/prefix/lib/foo/dune-package
   Installing $TESTCASE_ROOT/prefix/lib/foo/foo.ml

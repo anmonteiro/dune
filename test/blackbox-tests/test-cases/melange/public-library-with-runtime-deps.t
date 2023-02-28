@@ -33,7 +33,7 @@ Test simple interactions between melange.emit and copy_files
 
   $ dune build --display=short
           melc lib/.foo.objs/melange/foo.{cmi,cmj,cmt}
-  $ dune install --prefix $PWD/prefix
+  $ dune install --display=short --prefix $PWD/prefix
   Installing $TESTCASE_ROOT/prefix/lib/foo/META
   Installing $TESTCASE_ROOT/prefix/lib/foo/dune-package
   Installing $TESTCASE_ROOT/prefix/lib/foo/foo.ml
@@ -85,9 +85,9 @@ The runtime_dep index.txt was copied to the build folder
   $ node _build/default/main.js
   dirname: $TESTCASE_ROOT/_build/default/node_modules/foo
   hello from file
-  
+
   Some text
-  
+
 
 
 

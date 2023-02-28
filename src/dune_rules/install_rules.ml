@@ -167,8 +167,8 @@ end = struct
               make_entry ?sub_dir Lib source ?dst))
     in
     let* melange_runtime_deps =
-      Melange_rules.Runtime_deps.eval_get_deps sctx ~dir
-        (snd lib.melange_runtime_deps)
+      let* expander = Super_context.expander sctx ~dir:lib_src_dir in
+      Melange_rules.Runtime_deps.eval ~expander (snd lib.melange_runtime_deps)
     in
     let melange_runtime_entries =
       let inside_subdir = function
@@ -597,8 +597,10 @@ end = struct
               match Lib_info.melange_runtime_deps info with
               | Local dep_conf ->
                 let+ melange_runtime_deps =
-                  Melange_rules.Runtime_deps.eval_get_deps sctx ~dir:lib_src_dir
-                    dep_conf
+                  let* expander =
+                    Super_context.expander sctx ~dir:lib_src_dir
+                  in
+                  Melange_rules.Runtime_deps.eval ~expander dep_conf
                 in
                 melange_runtime_deps
               | External _paths -> assert false

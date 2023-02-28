@@ -18,6 +18,5 @@ val setup_emit_js_rules :
   -> unit Memo.t
 
 module Runtime_deps : sig
-  val eval_get_deps :
-    Super_context.t -> dir:Path.Build.t -> Dep_conf.t list -> Path.t list Memo.t
+  val eval : expander:Expander.t -> Dep_conf.t list -> Path.t list Memo.t
 end
