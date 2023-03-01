@@ -1,1 +1,1 @@
-let hello = "Hello from "
+let hello = "Hello from " ^ Virt.t
