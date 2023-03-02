@@ -20,7 +20,7 @@ module Rules : sig
       cycles created during the computation of the rules. *)
 
   type t =
-    { build_dir_only_sub_dirs : Subdir_set.t
+    { build_dir_only_sub_dirs : Subdir_set.t Path.Local.Map.t
           (** Sub-directories that don't exist in the source tree but exists in
               the build directory. This is for internal directories such as
               [.dune] or [.ppx]. *)
