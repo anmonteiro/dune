@@ -350,6 +350,13 @@ let automatic_sub_dirs_map =
     ; (Artifacts.Bin.bin_dir_basename, Bin)
     ]
 
+let automatic_subdirs path_components =
+  match List.last path_components with
+  | None -> String.Set.of_keys automatic_sub_dirs_map
+  | Some comp ->
+    if String.Map.mem automatic_sub_dirs_map comp then String.Set.empty
+    else String.Set.of_keys automatic_sub_dirs_map
+
 let gen_rules_for_automatic_sub_dir ~sctx ~dir kind =
   match kind with
   | Utop -> Utop.setup sctx ~dir:(Path.Build.parent_exn dir)
@@ -416,7 +423,7 @@ let melange_emit_rules sctx { stanza_dir; stanza } =
   { Build_config.Rules.build_dir_only_sub_dirs =
       Path.Local.Map.singleton
         (Path.Build.drop_build_context_exn stanza_dir |> Path.Source.to_local)
-        (Subdir_set.These (String.Set.of_keys automatic_sub_dirs_map))
+        (Subdir_set.These (automatic_subdirs (Path.Build.explode stanza_dir)))
   ; directory_targets = Path.Build.Map.empty
   ; rules
   }
@@ -429,7 +436,7 @@ let gen_melange_emit_rules sctx ~dir ({ stanza_dir; stanza } as for_melange) =
 let empty_rules ~dir =
   { Build_config.Rules.build_dir_only_sub_dirs =
       Path.Local.Map.singleton (Path.Source.to_local dir)
-        (Subdir_set.These (String.Set.of_keys automatic_sub_dirs_map))
+        (Subdir_set.These (automatic_subdirs (Path.Source.explode dir)))
   ; directory_targets = Path.Build.Map.empty
   ; rules = Memo.return Rules.empty
   }
@@ -544,13 +551,7 @@ let gen_rules ~sctx ~dir components : Build_config.gen_rules_result Memo.t =
         let* directory_targets =
           collect_directory_targets ~dir ~init:directory_targets
         in
-        let automatic_subdirs =
-          match List.last components with
-          | None -> String.Set.of_keys automatic_sub_dirs_map
-          | Some comp ->
-            if String.Map.mem automatic_sub_dirs_map comp then String.Set.empty
-            else String.Set.of_keys automatic_sub_dirs_map
-        in
+        let automatic_subdirs = automatic_subdirs components in
         let build_config subdirs =
           { Build_config.Rules.build_dir_only_sub_dirs =
               Path.Local.Map.singleton (Path.Source.to_local src_dir) subdirs
