@@ -30,28 +30,19 @@ let dep_on_alias_rec alias ~loc =
   let ctx_name, src_dir =
     Path.Build.extract_build_context_exn (Alias.dir alias)
   in
-  Action_builder.of_memo (Source_tree.find_dir src_dir) >>= function
-  | None ->
-    Action_builder.fail
-      { fail =
-          (fun () ->
-            User_error.raise ~loc
-              [ Pp.textf "Don't know about directory %s!"
-                  (Path.Source.to_string_maybe_quoted src_dir)
-              ])
-      }
-  | Some dir ->
-    let name = Dune_engine.Alias.name alias in
-    let+ is_nonempty =
-      Action_builder.dep_on_alias_rec name (Context_name.of_string ctx_name) dir
-    in
-    if (not is_nonempty) && not (Alias.is_standard name) then
-      User_error.raise ~loc
-        [ Pp.text "This alias is empty."
-        ; Pp.textf "Alias %S is not defined in %s or any of its descendants."
-            (Alias.Name.to_string name)
-            (Path.Source.to_string_maybe_quoted src_dir)
-        ]
+  let name = Dune_engine.Alias.name alias in
+  let+ is_nonempty =
+    Action_builder.dep_on_alias_rec name
+      (Context_name.of_string ctx_name)
+      src_dir
+  in
+  if (not is_nonempty) && not (Alias.is_standard name) then
+    User_error.raise ~loc
+      [ Pp.text "This alias is empty."
+      ; Pp.textf "Alias %S is not defined in %s or any of its descendants."
+          (Alias.Name.to_string name)
+          (Path.Source.to_string_maybe_quoted src_dir)
+      ]
 
 let relative d s = Path.build (Path.Build.relative d s)
 

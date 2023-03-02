@@ -276,11 +276,60 @@ let dep_on_alias_if_exists alias =
 module Source_tree_map_reduce =
   Source_tree.Dir.Make_map_reduce (Action_builder0) (Monoid.Exists)
 
-let dep_on_alias_rec name context_name dir =
+let lookup_alias alias =
+  of_thunk
+    { f =
+        (fun mode ->
+          let open Memo.O in
+          let alias_dir = Path.build (Alias.dir alias) in
+          let* dir_loaded = Load_rules.load_dir ~dir:alias_dir in
+          match dir_loaded with
+          | Source _ | External _ ->
+            Code_error.raise "Alias in a non-build dir"
+              [ ("alias", Alias.to_dyn alias) ]
+          | Build { aliases; allowed_subdirs; rules_here = _ } -> (
+            match Alias.Name.Map.find aliases (Alias.name alias) with
+            | None -> Memo.return ((false, allowed_subdirs), Dep.Map.empty)
+            | Some _ ->
+              let deps = Dep.Set.singleton (Dep.alias alias) in
+              let+ deps = register_action_deps mode deps in
+              ((true, allowed_subdirs), deps))
+          | Build_under_directory_target _ ->
+            Memo.return ((false, Dir_set.empty), Dep.Map.empty))
+    }
+
+let map_reduce dir ~f =
+  let rec map_reduce rem t ~f =
+    let* dir = of_memo (Source_tree.find_dir t) in
+    let should_traverse =
+      match dir with
+      | Some dir -> (
+        match Source_tree.Dir.status dir with
+        | Normal -> true
+        | Vendored | Data_only -> false)
+      | None -> true
+    in
+    match should_traverse with
+    | false -> return false
+    | true -> (
+      let* here, sub_dirs = f t in
+      if rem = 0 then return here
+      else
+        match Dir_set.toplevel_subdirs sub_dirs with
+        | Infinite -> return here
+        | Finite sub_dirs ->
+          Action_builder0.List.fold_left (String.Set.to_list sub_dirs)
+            ~init:here ~f:(fun here s ->
+              let t = Path.Source.relative t s in
+              let+ here' = map_reduce (rem - 1) t ~f in
+              here || here'))
+  in
+  map_reduce max_int dir ~f
+
+let dep_on_alias_rec name context_name (dir : Path.Source.t) =
   let build_dir = Context_name.build_dir context_name in
   let f dir =
-    let path = Path.Build.append_source build_dir (Source_tree.Dir.path dir) in
-    dep_on_alias_if_exists (Alias.make ~dir:path name)
+    let path = Path.Build.append_source build_dir dir in
+    lookup_alias (Alias.make ~dir:path name)
   in
-  Source_tree_map_reduce.map_reduce dir
-    ~traverse:Sub_dirs.Status.Set.normal_only ~f
+  map_reduce dir ~f

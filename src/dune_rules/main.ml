@@ -26,7 +26,7 @@ let implicit_default_alias dir =
         (Action_builder.ignore
            (Action_builder.dep_on_alias_rec default_alias
               (Context_name.of_string ctx_name)
-              dir)))
+              (Source_tree.Dir.path dir))))
 
 let execution_parameters =
   let f path =

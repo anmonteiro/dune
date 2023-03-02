@@ -109,8 +109,7 @@ val dep_on_alias_if_exists : Alias.t -> bool t
 
 (** Depend on an alias recursively. Return [true] if the alias is defined in at
     least one directory, and [false] otherwise. *)
-val dep_on_alias_rec :
-  Alias.Name.t -> Context_name.t -> Source_tree.Dir.t -> bool t
+val dep_on_alias_rec : Alias.Name.t -> Context_name.t -> Path.Source.t -> bool t
 
 (** [dyn_memo_deps m] adds the dependencies computed by [m] while returning the
     extra value. *)
