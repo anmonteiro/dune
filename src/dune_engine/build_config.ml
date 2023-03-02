@@ -13,20 +13,21 @@ end
 
 module Rules = struct
   type t =
-    { build_dir_only_sub_dirs : Subdir_set.t
+    { build_dir_only_sub_dirs : Subdir_set.t Path.Local.Map.t
     ; directory_targets : Loc.t Path.Build.Map.t
     ; rules : Rules.t Memo.t
     }
 
   let empty =
-    { build_dir_only_sub_dirs = Subdir_set.empty
+    { build_dir_only_sub_dirs = Path.Local.Map.empty
     ; directory_targets = Path.Build.Map.empty
     ; rules = Memo.return Rules.empty
     }
 
   let combine_exn r { build_dir_only_sub_dirs; directory_targets; rules } =
     { build_dir_only_sub_dirs =
-        Subdir_set.union r.build_dir_only_sub_dirs build_dir_only_sub_dirs
+        Path.Local.Map.union r.build_dir_only_sub_dirs build_dir_only_sub_dirs
+          ~f:(fun _ a b -> Some (Subdir_set.union a b))
     ; directory_targets =
         Path.Build.Map.union_exn r.directory_targets directory_targets
     ; rules =

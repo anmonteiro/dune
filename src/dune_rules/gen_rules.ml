@@ -350,6 +350,13 @@ let automatic_sub_dirs_map =
     ; (Artifacts.Bin.bin_dir_basename, Bin)
     ]
 
+let automatic_subdirs path_components =
+  match List.last path_components with
+  | None -> String.Set.of_keys automatic_sub_dirs_map
+  | Some comp ->
+    if String.Map.mem automatic_sub_dirs_map comp then String.Set.empty
+    else String.Set.of_keys automatic_sub_dirs_map
+
 let gen_rules_for_automatic_sub_dir ~sctx ~dir kind =
   match kind with
   | Utop -> Utop.setup sctx ~dir:(Path.Build.parent_exn dir)
@@ -364,11 +371,11 @@ let gen_rules_for_automatic_sub_dir ~sctx ~dir kind =
         let dst = File_binding.Expanded.dst_path t ~dir in
         Super_context.add_rule sctx ~loc ~dir (Action_builder.symlink ~src ~dst))
 
-let has_rules subdirs f =
+let has_rules ~dir subdirs f =
   let rules = Rules.collect_unit f in
   Memo.return
     (Build_config.Rules
-       { build_dir_only_sub_dirs = subdirs
+       { build_dir_only_sub_dirs = Path.Local.Map.singleton dir subdirs
        ; directory_targets = Path.Build.Map.empty
        ; rules
        })
@@ -414,7 +421,9 @@ let melange_emit_rules sctx { stanza_dir; stanza } =
           ~sctx stanza)
   in
   { Build_config.Rules.build_dir_only_sub_dirs =
-      Subdir_set.These (String.Set.of_keys automatic_sub_dirs_map)
+      Path.Local.Map.singleton
+        (Path.Build.drop_build_context_exn stanza_dir |> Path.Source.to_local)
+        (Subdir_set.These (automatic_subdirs (Path.Build.explode stanza_dir)))
   ; directory_targets = Path.Build.Map.empty
   ; rules
   }
@@ -457,49 +466,58 @@ let gen_melange_emit_rules sctx ~dir ({ stanza_dir; stanza } as for_melange) =
                (Path.Source.to_string parent_melange_emit_dir)
            ]))
 
-let empty_rules =
+let empty_rules ~dir =
   { Build_config.Rules.build_dir_only_sub_dirs =
-      Subdir_set.These (String.Set.of_keys automatic_sub_dirs_map)
+      Path.Local.Map.singleton (Path.Source.to_local dir)
+        (Subdir_set.These (automatic_subdirs (Path.Source.explode dir)))
   ; directory_targets = Path.Build.Map.empty
   ; rules = Memo.return Rules.empty
   }
 
 let gen_melange_emit_rules_or_empty_redirect sctx ~dir = function
-  | None -> Memo.return Build_config.(Redirect_to_parent empty_rules)
+  | None ->
+    Memo.return
+      Build_config.(
+        Redirect_to_parent
+          (empty_rules ~dir:(Path.Build.drop_build_context_exn dir)))
   | Some for_melange -> (
     let+ melange_rules = gen_melange_emit_rules sctx ~dir for_melange in
     match melange_rules with
     | Some r -> Build_config.Redirect_to_parent r
-    | None -> Build_config.(Redirect_to_parent empty_rules))
+    | None ->
+      Build_config.(
+        Redirect_to_parent
+          (empty_rules ~dir:(Path.Build.drop_build_context_exn dir))))
 
 (* Once [gen_rules] has decided what to do with the directory, it should end
    with [has_rules] or [redirect_to_parent] *)
 let gen_rules ~sctx ~dir components : Build_config.gen_rules_result Memo.t =
+  let src_dir = Path.Build.drop_build_context_exn dir |> Path.Source.to_local in
   let module S = Subdir_set in
   match components with
   | [ ".dune"; "ccomp" ] ->
-    has_rules S.empty (fun () ->
+    has_rules ~dir:src_dir S.empty (fun () ->
         (* Add rules for C compiler detection *)
         Cxx_rules.rules ~sctx ~dir)
   | [ ".dune" ] ->
-    has_rules
+    has_rules ~dir:src_dir
       (S.These (String.Set.of_list [ "ccomp" ]))
       (fun () -> Context.gen_configurator_rules (Super_context.context sctx))
   | ".js" :: rest ->
-    has_rules
+    has_rules ~dir:src_dir
       (match rest with
       | [] -> S.All
       | _ -> S.empty)
       (fun () -> Jsoo_rules.setup_separate_compilation_rules sctx rest)
   | "_doc" :: rest -> Odoc.gen_rules sctx rest ~dir
   | ".topmod" :: comps ->
-    has_rules
+    has_rules ~dir:src_dir
       (match comps with
       | [] -> S.All
       | _ -> S.empty)
       (fun () -> Top_module.gen_rules sctx ~dir ~comps)
   | ".ppx" :: rest ->
-    has_rules
+    has_rules ~dir:src_dir
       (match rest with
       | [] -> S.All
       | _ -> S.empty)
@@ -521,8 +539,8 @@ let gen_rules ~sctx ~dir components : Build_config.gen_rules_result Memo.t =
           String.Map.find automatic_sub_dirs_map (Path.Source.basename src_dir)
         with
         | Some kind ->
-          has_rules Subdir_set.empty (fun () ->
-              gen_rules_for_automatic_sub_dir ~sctx ~dir kind)
+          has_rules ~dir:(Path.Source.to_local src_dir) Subdir_set.empty
+            (fun () -> gen_rules_for_automatic_sub_dir ~sctx ~dir kind)
         | None ->
           gen_melange_emit_rules_or_empty_redirect sctx ~dir
             under_melange_emit_target))
@@ -565,15 +583,10 @@ let gen_rules ~sctx ~dir components : Build_config.gen_rules_result Memo.t =
         let* directory_targets =
           collect_directory_targets ~dir ~init:directory_targets
         in
-        let automatic_subdirs =
-          match List.last components with
-          | None -> String.Set.of_keys automatic_sub_dirs_map
-          | Some comp ->
-            if String.Map.mem automatic_sub_dirs_map comp then String.Set.empty
-            else String.Set.of_keys automatic_sub_dirs_map
-        in
+        let automatic_subdirs = automatic_subdirs components in
         let build_config subdirs =
-          { Build_config.Rules.build_dir_only_sub_dirs = subdirs
+          { Build_config.Rules.build_dir_only_sub_dirs =
+              Path.Local.Map.singleton (Path.Source.to_local src_dir) subdirs
           ; directory_targets
           ; rules
           }
@@ -620,8 +633,13 @@ let gen_rules ctx_or_install ~dir components =
     with_context ctx ~f:(fun sctx ->
         let+ subdirs, rules = Install_rules.symlink_rules sctx ~dir in
         let directory_targets = Rules.directory_targets rules in
+        let src_dir =
+          match Dpath.analyse_path (Path.build dir) with
+          | Build (Install (_ctx, src_dir)) -> Path.Source.to_local src_dir
+          | _ -> assert false
+        in
         Build_config.Rules
-          { build_dir_only_sub_dirs = subdirs
+          { build_dir_only_sub_dirs = Path.Local.Map.singleton src_dir subdirs
           ; directory_targets
           ; rules = Memo.return rules
           })
