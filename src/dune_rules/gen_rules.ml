@@ -371,11 +371,12 @@ let gen_rules_for_automatic_sub_dir ~sctx ~dir kind =
         let dst = File_binding.Expanded.dst_path t ~dir in
         Super_context.add_rule sctx ~loc ~dir (Action_builder.symlink ~src ~dst))
 
-let has_rules ~dir subdirs f =
+let has_rules subdirs f =
   let rules = Rules.collect_unit f in
   Memo.return
     (Build_config.Rules
-       { build_dir_only_sub_dirs = Path.Local.Map.singleton dir subdirs
+       { build_dir_only_sub_dirs =
+           Path.Local.Map.singleton Path.Local.root subdirs
        ; directory_targets = Path.Build.Map.empty
        ; rules
        })
@@ -421,8 +422,7 @@ let melange_emit_rules sctx { stanza_dir; stanza } =
           ~sctx stanza)
   in
   { Build_config.Rules.build_dir_only_sub_dirs =
-      Path.Local.Map.singleton
-        (Path.Build.drop_build_context_exn stanza_dir |> Path.Source.to_local)
+      Path.Local.Map.singleton Path.Local.root
         (Subdir_set.These (automatic_subdirs (Path.Build.explode stanza_dir)))
   ; directory_targets = Path.Build.Map.empty
   ; rules
@@ -468,7 +468,7 @@ let gen_melange_emit_rules sctx ~dir ({ stanza_dir; stanza } as for_melange) =
 
 let empty_rules ~dir =
   { Build_config.Rules.build_dir_only_sub_dirs =
-      Path.Local.Map.singleton (Path.Source.to_local dir)
+      Path.Local.Map.singleton Path.Local.root
         (Subdir_set.These (automatic_subdirs (Path.Source.explode dir)))
   ; directory_targets = Path.Build.Map.empty
   ; rules = Memo.return Rules.empty
@@ -492,32 +492,31 @@ let gen_melange_emit_rules_or_empty_redirect sctx ~dir = function
 (* Once [gen_rules] has decided what to do with the directory, it should end
    with [has_rules] or [redirect_to_parent] *)
 let gen_rules ~sctx ~dir components : Build_config.gen_rules_result Memo.t =
-  let src_dir = Path.Build.drop_build_context_exn dir |> Path.Source.to_local in
   let module S = Subdir_set in
   match components with
   | [ ".dune"; "ccomp" ] ->
-    has_rules ~dir:src_dir S.empty (fun () ->
+    has_rules S.empty (fun () ->
         (* Add rules for C compiler detection *)
         Cxx_rules.rules ~sctx ~dir)
   | [ ".dune" ] ->
-    has_rules ~dir:src_dir
+    has_rules
       (S.These (String.Set.of_list [ "ccomp" ]))
       (fun () -> Context.gen_configurator_rules (Super_context.context sctx))
   | ".js" :: rest ->
-    has_rules ~dir:src_dir
+    has_rules
       (match rest with
       | [] -> S.All
       | _ -> S.empty)
       (fun () -> Jsoo_rules.setup_separate_compilation_rules sctx rest)
   | "_doc" :: rest -> Odoc.gen_rules sctx rest ~dir
   | ".topmod" :: comps ->
-    has_rules ~dir:src_dir
+    has_rules
       (match comps with
       | [] -> S.All
       | _ -> S.empty)
       (fun () -> Top_module.gen_rules sctx ~dir ~comps)
   | ".ppx" :: rest ->
-    has_rules ~dir:src_dir
+    has_rules
       (match rest with
       | [] -> S.All
       | _ -> S.empty)
@@ -539,8 +538,8 @@ let gen_rules ~sctx ~dir components : Build_config.gen_rules_result Memo.t =
           String.Map.find automatic_sub_dirs_map (Path.Source.basename src_dir)
         with
         | Some kind ->
-          has_rules ~dir:(Path.Source.to_local src_dir) Subdir_set.empty
-            (fun () -> gen_rules_for_automatic_sub_dir ~sctx ~dir kind)
+          has_rules Subdir_set.empty (fun () ->
+              gen_rules_for_automatic_sub_dir ~sctx ~dir kind)
         | None ->
           gen_melange_emit_rules_or_empty_redirect sctx ~dir
             under_melange_emit_target))
@@ -586,7 +585,7 @@ let gen_rules ~sctx ~dir components : Build_config.gen_rules_result Memo.t =
         let automatic_subdirs = automatic_subdirs components in
         let build_config subdirs =
           { Build_config.Rules.build_dir_only_sub_dirs =
-              Path.Local.Map.singleton (Path.Source.to_local src_dir) subdirs
+              Path.Local.Map.singleton Path.Local.root subdirs
           ; directory_targets
           ; rules
           }
@@ -633,13 +632,9 @@ let gen_rules ctx_or_install ~dir components =
     with_context ctx ~f:(fun sctx ->
         let+ subdirs, rules = Install_rules.symlink_rules sctx ~dir in
         let directory_targets = Rules.directory_targets rules in
-        let src_dir =
-          match Dpath.analyse_path (Path.build dir) with
-          | Build (Install (_ctx, src_dir)) -> Path.Source.to_local src_dir
-          | _ -> assert false
-        in
         Build_config.Rules
-          { build_dir_only_sub_dirs = Path.Local.Map.singleton src_dir subdirs
+          { build_dir_only_sub_dirs =
+              Path.Local.Map.singleton Path.Local.root subdirs
           ; directory_targets
           ; rules = Memo.return rules
           })

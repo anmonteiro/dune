@@ -506,10 +506,24 @@ end = struct
       ; rules : Rules.t Memo.Lazy.t
       }
 
-    let combine_exn r { build_dir_only_sub_dirs; directory_targets; rules } =
+    let combine_exn (parent_dir, r)
+        (child_dir, { build_dir_only_sub_dirs; directory_targets; rules }) =
+      let combine (parent, map) (child, map') =
+        match
+          Path.Local.descendant ~of_:(Path.Build.local parent)
+            (Path.Build.local child)
+        with
+        | None -> assert false
+        | Some p ->
+          Path.Local.Map.foldi map' ~init:map ~f:(fun path dirs acc ->
+              Path.Local.Map.add_exn acc
+                (Path.Local.relative p (Path.Local.to_string path))
+                dirs)
+      in
       { build_dir_only_sub_dirs =
-          Path.Local.Map.union r.build_dir_only_sub_dirs build_dir_only_sub_dirs
-            ~f:(fun _ a b -> Some (Subdir_set.union a b))
+          combine
+            (parent_dir, r.build_dir_only_sub_dirs)
+            (child_dir, build_dir_only_sub_dirs)
       ; directory_targets =
           Path.Build.Map.union_exn r.directory_targets directory_targets
       ; rules =
@@ -582,18 +596,20 @@ end = struct
     | Under_directory_target of { directory_target_ancestor : Path.Build.t }
     | Normal of Normal.t
 
+  let combine_gen_rules_result ~(parent : Path.Build.t * gen_rules_result)
+      ~(child : Path.Build.t * Normal.t) =
+    let parent_dir, parent_gen_rules = parent in
+    match parent_gen_rules with
+    | Under_directory_target { directory_target_ancestor } ->
+      Code_error.raise "rules under a directory target aren't allowed"
+        [ ( "directory_target_ancestor"
+          , Path.Build.to_dyn directory_target_ancestor )
+        ]
+    | Normal r -> Normal (Normal.combine_exn (parent_dir, r) child)
+
   module rec Gen_rules : sig
     val gen_rules : Dir_triage.Build_directory.t -> gen_rules_result Memo.t
   end = struct
-    let combine_gen_rules_result ~parent ~child =
-      match parent with
-      | Under_directory_target { directory_target_ancestor } ->
-        Code_error.raise "rules under a directory target aren't allowed"
-          [ ( "directory_target_ancestor"
-            , Path.Build.to_dyn directory_target_ancestor )
-          ]
-      | Normal r -> Normal (Normal.combine_exn r child)
-
     let call_rules_generator
         ({ Dir_triage.Build_directory.dir; context_or_install; sub_dir } as d) =
       let (module RG : Build_config.Rule_generator) =
@@ -617,10 +633,12 @@ end = struct
             ]
         | Some parent ->
           let child = Normal.make_rules_gen_result ~of_:dir child in
+          let parent_dir = parent.dir in
           let+ parent = Gen_rules.gen_rules parent in
-          combine_gen_rules_result ~parent ~child)
+          combine_gen_rules_result ~parent:(parent_dir, parent)
+            ~child:(dir, child))
 
-    let gen_rules_impl d =
+    let gen_rules_impl d : gen_rules_result Memo.t =
       match Dir_triage.Build_directory.parent d with
       | None -> call_rules_generator d
       | Some d' -> (
@@ -662,8 +680,7 @@ end = struct
         (Loaded.Build_under_directory_target { directory_target_ancestor })
     | Normal { rules; build_dir_only_sub_dirs; directory_targets } ->
       let build_dir_only_sub_dirs =
-        Path.Local.Map.find build_dir_only_sub_dirs
-          (Path.Source.to_local sub_dir)
+        Path.Local.Map.find build_dir_only_sub_dirs Path.Local.root
         |> Option.value ~default:Subdir_set.empty
       in
       Path.Build.Map.iteri directory_targets ~f:(fun dir_target loc ->
