@@ -466,18 +466,24 @@ module Unprocessed = struct
        } as t) sctx ~dir ~more_src_dirs ~expander =
     let open Action_builder.O in
     let+ config =
-      let* stdlib_dir, extra_obj_dirs =
+      let* stdlib_dir, (extra_obj_dirs, extra_src_dirs) =
         Action_builder.of_memo
         @@
         match t.config.mode with
-        | `Ocaml -> Memo.return (Some stdlib_dir, [])
+        | `Ocaml -> Memo.return (Some stdlib_dir, ([], []))
         | `Melange -> (
           let open Memo.O in
           let+ dirs = Melange_binary.where sctx ~loc:None ~dir in
           match dirs with
-          | [] -> (None, [])
-          | [ stdlib_dir ] -> (Some stdlib_dir, [])
-          | stdlib_dir :: extra_obj_dirs -> (Some stdlib_dir, extra_obj_dirs))
+          | [] -> (None, ([], []))
+          | [ stdlib_dir ] -> (Some stdlib_dir, ([], []))
+          | stdlib_dir :: extra_obj_dirs ->
+            (* Melange object files live in
+               <install-root>/lib/<lib-name>/melange
+               but the source files are one level
+               higher. *)
+            let src_dirs = List.map dirs ~f:Path.parent_exn in
+            (Some stdlib_dir, (extra_obj_dirs, src_dirs)))
       in
       let* flags = flags
       and* src_dirs, obj_dirs =
@@ -489,6 +495,7 @@ module Unprocessed = struct
           >>| List.fold_left
                 ~init:
                   ( Path.set_of_source_paths source_dirs
+                    |> Path.Set.union (Path.Set.of_list extra_src_dirs)
                   , Path.Set.union objs_dirs (Path.Set.of_list extra_obj_dirs)
                   )
                 ~f:(fun (src_dirs, obj_dirs) (lib, more_src_dirs) ->
