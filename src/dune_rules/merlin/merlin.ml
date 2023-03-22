@@ -410,9 +410,11 @@ module Unprocessed = struct
 
   let pp_flags sctx ~expander lib_name preprocess :
       Processed.pp_flag option Action_builder.t =
+    (* TODO: actions *)
     match
-      Preprocess.remove_future_syntax preprocess ~for_:Merlin
-        (Super_context.context sctx).version
+      (Preprocess.remove_future_syntax preprocess ~for_:Merlin
+         (Super_context.context sctx).version)
+        .preprocess
     with
     | Action (loc, (action : Dune_lang.Action.t)) ->
       pp_flag_of_action ~expander ~loc ~action

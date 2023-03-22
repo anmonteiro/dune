@@ -11,21 +11,34 @@ module Pps : sig
   val compare_no_locs : ('a -> 'a -> Ordering.t) -> 'a t -> 'a t -> Ordering.t
 end
 
-type 'a t =
-  | No_preprocessing
-  | Action of Loc.t * Dune_lang.Action.t
-  | Pps of 'a Pps.t
-  | Future_syntax of Loc.t
-
-val equal : ('a -> 'a -> bool) -> 'a t -> 'a t -> bool
-
-val map : 'a t -> f:('a -> 'b) -> 'b t
-
 module Without_instrumentation : sig
   type t = Loc.t * Lib_name.t
 
   val compare_no_locs : t -> t -> Ordering.t
 end
+
+module Single : sig
+  type 'a t =
+    | No_preprocessing
+    | Action of Loc.t * Dune_lang.Action.t
+    | Pps of 'a Pps.t
+    | Future_syntax of Loc.t
+
+  val equal : ('a -> 'a -> bool) -> 'a t -> 'a t -> bool
+
+  val map : 'a t -> f:('a -> 'b) -> 'b t
+
+  val decode : Without_instrumentation.t t Dune_lang.Decoder.t
+end
+
+type 'a spec =
+  { actions : (Loc.t * Dune_lang.Action.t) list
+  ; preprocess : 'a
+  }
+
+type 'a t = 'a Single.t spec
+
+val map : 'a t -> f:('a -> 'b) -> 'b t
 
 module With_instrumentation : sig
   type t =
@@ -42,10 +55,12 @@ end
 val decode : Without_instrumentation.t t Dune_lang.Decoder.t
 
 module Without_future_syntax : sig
-  type 'a t =
+  type 'a single =
     | No_preprocessing
     | Action of Loc.t * Dune_lang.Action.t
     | Pps of 'a Pps.t
+
+  type 'a t = 'a single spec
 end
 
 val loc : _ t -> Loc.t option

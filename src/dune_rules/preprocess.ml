@@ -57,49 +57,6 @@ module Pps = struct
     List.compare pps t.pps ~compare:compare_pps
 end
 
-type 'a t =
-  | No_preprocessing
-  | Action of Loc.t * Dune_lang.Action.t
-  | Pps of 'a Pps.t
-  | Future_syntax of Loc.t
-
-let equal f x y =
-  match (x, y) with
-  | No_preprocessing, No_preprocessing -> true
-  | Action (x, y), Action (x', y') ->
-    Tuple.T2.equal Loc.equal Dune_lang.Action.equal (x, y) (x', y')
-  | Pps x, Pps y -> Pps.equal f x y
-  | Future_syntax x, Future_syntax y -> Loc.equal x y
-  | _, _ -> false
-
-let map t ~f =
-  match t with
-  | Pps t -> Pps { t with pps = List.map t.pps ~f }
-  | (No_preprocessing | Action _ | Future_syntax _) as t -> t
-
-let filter_map t ~f =
-  match t with
-  | Pps t ->
-    let pps = List.filter_map t.pps ~f in
-    if pps = [] then No_preprocessing else Pps { t with pps }
-  | (No_preprocessing | Action _ | Future_syntax _) as t -> t
-
-let filter_map_resolve t ~f =
-  let open Resolve.Memo.O in
-  match t with
-  | Pps t ->
-    let+ pps = Resolve.Memo.List.filter_map t.pps ~f in
-    let pps, flags = List.split pps in
-    if pps = [] then No_preprocessing
-    else Pps { t with pps; flags = t.flags @ List.flatten flags }
-  | (No_preprocessing | Action _ | Future_syntax _) as t ->
-    Resolve.Memo.return t
-
-let fold_resolve t ~init ~f =
-  match t with
-  | Pps t -> Resolve.Memo.List.fold_left t.pps ~init ~f
-  | No_preprocessing | Action _ | Future_syntax _ -> Resolve.Memo.return init
-
 module Without_instrumentation = struct
   type t = Loc.t * Lib_name.t
 
@@ -118,47 +75,140 @@ module With_instrumentation = struct
   let equal (x : t) (y : t) = Poly.equal x y
 end
 
-let decode =
-  sum
-    [ ("no_preprocessing", return No_preprocessing)
-    ; ( "action"
-      , let+ loc, x =
-          located
-            (update_var String_with_vars.decoding_env_key
-               ~f:(fun env ->
-                 let env = Option.value_exn env in
-                 Some (Pform.Env.lt_renamed_input_file env))
-               Dune_lang.Action.decode)
-        in
-        Action (loc, x) )
-    ; ( "pps"
-      , let+ loc = loc
-        and+ pps, flags = Pps_and_flags.decode in
-        Pps { loc; pps; flags; staged = false } )
-    ; ( "staged_pps"
-      , let+ () = Dune_lang.Syntax.since Stanza.syntax (1, 1)
-        and+ loc = loc
-        and+ pps, flags = Pps_and_flags.decode in
-        Pps { loc; pps; flags; staged = true } )
-    ; ( "future_syntax"
-      , let+ () = Dune_lang.Syntax.since Stanza.syntax (1, 8)
-        and+ loc = loc in
-        Future_syntax loc )
-    ]
-
-let loc = function
-  | No_preprocessing -> None
-  | Action (loc, _) | Pps { loc; _ } | Future_syntax loc -> Some loc
-
-let pps = function
-  | Pps { pps; _ } -> pps
-  | _ -> []
-
-module Without_future_syntax = struct
+module Single = struct
   type 'a t =
     | No_preprocessing
     | Action of Loc.t * Dune_lang.Action.t
     | Pps of 'a Pps.t
+    | Future_syntax of Loc.t
+
+  let equal f x y =
+    match (x, y) with
+    | No_preprocessing, No_preprocessing -> true
+    | Action (x, y), Action (x', y') ->
+      Tuple.T2.equal Loc.equal Dune_lang.Action.equal (x, y) (x', y')
+    | Pps x, Pps y -> Pps.equal f x y
+    | Future_syntax x, Future_syntax y -> Loc.equal x y
+    | _, _ -> false
+
+  let map t ~f =
+    match t with
+    | Pps t -> Pps { t with pps = List.map t.pps ~f }
+    | (No_preprocessing | Action _ | Future_syntax _) as t -> t
+
+  let filter_map t ~f =
+    match t with
+    | Pps t ->
+      let pps = List.filter_map t.pps ~f in
+      if pps = [] then No_preprocessing else Pps { t with pps }
+    | (No_preprocessing | Action _ | Future_syntax _) as t -> t
+
+  let filter_map_resolve t ~f =
+    let open Resolve.Memo.O in
+    match t with
+    | Pps t ->
+      let+ pps = Resolve.Memo.List.filter_map t.pps ~f in
+      let pps, flags = List.split pps in
+      if pps = [] then No_preprocessing
+      else Pps { t with pps; flags = t.flags @ List.flatten flags }
+    | (No_preprocessing | Action _ | Future_syntax _) as t ->
+      Resolve.Memo.return t
+
+  let fold_resolve t ~init ~f =
+    match t with
+    | Pps t -> Resolve.Memo.List.fold_left t.pps ~init ~f
+    | No_preprocessing | Action _ | Future_syntax _ -> Resolve.Memo.return init
+
+  let decode =
+    sum
+      [ ("no_preprocessing", return No_preprocessing)
+      ; ( "action"
+        , let+ loc, x =
+            located
+              (update_var String_with_vars.decoding_env_key
+                 ~f:(fun env ->
+                   let env = Option.value_exn env in
+                   Some (Pform.Env.lt_renamed_input_file env))
+                 Dune_lang.Action.decode)
+          in
+
+          Action (loc, x) )
+      ; ( "pps"
+        , let+ loc = loc
+          and+ pps, flags = Pps_and_flags.decode in
+          Pps { loc; pps; flags; staged = false } )
+      ; ( "staged_pps"
+        , let+ () = Dune_lang.Syntax.since Stanza.syntax (1, 1)
+          and+ loc = loc
+          and+ pps, flags = Pps_and_flags.decode in
+          Pps { loc; pps; flags; staged = true } )
+      ; ( "future_syntax"
+        , let+ () = Dune_lang.Syntax.since Stanza.syntax (1, 8)
+          and+ loc = loc in
+          Future_syntax loc )
+      ]
+end
+
+type 'a spec =
+  { actions : (Loc.t * Dune_lang.Action.t) list
+  ; preprocess : 'a
+  }
+
+type 'a t = 'a Single.t spec
+
+let equal f x y =
+  List.equal
+    (Tuple.T2.equal Loc.equal Dune_lang.Action.equal)
+    x.actions y.actions
+  && Single.equal f x.preprocess y.preprocess
+
+let map t ~f = { t with preprocess = Single.map t.preprocess ~f }
+
+let validate_actions_and_preprocess ~loc actions_and_preprocess =
+  match List.destruct_last actions_and_preprocess with
+  | None -> { actions = []; preprocess = Single.No_preprocessing }
+  | Some (actions, preprocess) ->
+    { actions =
+        List.map actions ~f:(function
+          | Single.Action (loc, x) -> (loc, x)
+          | No_preprocessing ->
+            User_error.raise ~loc
+              [ Pp.textf
+                  "`no_preprocessing' doesn't make sense in the presence of \
+                   other preprocessor specifications."
+              ]
+          | Pps { loc; _ } | Future_syntax loc ->
+            User_error.raise ~loc
+              ~hints:
+                [ Pp.textf
+                    "Move the `pps' specification to the end of the action \
+                     chain"
+                ]
+              [ Pp.textf "Action chains only allow one final `pps'" ])
+    ; preprocess
+    }
+
+let decode =
+  let+ loc, actions_and_preprocess = located (repeat Single.decode) in
+  validate_actions_and_preprocess ~loc actions_and_preprocess
+
+let loc t =
+  match t.preprocess with
+  | Single.No_preprocessing -> None
+  | Action (loc, _) | Pps { loc; _ } | Future_syntax loc -> Some loc
+
+let pps t =
+  match t.preprocess with
+  | Single.Pps { pps; _ } -> pps
+  | _ -> []
+
+module Without_future_syntax = struct
+  type 'a single =
+    | No_preprocessing
+    | Action of Loc.t * Dune_lang.Action.t
+    | Pps of 'a Pps.t
+
+  type 'a t = 'a single spec
 end
 
 module Pp_flag_consumer = struct
@@ -171,32 +221,36 @@ end
 
 let remove_future_syntax (t : 'a t) ~(for_ : Pp_flag_consumer.t) v :
     'a Without_future_syntax.t =
-  match t with
-  | No_preprocessing -> No_preprocessing
-  | Action (loc, action) -> Action (loc, action)
-  | Pps pps -> Pps pps
-  | Future_syntax loc ->
-    if Ocaml.Version.supports_let_syntax v then No_preprocessing
-    else
-      Action
-        ( loc
-        , Run
-            ( String_with_vars.make_pform loc (Macro (Bin, "ocaml-syntax-shims"))
-            , (match for_ with
-              | Compiler -> [ String_with_vars.make_text loc "-dump-ast" ]
-              | Merlin ->
-                (* We generate a text file instead of AST. That gives you less
-                   precise locations, but at least Merlin doesn't fail outright.
+  { actions = t.actions
+  ; preprocess =
+      (match t.preprocess with
+      | No_preprocessing -> No_preprocessing
+      | Action (loc, action) -> Action (loc, action)
+      | Pps pps -> Pps pps
+      | Future_syntax loc ->
+        if Ocaml.Version.supports_let_syntax v then No_preprocessing
+        else
+          Action
+            ( loc
+            , Run
+                ( String_with_vars.make_pform loc
+                    (Macro (Bin, "ocaml-syntax-shims"))
+                , (match for_ with
+                  | Compiler -> [ String_with_vars.make_text loc "-dump-ast" ]
+                  | Merlin ->
+                    (* We generate a text file instead of AST. That gives you less
+                       precise locations, but at least Merlin doesn't fail outright.
 
-                   In general this hack should be applied to all -pp commands
-                   that might produce an AST, not just to Future_syntax. But
-                   doing so means we need to change dune language so the user
-                   can provide two versions of the command.
+                       In general this hack should be applied to all -pp commands
+                       that might produce an AST, not just to Future_syntax. But
+                       doing so means we need to change dune language so the user
+                       can provide two versions of the command.
 
-                   Hopefully this will be fixed in merlin before that becomes a
-                   necessity. *)
-                [])
-              @ [ String_with_vars.make_pform loc (Var Input_file) ] ) )
+                       Hopefully this will be fixed in merlin before that becomes a
+                       necessity. *)
+                    [])
+                  @ [ String_with_vars.make_pform loc (Var Input_file) ] ) ))
+  }
 
 module Per_module = struct
   module Per_module = Module_name.Per_item
@@ -207,13 +261,17 @@ module Per_module = struct
 
   let equal f x y = Per_module.equal (equal f) x y
 
-  let decode = Per_module.decode decode ~default:No_preprocessing
+  let decode =
+    let+ loc, pps = located (Per_module.decode Single.decode ~default:[]) in
+    Per_module.map pps ~f:(validate_actions_and_preprocess ~loc)
 
-  let no_preprocessing () = Per_module.for_all No_preprocessing
+  let no_preprocessing () =
+    Per_module.for_all { actions = []; preprocess = Single.No_preprocessing }
 
   let find module_name t = Per_module.get t module_name
 
-  let default () = Per_module.for_all No_preprocessing
+  let default () =
+    Per_module.for_all { actions = []; preprocess = Single.No_preprocessing }
 
   let pps t =
     Per_module.fold t ~init:Lib_name.Map.empty ~f:(fun pp acc ->
@@ -226,38 +284,42 @@ module Per_module = struct
 
   let single_preprocess t =
     if Per_module.is_constant t then Per_module.get t dummy_name
-    else No_preprocessing
+    else { actions = []; preprocess = Single.No_preprocessing }
 
   let add_instrumentation t ~loc ~flags ~deps libname =
     Per_module.map t ~f:(fun pp ->
-        match pp with
-        | No_preprocessing ->
-          let pps =
-            [ With_instrumentation.Instrumentation_backend
-                { libname; deps; flags }
-            ]
-          in
-          Pps { loc; pps; flags = []; staged = false }
-        | Pps ({ pps; _ } as t) ->
-          let pps =
-            With_instrumentation.Instrumentation_backend
-              { libname; deps; flags }
-            :: pps
-          in
-          Pps { t with pps }
-        | Action (loc, _) | Future_syntax loc ->
-          User_error.raise ~loc
-            [ Pp.text
-                "Preprocessing with actions and future syntax cannot be used \
-                 in conjunction with (instrumentation ...)"
-            ])
+        { pp with
+          preprocess =
+            (match pp.preprocess with
+            | Single.No_preprocessing ->
+              let pps =
+                [ With_instrumentation.Instrumentation_backend
+                    { libname; deps; flags }
+                ]
+              in
+              Single.Pps { loc; pps; flags = []; staged = false }
+            | Pps ({ pps; _ } as t) ->
+              let pps =
+                With_instrumentation.Instrumentation_backend
+                  { libname; deps; flags }
+                :: pps
+              in
+              Pps { t with pps }
+            | Action (loc, _) | Future_syntax loc ->
+              User_error.raise ~loc
+                [ Pp.text
+                    "Preprocessing with actions and future syntax cannot be \
+                     used in conjunction with (instrumentation ...)"
+                ])
+        })
 
   let without_instrumentation t =
     let f = function
       | With_instrumentation.Ordinary libname -> Some libname
       | Instrumentation_backend _ -> None
     in
-    Per_module.map t ~f:(filter_map ~f)
+    Per_module.map t ~f:(fun t ->
+        { t with preprocess = Single.filter_map ~f t.preprocess })
 
   let with_instrumentation t ~instrumentation_backend =
     let f = function
@@ -268,7 +330,10 @@ module Per_module = struct
           (instrumentation_backend libname)
           ~f:(Option.map ~f:(fun backend -> (backend, flags)))
     in
-    Per_module.map_resolve t ~f:(filter_map_resolve ~f)
+    Per_module.map_resolve t ~f:(fun t ->
+        let open Resolve.Memo.O in
+        let+ preprocess = Single.filter_map_resolve ~f t.preprocess in
+        { t with preprocess })
 
   let instrumentation_deps t ~instrumentation_backend =
     let open Resolve.Memo.O in
@@ -284,6 +349,6 @@ module Per_module = struct
           let+ x = f t in
           x :: acc
         in
-        fold_resolve t ~init ~f)
+        Single.fold_resolve t.preprocess ~init ~f)
     >>| List.rev >>| List.flatten
 end

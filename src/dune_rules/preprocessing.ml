@@ -540,65 +540,91 @@ let lint_module sctx ~sandbox ~dir ~expander ~lint ~lib_name ~scope =
   let alias = Alias.lint ~dir in
   let add_alias build = Super_context.add_alias_action sctx alias build ~dir in
   let lint =
-    Module_name.Per_item.map lint ~f:(function
-      | Preprocess.No_preprocessing -> fun ~source:_ ~ast:_ -> Memo.return ()
-      | Future_syntax loc ->
-        User_error.raise ~loc [ Pp.text "'compat' cannot be used as a linter" ]
-      | Action (loc, action) ->
-        fun ~source ~ast:_ ->
-          Module.iter source ~f:(fun _ (src : Module.File.t) ->
-              let src = Path.as_in_build_dir_exn (Module.File.path src) in
-              add_alias ~loc:(Some loc)
-                (action_for_pp ~sandbox ~loc ~expander ~action ~src))
-      | Pps { loc; pps; flags; staged } ->
-        if staged then
+    Module_name.Per_item.map lint ~f:(fun (t : _ Preprocess.t) ->
+        match t.preprocess with
+        | No_preprocessing -> fun ~source:_ ~ast:_ -> Memo.return ()
+        | Future_syntax loc ->
           User_error.raise ~loc
-            [ Pp.text "Staged ppx rewriters cannot be used as linters." ];
-        let corrected_suffix = ".lint-corrected" in
-        let driver_and_flags =
-          Action_builder.memoize
-            ~cutoff:
-              (Tuple.T3.equal Path.Build.equal (List.equal String.equal)
-                 (List.equal String.equal))
-            "ppx driver and flags"
-            (let* () = Action_builder.return () in
-             let* exe, driver, flags =
-               ppx_driver_and_flags sctx ~expander ~loc ~lib_name ~flags ~scope
-                 pps
-             in
-             let+ ppx_flags =
-               driver_flags expander ~corrected_suffix
-                 ~driver_flags:driver.info.lint_flags
-                 ~standard:(Action_builder.return [])
-             in
-             (exe, ppx_flags, flags))
-        in
-        fun ~source ~ast ->
-          Module.iter ast ~f:(fun ml_kind src ->
-              add_alias ~loc:(Some loc)
-                (promote_correction ~suffix:corrected_suffix
-                   (Path.as_in_build_dir_exn
-                      (Option.value_exn (Module.file source ~ml_kind)))
-                   (let* exe, flags, args = driver_and_flags in
-                    let dir =
-                      Path.build (Super_context.context sctx).build_dir
-                    in
-                    Command.run' ~dir
-                      (Ok (Path.build exe))
-                      [ As args
-                      ; Command.Ml_kind.ppx_driver_flag ml_kind
-                      ; Dep (Module.File.path src)
-                      ; As flags
-                      ]))))
+            [ Pp.text "'compat' cannot be used as a linter" ]
+        | Action (loc, action) ->
+          fun ~source ~ast:_ ->
+            Module.iter source ~f:(fun _ (src : Module.File.t) ->
+                let src = Path.as_in_build_dir_exn (Module.File.path src) in
+                add_alias ~loc:(Some loc)
+                  (action_for_pp ~sandbox ~loc ~expander ~action ~src))
+        | Pps { loc; pps; flags; staged } ->
+          if staged then
+            User_error.raise ~loc
+              [ Pp.text "Staged ppx rewriters cannot be used as linters." ];
+          let corrected_suffix = ".lint-corrected" in
+          let driver_and_flags =
+            Action_builder.memoize
+              ~cutoff:
+                (Tuple.T3.equal Path.Build.equal (List.equal String.equal)
+                   (List.equal String.equal))
+              "ppx driver and flags"
+              (let* () = Action_builder.return () in
+               let* exe, driver, flags =
+                 ppx_driver_and_flags sctx ~expander ~loc ~lib_name ~flags
+                   ~scope pps
+               in
+               let+ ppx_flags =
+                 driver_flags expander ~corrected_suffix
+                   ~driver_flags:driver.info.lint_flags
+                   ~standard:(Action_builder.return [])
+               in
+               (exe, ppx_flags, flags))
+          in
+          fun ~source ~ast ->
+            Module.iter ast ~f:(fun ml_kind src ->
+                add_alias ~loc:(Some loc)
+                  (promote_correction ~suffix:corrected_suffix
+                     (Path.as_in_build_dir_exn
+                        (Option.value_exn (Module.file source ~ml_kind)))
+                     (let* exe, flags, args = driver_and_flags in
+                      let dir =
+                        Path.build (Super_context.context sctx).build_dir
+                      in
+                      Command.run' ~dir
+                        (Ok (Path.build exe))
+                        [ As args
+                        ; Command.Ml_kind.ppx_driver_flag ml_kind
+                        ; Dep (Module.File.path src)
+                        ; As flags
+                        ]))))
   in
   Staged.stage @@ fun ~(source : Module.t) ~ast ->
   Module_name.Per_item.get lint (Module.name source) ~source ~ast
+
+let pp_action_chain sctx ~dir ~src ~expander ~sandbox ~preprocessor_deps actions
+    =
+  match actions with
+  | [] -> Memo.return src
+  | actions ->
+    let (_, src), actions =
+      List.fold_map actions ~init:(0, src)
+        ~f:(fun (i, last_dst) (loc, action) ->
+          let dst =
+            (* foo.ml -> foo.ml.[i] *)
+            Path.Build.map_extension src ~f:(fun ext ->
+                Printf.sprintf "%s.%d" ext i)
+          in
+          let action =
+            action_for_pp_with_target ~sandbox ~loc ~expander ~action
+              ~src:last_dst ~target:dst
+          in
+          ( (i + 1, dst)
+          , Super_context.add_rule sctx ~loc ~dir
+              (let open Action_builder.With_targets.O in
+              Action_builder.with_no_targets preprocessor_deps >>> action) ))
+    in
+    Memo.all_concurrently actions >>| fun _ -> src
 
 let pp_one_module sctx ~lib_name ~scope ~preprocessor_deps
     ~(lint_module : source:_ -> ast:_ -> unit Memo.t) ~sandbox ~dir ~expander
     (pp : _ Preprocess.Without_future_syntax.t) =
   let open Action_builder.O in
-  match pp with
+  match pp.preprocess with
   | No_preprocessing ->
     Staged.stage @@ fun m ~lint ->
     let open Memo.O in
@@ -614,6 +640,10 @@ let pp_one_module sctx ~lib_name ~scope ~preprocessor_deps
     let* ast =
       let sandbox = sandbox_of_setting sandbox in
       pped_module m ~f:(fun _kind src dst ->
+          let* src =
+            pp_action_chain sctx ~dir ~src ~sandbox ~expander ~preprocessor_deps
+              pp.actions
+          in
           let action =
             action_for_pp_with_target ~sandbox ~loc ~expander ~action ~src
               ~target:dst
@@ -697,6 +727,10 @@ let pp_one_module sctx ~lib_name ~scope ~preprocessor_deps
         let* ast = setup_dialect_rules sctx ~sandbox ~dir ~expander m in
         let* () = Memo.when_ lint (fun () -> lint_module ~ast ~source:m) in
         pped_module ast ~f:(fun ml_kind src dst ->
+            let* src =
+              pp_action_chain sctx ~dir ~src ~sandbox ~expander
+                ~preprocessor_deps pp.actions
+            in
             Super_context.add_rule sctx ~loc ~dir
               (promote_correction_with_target ~suffix:corrected_suffix
                  (Path.as_in_build_dir_exn
@@ -771,7 +805,9 @@ let ppx_exe sctx ~scope pp =
 let pped_modules_map preprocess v =
   let map =
     Module_name.Per_item.map preprocess ~f:(fun pp ->
-        match Preprocess.remove_future_syntax ~for_:Compiler pp v with
+        match
+          (Preprocess.remove_future_syntax ~for_:Compiler pp v).preprocess
+        with
         | No_preprocessing -> Module.ml_source
         | Action (_, _) -> fun m -> Module.ml_source (Module.pped m)
         | Pps { loc = _; pps = _; flags = _; staged } ->
