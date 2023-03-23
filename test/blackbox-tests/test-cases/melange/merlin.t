@@ -61,6 +61,7 @@ Dump-dot-merlin includes the melange flags
   STDLIB /MELC_STDLIB/runtime/melange
   B /MELC_STDLIB/belt/melange
   B /MELC_STDLIB/melange
+  B /MELC_STDLIB/runtime/melange
   B $TESTCASE_ROOT/_build/default/.output.mobjs/melange
   S /MELC_STDLIB
   S /MELC_STDLIB/belt
