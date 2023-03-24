@@ -468,18 +468,35 @@ module Unprocessed = struct
        } as t) sctx ~dir ~more_src_dirs ~expander =
     let open Action_builder.O in
     let+ config =
-      let* stdlib_dir, extra_obj_dirs =
+      let* stdlib_dir =
         Action_builder.of_memo
         @@
         match t.config.mode with
-        | `Ocaml -> Memo.return (Some stdlib_dir, [])
+        | `Ocaml -> Memo.return (Some stdlib_dir)
         | `Melange -> (
           let open Memo.O in
           let+ dirs = Melange_binary.where sctx ~loc:None ~dir in
           match dirs with
-          | [] -> (None, [])
-          | [ stdlib_dir ] -> (Some stdlib_dir, [])
-          | stdlib_dir :: extra_obj_dirs -> (Some stdlib_dir, extra_obj_dirs))
+          | [] -> None
+          | stdlib_dir :: _ -> Some stdlib_dir)
+      in
+      let* requires =
+        match t.config.mode with
+        | `Ocaml -> Action_builder.return requires
+        | `Melange ->
+          Action_builder.of_memo
+            (let open Memo.O in
+            let libs =
+              let scope = Expander.scope expander in
+              Scope.libs scope
+            in
+            Lib.DB.find libs (Lib_name.of_string "melange") >>= function
+            | Some lib ->
+              let+ libs =
+                Lib.closure [ lib ] ~linking:true |> Resolve.Memo.read_memo
+              in
+              Lib.Set.union requires (Lib.Set.of_list libs)
+            | None -> Memo.return requires)
       in
       let* flags = flags
       and* src_dirs, obj_dirs =
@@ -489,10 +506,7 @@ module Unprocessed = struct
               let+ dirs = src_dirs sctx lib in
               (lib, dirs))
           >>| List.fold_left
-                ~init:
-                  ( Path.set_of_source_paths source_dirs
-                  , Path.Set.union objs_dirs (Path.Set.of_list extra_obj_dirs)
-                  )
+                ~init:(Path.set_of_source_paths source_dirs, objs_dirs)
                 ~f:(fun (src_dirs, obj_dirs) (lib, more_src_dirs) ->
                   ( Path.Set.union src_dirs more_src_dirs
                   , let public_cmi_dir =

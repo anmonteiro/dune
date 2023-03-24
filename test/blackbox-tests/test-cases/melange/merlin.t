@@ -59,10 +59,10 @@ Dump-dot-merlin includes the melange flags
 
   $ dune ocaml dump-dot-merlin $PWD
   EXCLUDE_QUERY_DIR
-  STDLIB /MELC_STDLIB
-  B /MELC_STDLIB
-  B /MELC_STDLIB
-  B /MELC_STDLIB
+  STDLIB /MELC_STDLIB/runtime/melange
+  B /MELC_STDLIB/belt/melange
+  B /MELC_STDLIB/melange
+  B /MELC_STDLIB/runtime/melange
   B $TESTCASE_ROOT/_build/default/.output.mobjs/melange
   S /MELC_STDLIB
   S /MELC_STDLIB/belt
@@ -70,7 +70,7 @@ Dump-dot-merlin includes the melange flags
   S $TESTCASE_ROOT
   # FLG -ppx '/MELC_COMPILER -as-ppx'
   # FLG -w @1..3@5..28@30..39@43@46..47@49..57@61..62@67@69-40 -strict-sequence -strict-formats -short-paths -keep-locs
-  
+
 
 
 
@@ -78,14 +78,14 @@ Check for flag directives ordering when another preprocessor is defined
 
   $ cat >fooppx.ml <<EOF
   > open Ppxlib
-  > 
+  >
   > let rules =
   >   let extension =
   >     Extension.declare "test" Expression Ast_pattern.__ (fun ~loc ~path:_ _ ->
   >       Ast_builder.Default.eint ~loc 42)
   >   in
   >   [ Context_free.Rule.extension extension ]
-  > 
+  >
   > let () = Ppxlib.Driver.register_transformation "rules" ~rules
   > EOF
 
@@ -110,7 +110,7 @@ Melange ppx should appear after user ppx, so that Merlin applies the former firs
 
   $ dune ocaml merlin dump-config $PWD | grep -v "(B "  | grep -v "(S "
   Bar
-  ((STDLIB /MELC_STDLIB)
+  ((STDLIB /MELC_STDLIB/runtime/melange)
    (EXCLUDE_QUERY_DIR)
    (B
     $TESTCASE_ROOT/_build/default/.foo.objs/melange)
@@ -132,7 +132,7 @@ Melange ppx should appear after user ppx, so that Merlin applies the former firs
      -short-paths
      -keep-locs)))
   Foo
-  ((STDLIB /MELC_STDLIB)
+  ((STDLIB /MELC_STDLIB/runtime/melange)
    (EXCLUDE_QUERY_DIR)
    (B
     $TESTCASE_ROOT/_build/default/.foo.objs/melange)
