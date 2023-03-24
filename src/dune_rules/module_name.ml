@@ -43,16 +43,54 @@ module Per_item = struct
   include Per_item.Make (String)
   open Dune_lang.Decoder
 
+  let module_names_and_pps a =
+    let module_names_and_pps =
+      let+ pps_and_names =
+        repeat
+          (maybe (located a) >>= function
+           | Some a -> return (`Pp a)
+           | None ->
+             let+ x = decode in
+             `Module x)
+      in
+      let pps, names =
+        let pps, names =
+          List.split_while pps_and_names ~f:(function
+            | `Pp _ -> true
+            | `Module _ -> false)
+        in
+        let pps =
+          List.map pps ~f:(function
+            | `Pp (_, pps) -> pps
+            | `Module _ -> assert false)
+        in
+        let names =
+          List.map names ~f:(function
+            | `Pp (loc, _) ->
+              User_error.raise ~loc
+                ~hints:
+                  [ Pp.text
+                      "Move this preprocessing specification before the list \
+                       of module names."
+                  ]
+                [ Pp.text
+                    "Expected only module names after preprocessor \
+                     specification."
+                ]
+            | `Module m -> m)
+        in
+        (pps, names)
+      in
+      (names, pps)
+    in
+    enter module_names_and_pps
+
   let decode ~default a =
     peek_exn >>= function
     | List (loc, Atom (_, A "per_module") :: _) ->
       sum
         [ ( "per_module"
-          , let+ x =
-              repeat
-                (let+ pp, names = pair a (repeat decode) in
-                 (names, pp))
-            in
+          , let+ x = repeat (module_names_and_pps a) in
             of_mapping x ~default |> function
             | Ok t -> t
             | Error (name, _, _) ->
@@ -61,7 +99,7 @@ module Per_item = struct
                     (to_string name)
                 ] )
         ]
-    | _ -> a >>| for_all
+    | _ -> repeat a >>| for_all
 end
 
 let of_string_allow_invalid (_loc, s) =

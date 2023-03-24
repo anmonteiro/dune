@@ -67,7 +67,7 @@ let pp_flags t =
   let sctx = Compilation_context.super_context t.cctx in
   let scope = Compilation_context.scope t.cctx in
   let expander = Compilation_context.expander t.cctx in
-  match t.preprocess with
+  match t.preprocess.preprocess with
   | Pps { loc; pps; flags; staged = _ } ->
     let+ exe, flags =
       Preprocessing.get_ppx_driver sctx ~loc ~expander ~lib_name:None ~flags
@@ -156,8 +156,8 @@ module Stanza = struct
     let* scope = Scope.DB.find_by_dir dir in
     let dune_version = Scope.project scope |> Dune_project.dune_version in
     let pps =
-      match toplevel.pps with
-      | Preprocess.Pps pps -> pps.pps
+      match toplevel.pps.preprocess with
+      | Pps pps -> pps.pps
       | Action _ | Future_syntax _ -> assert false (* Error in parsing *)
       | No_preprocessing -> []
     in

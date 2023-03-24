@@ -135,8 +135,10 @@ let preprocess_fields =
       let deps_might_be_used =
         Module_name.Per_item.exists preprocess ~f:(fun p ->
             match (p : _ Preprocess.t) with
-            | Action _ | Pps _ -> true
-            | No_preprocessing | Future_syntax _ -> false)
+            | { actions = _ :: _; preprocess = _ }
+            | { actions = _; preprocess = Action _ | Pps _ } -> true
+            | { actions = _; preprocess = No_preprocessing | Future_syntax _ }
+              -> false)
       in
       if not deps_might_be_used then
         User_warning.emit ~loc

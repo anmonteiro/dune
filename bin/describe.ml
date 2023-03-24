@@ -777,13 +777,12 @@ module Preprocess = struct
               |> List.fold_left ~init:None ~f:(fun acc stanza ->
                      match stanza with
                      | Dune_rules.Dune_file.Library lib -> (
-                       let preprocess =
+                       let { Dune_rules.Preprocess.preprocess; _ } =
                          Dune_rules.Preprocess.Per_module.(
                            lib.buildable.preprocess |> single_preprocess)
                        in
                        match preprocess with
-                       | External_lib_deps.Preprocess.Pps
-                           ({ staged = true; _ } as pps) -> Some pps
+                       | Pps ({ staged = true; _ } as pps) -> Some pps
                        | _ -> acc)
                      | _ -> acc))
         in

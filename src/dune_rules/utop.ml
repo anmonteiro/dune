@@ -138,8 +138,11 @@ let setup sctx ~dir =
   let db = Scope.libs scope in
   let* libs, pps = libs_and_ppx_under_dir sctx ~db ~dir:(Path.build dir) in
   let pps =
-    if List.is_empty pps then Preprocess.No_preprocessing
-    else Preprocess.Pps { loc = Loc.none; pps; flags = []; staged = false }
+    { Preprocess.actions = []
+    ; preprocess =
+        (if List.is_empty pps then Preprocess.Single.No_preprocessing
+        else Pps { loc = Loc.none; pps; flags = []; staged = false })
+    }
   in
   let preprocessing =
     let preprocess = Module_name.Per_item.for_all pps in
