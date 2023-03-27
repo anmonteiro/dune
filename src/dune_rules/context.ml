@@ -385,12 +385,17 @@ let create ~(kind : Kind.t) ~path ~env ~env_nodes ~name ~merlin ~targets
       match findlib_toolchain with
       | None -> Memo.return None
       | Some toolchain ->
-        let* path = Memo.Lazy.force findlib_config_path in
-        let toolchain = Context_name.to_string toolchain in
-        let context = Context_name.to_string name in
-        let+ config = Findlib.Config.load (External path) ~toolchain ~context in
-        Some config
+        let+ findlib_config =
+          let* path = Memo.Lazy.force findlib_config_path in
+          Findlib.Config.load (External path)
+        in
+        let toolchain =
+          let toolchain = Context_name.to_string toolchain in
+          Findlib.Config.toolchain findlib_config ~toolchain
+        in
+        Some toolchain
     in
+
     let get_tool_using_findlib_config prog =
       match
         Option.bind findlib_config ~f:(fun conf -> Findlib.Config.get conf prog)

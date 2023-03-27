@@ -51,10 +51,11 @@ module Config : sig
 
   val to_dyn : t -> Dyn.t
 
-  val load :
-    Path.Outside_build_dir.t -> toolchain:string -> context:string -> t Memo.t
+  val load : Path.Outside_build_dir.t -> t Memo.t
 
   val get : t -> string -> string option
+
+  val toolchain : t -> toolchain:string -> t
 
   val env : t -> Env.t
 end

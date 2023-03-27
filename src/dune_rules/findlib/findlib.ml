@@ -97,6 +97,10 @@ module Vars = struct
     match get t var preds with
     | None -> []
     | Some s -> String.extract_comma_space_separated_words s
+
+  let empty = String.Map.empty
+
+  let superpose = String.Map.superpose
 end
 
 module Config = struct
@@ -112,25 +116,41 @@ module Config = struct
       ; ("preds", Ps.to_dyn preds)
       ]
 
-  let load path ~toolchain ~context =
-    let path = Path.Outside_build_dir.extend_basename path ~suffix:".d" in
-    let conf_file =
-      Path.Outside_build_dir.relative path (toolchain ^ ".conf")
+
+  let load config_file =
+    let load p =
+      let+ meta = Meta.load ~name:None p in
+      meta.vars |> String.Map.map ~f:Rules.of_meta_rules
     in
-    let* conf_file_exists = Fs_memo.file_exists conf_file in
-    if not conf_file_exists then
-      User_error.raise
-        [ Pp.textf "ocamlfind toolchain %s isn't defined in %s (context: %s)"
-            toolchain
-            (Path.Outside_build_dir.to_string_maybe_quoted path)
-            context
-        ];
-    let+ meta = Meta.load ~name:None conf_file in
-    { vars = String.Map.map meta.vars ~f:Rules.of_meta_rules
-    ; preds = Ps.of_list [ P.make toolchain ]
-    }
+    let+ vars =
+      let* vars =
+        Fs_memo.file_exists config_file >>= function
+        | true -> load config_file
+        | false -> Memo.return Vars.empty
+      in
+      let config_dir =
+        Path.Outside_build_dir.extend_basename config_file ~suffix:".d"
+      in
+      Fs_memo.is_directory config_dir >>= function
+      | Ok true -> (
+        Fs_memo.dir_contents config_dir >>= function
+        | Ok dir_contents ->
+          let+ all_vars =
+            Memo.parallel_map (Fs_cache.Dir_contents.to_list dir_contents)
+              ~f:(fun (p, _kind) ->
+                let p = Path.Outside_build_dir.relative config_dir p in
+                load p)
+          in
+          List.fold_left all_vars ~init:vars ~f:Vars.superpose
+        | Error _ -> Memo.return vars)
+      | Ok false | Error _ -> Memo.return vars
+    in
+    { vars; preds = Ps.empty }
 
   let get { vars; preds } var = Vars.get vars var preds
+
+  let toolchain t ~toolchain =
+    { t with preds = Ps.singleton (P.make toolchain) }
 
   let env t =
     let preds = Ps.add t.preds (P.make "env") in

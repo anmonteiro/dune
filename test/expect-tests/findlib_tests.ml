@@ -128,11 +128,12 @@ let%expect_test _ =
     } |}]
 
 let conf () =
-  Findlib.Config.load
-    (Path.Outside_build_dir.relative db_path "../toolchain")
-    ~toolchain:"tlc" ~context:"<context>"
-  |> Memo.run
-  |> Test_scheduler.(run (create ()))
+  let memo =
+    let open Memo.O in
+    Findlib.Config.load (Path.Outside_build_dir.relative db_path "../toolchain")
+    >>| Findlib.Config.toolchain ~toolchain:"tlc"
+  in
+  Memo.run memo |> Test_scheduler.(run (create ()))
 
 let%expect_test _ =
   let conf = conf () in
