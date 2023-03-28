@@ -271,6 +271,19 @@ let ocamlpath_sep =
     ';'
   else Bin.path_sep
 
+let ocamlfind_printconf_path ~env ~ocamlfind ~toolchain =
+  let args =
+    let args = [ "printconf"; "path" ] in
+    match toolchain with
+    | None -> args
+    | Some s -> "-toolchain" :: Context_name.to_string s :: args
+  in
+  let+ l =
+    Memo.of_reproducible_fiber
+      (Process.run_capture_lines ~display:Quiet ~env Strict ocamlfind args)
+  in
+  List.map l ~f:Path.of_filename_relative_to_initial_cwd
+
 module Build_environment_kind = struct
   (* Heuristics to detect the current environment *)
 
@@ -302,20 +315,21 @@ module Build_environment_kind = struct
           match opam_prefix with
           | Some s -> Opam2_environment s
           | None -> Unknown)))
-end
 
-let ocamlfind_printconf_path ~env ~ocamlfind ~toolchain =
-  let args =
-    let args = [ "printconf"; "path" ] in
-    match toolchain with
-    | None -> args
-    | Some s -> "-toolchain" :: Context_name.to_string s :: args
-  in
-  let+ l =
-    Memo.of_reproducible_fiber
-      (Process.run_capture_lines ~display:Quiet ~env Strict ocamlfind args)
-  in
-  List.map l ~f:Path.of_filename_relative_to_initial_cwd
+  let findlib_paths ~kind ~findlib_toolchain ~env ~which_exn ~dir =
+    match query ~kind ~findlib_toolchain ~env with
+    | Cross_compilation_using_findlib_toolchain toolchain ->
+      let* ocamlfind = which_exn "ocamlfind" in
+      let env = Env.remove env ~var:"OCAMLPATH" in
+      ocamlfind_printconf_path ~env ~ocamlfind ~toolchain:(Some toolchain)
+    | Hardcoded_path l ->
+      Memo.return (List.map l ~f:Path.of_filename_relative_to_initial_cwd)
+    | Opam2_environment opam_prefix ->
+      let p = Path.of_filename_relative_to_initial_cwd opam_prefix in
+      let p = Path.relative p "lib" in
+      Memo.return [ p ]
+    | Unknown -> Memo.return [ Path.relative (Path.parent_exn dir) "lib" ]
+end
 
 let check_fdo_support has_native ocfg ~name =
   let version = Ocaml.Version.of_ocaml_config ocfg in
@@ -351,6 +365,24 @@ type instance =
   { native : t
   ; targets : t list
   }
+
+let get_tool_using_findlib_config findlib_config prog ~which =
+  match
+    Option.bind findlib_config ~f:(fun conf -> Findlib.Config.get conf prog)
+  with
+  | None -> Memo.return None
+  | Some s -> (
+    match Filename.analyze_program_name s with
+    | In_path -> which s
+    | Relative_to_current_dir ->
+      User_error.raise
+        [ Pp.textf
+            "The effective Findlib configuration specifies the relative path \
+             %S for the program %S. This is currently not supported."
+            s prog
+        ]
+    | Absolute ->
+      Memo.return (Some (Path.of_filename_relative_to_initial_cwd s)))
 
 let create ~(kind : Kind.t) ~path ~env ~env_nodes ~name ~merlin ~targets
     ~host_context ~host_toolchain ~profile ~fdo_target_exe
@@ -396,23 +428,8 @@ let create ~(kind : Kind.t) ~path ~env ~env_nodes ~name ~merlin ~targets
         Some toolchain
     in
 
-    let get_tool_using_findlib_config prog =
-      match
-        Option.bind findlib_config ~f:(fun conf -> Findlib.Config.get conf prog)
-      with
-      | None -> Memo.return None
-      | Some s -> (
-        match Filename.analyze_program_name s with
-        | In_path -> which s
-        | Relative_to_current_dir ->
-          User_error.raise
-            [ Pp.textf
-                "The effective Findlib configuration specifies the relative \
-                 path %S for the program %S. This is currently not supported."
-                s prog
-            ]
-        | Absolute ->
-          Memo.return (Some (Path.of_filename_relative_to_initial_cwd s)))
+    let get_tool_using_findlib_config =
+      get_tool_using_findlib_config findlib_config ~which
     in
     let* ocamlc =
       get_tool_using_findlib_config "ocamlc" >>= function
@@ -460,18 +477,8 @@ let create ~(kind : Kind.t) ~path ~env ~env_nodes ~name ~merlin ~targets
       | Some s -> Bin.parse_path s ~sep:ocamlpath_sep
     in
     let default_library_search_path () =
-      match Build_environment_kind.query ~kind ~findlib_toolchain ~env with
-      | Cross_compilation_using_findlib_toolchain toolchain ->
-        let* ocamlfind = which_exn "ocamlfind" in
-        let env = Env.remove env ~var:"OCAMLPATH" in
-        ocamlfind_printconf_path ~env ~ocamlfind ~toolchain:(Some toolchain)
-      | Hardcoded_path l ->
-        Memo.return (List.map l ~f:Path.of_filename_relative_to_initial_cwd)
-      | Opam2_environment opam_prefix ->
-        let p = Path.of_filename_relative_to_initial_cwd opam_prefix in
-        let p = Path.relative p "lib" in
-        Memo.return [ p ]
-      | Unknown -> Memo.return [ Path.relative (Path.parent_exn dir) "lib" ]
+      Build_environment_kind.findlib_paths ~kind ~findlib_toolchain ~env
+        ~which_exn ~dir
     in
     let ocaml_config_ok_exn = function
       | Ok x -> x
