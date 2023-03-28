@@ -19,8 +19,6 @@ let ocamlpath env =
   | None -> []
   | Some s -> path_var s
 
-let toolchain t = t.toolchain
-
 let set_toolchain t ~toolchain =
   match t.toolchain with
   | None ->
@@ -55,29 +53,40 @@ let tool t ~prog =
     | Absolute ->
       Memo.return (Some (Path.of_filename_relative_to_initial_cwd s)))
 
-let ocamlfind_config_path ~env ~which =
-  Memo.lazy_ ~cutoff:(Option.equal Path.External.equal) (fun () ->
-      let open Memo.O in
-      let+ path =
-        match Env.get env "OCAMLFIND_CONF" with
-        | Some s -> Memo.return (Some s)
-        | None -> (
-          which "ocamlfind" >>= function
-          | None -> Memo.return None
-          | Some fn ->
-            Memo.of_reproducible_fiber
-              (Process.run_capture_line ~display:Quiet ~env Strict fn
-                 [ "printconf"; "conf" ])
-            |> Memo.map ~f:Option.some)
-      in
-      Option.map path ~f:Path.External.of_filename_relative_to_initial_cwd)
-
-let discover_from_env ~env ~ocamlpath ~which =
+let ocamlfind_config_path ~env ~which ~findlib_toolchain =
   let open Memo.O in
-  Memo.Lazy.force (ocamlfind_config_path ~env ~which) >>= function
+  let+ path =
+    match Env.get env "OCAMLFIND_CONF" with
+    | Some s -> Memo.return (Some s)
+    | None -> (
+      match findlib_toolchain with
+      | None -> Memo.return None
+      | Some _ -> (
+        which "ocamlfind" >>= function
+        | None -> Memo.return None
+        | Some fn ->
+          Memo.of_reproducible_fiber
+            (Process.run_capture_line ~display:Quiet ~env Strict fn
+               [ "printconf"; "conf" ])
+          |> Memo.map ~f:Option.some))
+  in
+  (* From http://projects.camlcity.org/projects/dl/findlib-1.9.6/doc/ref-html/r865.html
+     This variable overrides the location of the configuration file
+     findlib.conf. It must contain the absolute path name of this file. *)
+  Option.map path ~f:Path.External.of_string
+
+let discover_from_env ~env ~which ~ocamlpath ~findlib_toolchain =
+  let open Memo.O in
+  ocamlfind_config_path ~env ~which ~findlib_toolchain >>= function
   | None -> Memo.return None
   | Some config ->
     let+ config = Findlib.Config.load (External config) in
-    Some { config; ocamlpath; which; toolchain = None }
+    let base = { config; ocamlpath; which; toolchain = None } in
+    Some
+      (match findlib_toolchain with
+      | None -> base
+      | Some toolchain ->
+        let toolchain = Context_name.to_string toolchain in
+        set_toolchain base ~toolchain)
 
 let extra_env t = Findlib.Config.env t.config

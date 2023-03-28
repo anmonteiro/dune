@@ -299,26 +299,23 @@ module Build_environment_kind = struct
           | None -> Unknown)))
 
   let findlib_paths ocamlfind ~kind ~context ~findlib_toolchain ~env ~dir =
-    match query ~kind ~findlib_toolchain ~env with
-    | Cross_compilation_using_findlib_toolchain _toolchain -> (
-      match ocamlfind with
-      | None ->
-        Code_error.raise
-          "Could not find ocamlfind in PATH or an environment variable \
-           OCAMLFIND_CONF"
-          [ ("context", Context_name.to_dyn context) ]
-      | Some ocamlfind -> Ocamlfind.conf_path ocamlfind)
-    | Hardcoded_path l -> List.map l ~f:Path.of_filename_relative_to_initial_cwd
-    | Opam2_environment opam_prefix ->
+    match (ocamlfind, query ~kind ~findlib_toolchain ~env) with
+    | ( Some ocamlfind
+      , ( Cross_compilation_using_findlib_toolchain _
+        | Opam2_environment _
+        | Unknown ) ) -> Ocamlfind.conf_path ocamlfind
+    | None, Cross_compilation_using_findlib_toolchain _toolchain ->
+      Code_error.raise
+        "Could not find ocamlfind in PATH or an environment variable \
+         OCAMLFIND_CONF"
+        [ ("context", Context_name.to_dyn context) ]
+    | _, Hardcoded_path l ->
+      List.map l ~f:Path.of_filename_relative_to_initial_cwd
+    | None, Opam2_environment opam_prefix ->
       let p = Path.of_filename_relative_to_initial_cwd opam_prefix in
       let p = Path.relative p "lib" in
       [ p ]
-    | Unknown -> (
-      match ocamlfind with
-      | None ->
-        (* TODO? *)
-        [ Path.relative (Path.parent_exn dir) "lib" ]
-      | Some ocamlfind -> Ocamlfind.conf_path ocamlfind)
+    | None, Unknown -> [ Path.relative (Path.parent_exn dir) "lib" ]
 end
 
 let check_fdo_support has_native ocfg ~name =
@@ -359,20 +356,14 @@ type instance =
 let create ~(kind : Kind.t) ~path ~env ~env_nodes ~name ~merlin ~targets
     ~host_context ~host_toolchain ~profile ~fdo_target_exe
     ~dynamically_linked_foreign_archives ~instrument_with =
-  let prog_not_found_in_path prog =
-    Utils.program_not_found prog ~context:name ~loc:None
-  in
   let which = Program.which ~path in
-
   let env_ocamlpath = Ocamlfind.ocamlpath env in
   let ocamlpath =
     let initial_ocamlpath = Ocamlfind.ocamlpath Env.initial in
     match (env_ocamlpath, initial_ocamlpath) with
     | [], [] -> []
     | _ :: _, [] -> env_ocamlpath
-    | [], _ :: _ ->
-      (* TODO? *)
-      initial_ocamlpath
+    | [], _ :: _ -> initial_ocamlpath
     | _, _ -> (
       match
         List.compare ~compare:Path.compare env_ocamlpath initial_ocamlpath
@@ -388,29 +379,20 @@ let create ~(kind : Kind.t) ~path ~env ~env_nodes ~name ~merlin ~targets
       | Default, None -> env_ocamlpath
       | _, _ -> ocamlpath
     in
-
     let* ocamlfind =
-      Ocamlfind.discover_from_env ~env ~ocamlpath ~which >>| function
-      | None -> None
-      | Some ocamlfind ->
-        Some
-          (match findlib_toolchain with
-          | None -> ocamlfind
-          | Some toolchain ->
-            let toolchain = Context_name.to_string toolchain in
-            Ocamlfind.set_toolchain ocamlfind ~toolchain)
+      Ocamlfind.discover_from_env ~env ~which ~ocamlpath ~findlib_toolchain
     in
-
     let get_tool_using_findlib_config prog =
       Memo.Option.bind ocamlfind ~f:(Ocamlfind.tool ~prog)
     in
     let* ocamlc =
-      get_tool_using_findlib_config "ocamlc" >>= function
+      let ocamlc = "ocamlc" in
+      get_tool_using_findlib_config ocamlc >>= function
       | Some x -> Memo.return x
       | None -> (
-        which "ocamlc" >>| function
+        which ocamlc >>| function
         | Some x -> x
-        | None -> prog_not_found_in_path "ocamlc")
+        | None -> Utils.program_not_found ocamlc ~context:name ~loc:None)
     in
     let dir = Path.parent_exn ocamlc in
     let get_ocaml_tool prog =

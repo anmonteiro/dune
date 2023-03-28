@@ -100,7 +100,7 @@ module Vars = struct
 
   let empty = String.Map.empty
 
-  let superpose = String.Map.superpose
+  let union = String.Map.union
 end
 
 module Config = struct
@@ -115,7 +115,6 @@ module Config = struct
       [ ("vars", String.Map.to_dyn Rules.to_dyn vars)
       ; ("preds", Ps.to_dyn preds)
       ]
-
 
   let load config_file =
     let load p =
@@ -141,7 +140,12 @@ module Config = struct
                 let p = Path.Outside_build_dir.relative config_dir p in
                 load p)
           in
-          List.fold_left all_vars ~init:vars ~f:Vars.superpose
+          List.fold_left all_vars ~init:vars ~f:(fun acc vars ->
+              Vars.union acc vars ~f:(fun _ (x : Rules.t) y ->
+                  Some
+                    { Rules.set_rules = x.set_rules @ y.set_rules
+                    ; add_rules = x.add_rules @ y.add_rules
+                    }))
         | Error _ -> Memo.return vars)
       | Ok false | Error _ -> Memo.return vars
     in
