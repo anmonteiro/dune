@@ -303,7 +303,7 @@ module Build_environment_kind = struct
     | ( Some ocamlfind
       , ( Cross_compilation_using_findlib_toolchain _
         | Opam2_environment _
-        | Unknown ) ) -> Ocamlfind.conf_path ocamlfind
+        | Unknown ) ) -> Findlib.Config.path ocamlfind
     | None, Cross_compilation_using_findlib_toolchain toolchain ->
       User_error.raise
         [ Pp.textf
@@ -367,9 +367,9 @@ let create ~(kind : Kind.t) ~path ~env ~env_nodes ~name ~merlin ~targets
     ~host_context ~host_toolchain ~profile ~fdo_target_exe
     ~dynamically_linked_foreign_archives ~instrument_with =
   let which = Program.which ~path in
-  let env_ocamlpath = Ocamlfind.ocamlpath env in
+  let env_ocamlpath = Findlib.Config.ocamlpath env in
   let ocamlpath =
-    let initial_ocamlpath = Ocamlfind.ocamlpath Env.initial in
+    let initial_ocamlpath = Findlib.Config.ocamlpath Env.initial in
     match (env_ocamlpath, initial_ocamlpath) with
     | [], [] -> []
     | _ :: _, [] -> env_ocamlpath
@@ -390,10 +390,10 @@ let create ~(kind : Kind.t) ~path ~env ~env_nodes ~name ~merlin ~targets
       | _, _ -> ocamlpath
     in
     let* ocamlfind =
-      Ocamlfind.discover_from_env ~env ~which ~ocamlpath ~findlib_toolchain
+      Findlib.Config.discover_from_env ~env ~which ~ocamlpath ~findlib_toolchain
     in
     let get_tool_using_findlib_config prog =
-      Memo.Option.bind ocamlfind ~f:(Ocamlfind.tool ~prog)
+      Memo.Option.bind ocamlfind ~f:(Findlib.Config.tool ~prog)
     in
     let* ocamlc =
       let ocamlc = "ocamlc" in
@@ -491,17 +491,17 @@ let create ~(kind : Kind.t) ~path ~env ~env_nodes ~name ~merlin ~targets
             (Path.Build.relative
                (Local_install_path.dir ~context:name)
                "lib/stublibs")
-        ; extend_var "OCAMLPATH" ~path_sep:Ocamlfind.ocamlpath_sep
+        ; extend_var "OCAMLPATH" ~path_sep:Findlib.Config.ocamlpath_sep
             local_lib_root
         ; ("DUNE_OCAML_STDLIB", Ocaml_config.standard_library ocfg)
         ; ( "DUNE_OCAML_HARDCODED"
           , String.concat
-              ~sep:(Char.escaped Ocamlfind.ocamlpath_sep)
+              ~sep:(Char.escaped Findlib.Config.ocamlpath_sep)
               (List.map ~f:Path.to_string default_ocamlpath) )
         ; extend_var "OCAMLTOP_INCLUDE_PATH"
             (Path.Build.relative local_lib_root "toplevel")
         ; extend_var "OCAMLFIND_IGNORE_DUPS_IN"
-            ~path_sep:Ocamlfind.ocamlpath_sep local_lib_root
+            ~path_sep:Findlib.Config.ocamlpath_sep local_lib_root
         ; extend_var "MANPATH" (Local_install_path.man_dir ~context:name)
         ; ("INSIDE_DUNE", Path.to_absolute_filename (Path.build build_dir))
         ; ( "DUNE_SOURCEROOT"
@@ -519,7 +519,7 @@ let create ~(kind : Kind.t) ~path ~env ~env_nodes ~name ~merlin ~targets
              | Some host -> Env.get host.env "PATH")
       |> Env.extend_env
            (Option.value ~default:Env.empty
-              (Option.map ocamlfind ~f:Ocamlfind.extra_env))
+              (Option.map ocamlfind ~f:Findlib.Config.extra_env))
       |> Env.extend_env (Env_nodes.extra_env ~profile env_nodes)
     in
     let natdynlink_supported = Ocaml_config.natdynlink_supported ocfg in

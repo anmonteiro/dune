@@ -111,57 +111,156 @@ module Vars = struct
 end
 
 module Config = struct
+  module File = struct
+    type t =
+      { vars : Vars.t
+      ; preds : Ps.t
+      }
+
+    let to_dyn { vars; preds } =
+      let open Dyn in
+      record
+        [ ("vars", String.Map.to_dyn Rules.to_dyn vars)
+        ; ("preds", Ps.to_dyn preds)
+        ]
+
+    let load config_file =
+      let load p =
+        let+ meta = Meta.load ~name:None p in
+        meta.vars |> String.Map.map ~f:Rules.of_meta_rules
+      in
+      let+ vars =
+        let* vars =
+          Fs_memo.file_exists config_file >>= function
+          | true -> load config_file
+          | false -> Memo.return Vars.empty
+        in
+        let config_dir =
+          Path.Outside_build_dir.extend_basename config_file ~suffix:".d"
+        in
+        Fs_memo.is_directory config_dir >>= function
+        | Ok true -> (
+          Fs_memo.dir_contents config_dir >>= function
+          | Ok dir_contents ->
+            let+ all_vars =
+              Memo.parallel_map (Fs_cache.Dir_contents.to_list dir_contents)
+                ~f:(fun (p, _kind) ->
+                  let p = Path.Outside_build_dir.relative config_dir p in
+                  load p)
+            in
+            List.fold_left all_vars ~init:vars ~f:(fun acc vars ->
+                Vars.union acc vars ~f:(fun _ x y -> Some (Rules.union x y)))
+          | Error _ -> Memo.return vars)
+        | Ok false | Error _ -> Memo.return vars
+      in
+      { vars; preds = Ps.empty }
+
+    let get { vars; preds } var = Vars.get vars var preds
+
+    let toolchain t ~toolchain =
+      { t with preds = Ps.singleton (P.make toolchain) }
+  end
+
   type t =
-    { vars : Vars.t
-    ; preds : Ps.t
+    { config : File.t
+    ; ocamlpath : Path.t list
+    ; which : string -> Path.t option Memo.t
+    ; toolchain : string option
     }
 
-  let to_dyn { vars; preds } =
+  let to_dyn { config; ocamlpath; toolchain; which = _ } =
     let open Dyn in
     record
-      [ ("vars", String.Map.to_dyn Rules.to_dyn vars)
-      ; ("preds", Ps.to_dyn preds)
+      [ ("config", File.to_dyn config)
+      ; ("ocamlpath", Dyn.list Path.to_dyn ocamlpath)
+      ; ("toolchain", option string toolchain)
       ]
 
-  let load config_file =
-    let load p =
-      let+ meta = Meta.load ~name:None p in
-      meta.vars |> String.Map.map ~f:Rules.of_meta_rules
+  let ocamlpath_sep =
+    if Sys.cygwin then (* because that's what ocamlfind expects *)
+      ';'
+    else Bin.path_sep
+
+  let path_var = Bin.parse_path ~sep:ocamlpath_sep
+
+  let ocamlpath env =
+    match Env.get env "OCAMLPATH" with
+    | None -> []
+    | Some s -> path_var s
+
+  let set_toolchain t ~toolchain =
+    match t.toolchain with
+    | None ->
+      { t with
+        config = File.toolchain t.config ~toolchain
+      ; toolchain = Some toolchain
+      }
+    | Some old_toolchain ->
+      Code_error.raise "Ocamlfind.set_toolchain: cannot set toolchain twice"
+        [ ("old_toolchain", Dyn.string old_toolchain)
+        ; ("toolchain", Dyn.string toolchain)
+        ]
+
+  let path t =
+    match File.get t.config "path" with
+    | None -> t.ocamlpath
+    | Some p -> t.ocamlpath @ path_var p
+
+  let tool t ~prog =
+    match File.get t.config prog with
+    | None -> Memo.return None
+    | Some s -> (
+      match Filename.analyze_program_name s with
+      | In_path -> t.which s
+      | Relative_to_current_dir ->
+        User_error.raise
+          [ Pp.textf
+              "The effective Findlib configuration specifies the relative path \
+               %S for the program %S. This is currently not supported."
+              s prog
+          ]
+      | Absolute ->
+        Memo.return (Some (Path.of_filename_relative_to_initial_cwd s)))
+
+  let ocamlfind_config_path ~env ~which ~findlib_toolchain =
+    let open Memo.O in
+    let+ path =
+      match Env.get env "OCAMLFIND_CONF" with
+      | Some s -> Memo.return (Some s)
+      | None -> (
+        match findlib_toolchain with
+        | None -> Memo.return None
+        | Some _ -> (
+          which "ocamlfind" >>= function
+          | None -> Memo.return None
+          | Some fn ->
+            Memo.of_reproducible_fiber
+              (Process.run_capture_line ~display:Quiet ~env Strict fn
+                 [ "printconf"; "conf" ])
+            |> Memo.map ~f:Option.some))
     in
-    let+ vars =
-      let* vars =
-        Fs_memo.file_exists config_file >>= function
-        | true -> load config_file
-        | false -> Memo.return Vars.empty
-      in
-      let config_dir =
-        Path.Outside_build_dir.extend_basename config_file ~suffix:".d"
-      in
-      Fs_memo.is_directory config_dir >>= function
-      | Ok true -> (
-        Fs_memo.dir_contents config_dir >>= function
-        | Ok dir_contents ->
-          let+ all_vars =
-            Memo.parallel_map (Fs_cache.Dir_contents.to_list dir_contents)
-              ~f:(fun (p, _kind) ->
-                let p = Path.Outside_build_dir.relative config_dir p in
-                load p)
-          in
-          List.fold_left all_vars ~init:vars ~f:(fun acc vars ->
-              Vars.union acc vars ~f:(fun _ x y -> Some (Rules.union x y)))
-        | Error _ -> Memo.return vars)
-      | Ok false | Error _ -> Memo.return vars
-    in
-    { vars; preds = Ps.empty }
+    (* From http://projects.camlcity.org/projects/dl/findlib-1.9.6/doc/ref-html/r865.html
+       This variable overrides the location of the configuration file
+       findlib.conf. It must contain the absolute path name of this file. *)
+    Option.map path ~f:Path.External.of_string
 
-  let get { vars; preds } var = Vars.get vars var preds
+  let discover_from_env ~env ~which ~ocamlpath ~findlib_toolchain =
+    let open Memo.O in
+    ocamlfind_config_path ~env ~which ~findlib_toolchain >>= function
+    | None -> Memo.return None
+    | Some config ->
+      let+ config = File.load (External config) in
+      let base = { config; ocamlpath; which; toolchain = None } in
+      Some
+        (match findlib_toolchain with
+        | None -> base
+        | Some toolchain ->
+          let toolchain = Context_name.to_string toolchain in
+          set_toolchain base ~toolchain)
 
-  let toolchain t ~toolchain =
-    { t with preds = Ps.singleton (P.make toolchain) }
-
-  let env t =
-    let preds = Ps.add t.preds (P.make "env") in
-    String.Map.filter_map ~f:(Rules.interpret ~preds) t.vars
+  let extra_env t =
+    let preds = Ps.add t.config.preds (P.make "env") in
+    String.Map.filter_map ~f:(Rules.interpret ~preds) t.config.vars
     |> Env.of_string_map
 end
 
