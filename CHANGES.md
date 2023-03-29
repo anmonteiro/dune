@@ -1,6 +1,9 @@
 Unreleased
 ----------
 
+- Load the host context `findlib.conf` when cross-compiling (#7428, fixes
+  #1701, @rgrinberg, @anmonteiro)
+
 - Preliminary support for Coq compiled intefaces (`.vos` files) enabled via
   `(mode vos)` in `coq.theory` stanzas. This can be used in combination with
   `dune coq top` to obtain fast re-building of dependencies (with no checking
