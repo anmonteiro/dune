@@ -298,17 +298,27 @@ module Build_environment_kind = struct
           | Some s -> Opam2_environment s
           | None -> Unknown)))
 
-  let findlib_paths ocamlfind ~kind ~context ~findlib_toolchain ~env ~dir =
+  let findlib_paths ocamlfind ~kind ~findlib_toolchain ~env ~dir =
     match (ocamlfind, query ~kind ~findlib_toolchain ~env) with
     | ( Some ocamlfind
       , ( Cross_compilation_using_findlib_toolchain _
         | Opam2_environment _
         | Unknown ) ) -> Ocamlfind.conf_path ocamlfind
-    | None, Cross_compilation_using_findlib_toolchain _toolchain ->
-      Code_error.raise
-        "Could not find ocamlfind in PATH or an environment variable \
-         OCAMLFIND_CONF"
-        [ ("context", Context_name.to_dyn context) ]
+    | None, Cross_compilation_using_findlib_toolchain toolchain ->
+      User_error.raise
+        [ Pp.textf
+            "Could not find ocamlfind in PATH or an environment variable \
+             `OCAMLFIND_CONF' while cross-compiling with toolchain `%s'"
+            (Context_name.to_string toolchain)
+        ]
+        ~hints:
+          [ Pp.enumerate
+              [ "`opam install ocamlfind' and/or:"
+              ; "Point `OCAMLFIND_CONF' to the findlib configuration that \
+                 defines this toolchain"
+              ]
+              ~f:Pp.text
+          ]
     | _, Hardcoded_path l ->
       List.map l ~f:Path.of_filename_relative_to_initial_cwd
     | None, Opam2_environment opam_prefix ->
@@ -413,7 +423,7 @@ let create ~(kind : Kind.t) ~path ~env ~env_nodes ~name ~merlin ~targets
     in
     let build_dir = Context_name.build_dir name in
     let default_ocamlpath =
-      Build_environment_kind.findlib_paths ocamlfind ~kind ~context:name ~env
+      Build_environment_kind.findlib_paths ocamlfind ~kind ~env
         ~findlib_toolchain ~dir
     in
     let ocaml_config_ok_exn = function
