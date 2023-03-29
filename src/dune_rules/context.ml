@@ -307,7 +307,7 @@ module Build_environment_kind = struct
     | None, Cross_compilation_using_findlib_toolchain toolchain ->
       User_error.raise
         [ Pp.textf
-            "Could not find findlib in PATH or an environment variable \
+            "Could not find `ocamlfind' in PATH or an environment variable \
              `OCAMLFIND_CONF' while cross-compiling with toolchain `%s'"
             (Context_name.to_string toolchain)
         ]
