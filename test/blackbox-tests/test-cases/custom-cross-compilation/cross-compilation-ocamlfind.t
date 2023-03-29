@@ -5,10 +5,22 @@ in the default findlib.conf
   $ export OCAMLFIND_CONF=$PWD/etc/findlib.conf
   $ cat >etc/findlib.conf <<EOF
   > path="$PWD/prefix/lib"
+  > ocamldep="$PWD/notocamldep"
   > EOF
   $ cat >etc/findlib.conf.d/foo.conf <<EOF
   > path(foo)=""
+  > ocamldep(foo)="$PWD/notocamldep-foo"
   > EOF
+
+  $ cat >notocamldep <<EOF
+  > #!/usr/bin/env sh
+  > ocamldep "\$@"
+  > EOF
+  $ cat >notocamldep-foo <<EOF
+  > #!/usr/bin/env sh
+  > ocamldep "\$@"
+  > EOF
+  $ chmod +x notocamldep notocamldep-foo
 
   $ mkdir lib
   $ cat > lib/dune-project <<EOF
@@ -61,7 +73,7 @@ ocamlfind can find it
 
 Dune should be able to find it too
 
-  $ dune build --root=app @install -x foo
+  $ dune build --root=app @install -x foo --verbose 2>&1 | grep notocamldep-foo
   Entering directory 'app'
   Leaving directory 'app'
 
