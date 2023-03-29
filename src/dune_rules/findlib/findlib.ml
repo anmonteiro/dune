@@ -74,16 +74,23 @@ module Rules = struct
           Some (Option.value ~default:"" v ^ " " ^ rule.value)
         else v)
 
+  let sort =
+    let compare a b =
+      Int.compare
+        (Rule.formal_predicates_count b)
+        (Rule.formal_predicates_count a)
+    in
+    fun r -> List.stable_sort r ~compare
+
   let of_meta_rules (rules : Meta.Simplified.Rules.t) =
     let add_rules = List.map rules.add_rules ~f:Rule.make in
-    let set_rules =
-      List.map rules.set_rules ~f:Rule.make
-      |> List.stable_sort ~compare:(fun a b ->
-             Int.compare
-               (Rule.formal_predicates_count b)
-               (Rule.formal_predicates_count a))
-    in
+    let set_rules = List.map rules.set_rules ~f:Rule.make |> sort in
     { add_rules; set_rules }
+
+  let union a b =
+    { set_rules = a.set_rules @ b.set_rules |> sort
+    ; add_rules = a.add_rules @ b.add_rules
+    }
 end
 
 module Vars = struct
@@ -141,11 +148,7 @@ module Config = struct
                 load p)
           in
           List.fold_left all_vars ~init:vars ~f:(fun acc vars ->
-              Vars.union acc vars ~f:(fun _ (x : Rules.t) y ->
-                  Some
-                    { Rules.set_rules = x.set_rules @ y.set_rules
-                    ; add_rules = x.add_rules @ y.add_rules
-                    }))
+              Vars.union acc vars ~f:(fun _ x y -> Some (Rules.union x y)))
         | Error _ -> Memo.return vars)
       | Ok false | Error _ -> Memo.return vars
     in
