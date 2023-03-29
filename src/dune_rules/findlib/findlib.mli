@@ -51,14 +51,6 @@ module Config : sig
 
   val to_dyn : t -> Dyn.t
 
-  (* val load : Path.Outside_build_dir.t -> t Memo.t *)
-
-  (* val get : t -> string -> string option *)
-
-  (* val toolchain : t -> toolchain:string -> t *)
-
-  (* val env : t -> Env.t *)
-
   val path : t -> Path.t list
 
   val tool : t -> prog:string -> Path.t option Memo.t

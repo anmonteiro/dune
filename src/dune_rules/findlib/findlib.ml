@@ -196,7 +196,8 @@ module Config = struct
       ; toolchain = Some toolchain
       }
     | Some old_toolchain ->
-      Code_error.raise "Ocamlfind.set_toolchain: cannot set toolchain twice"
+      Code_error.raise
+        "Findlib.Config.set_toolchain: cannot set toolchain twice"
         [ ("old_toolchain", Dyn.string old_toolchain)
         ; ("toolchain", Dyn.string toolchain)
         ]

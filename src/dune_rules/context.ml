@@ -298,16 +298,16 @@ module Build_environment_kind = struct
           | Some s -> Opam2_environment s
           | None -> Unknown)))
 
-  let findlib_paths ocamlfind ~kind ~findlib_toolchain ~env ~dir =
-    match (ocamlfind, query ~kind ~findlib_toolchain ~env) with
-    | ( Some ocamlfind
+  let findlib_paths findlib ~kind ~findlib_toolchain ~env ~dir =
+    match (findlib, query ~kind ~findlib_toolchain ~env) with
+    | ( Some findlib
       , ( Cross_compilation_using_findlib_toolchain _
         | Opam2_environment _
-        | Unknown ) ) -> Findlib.Config.path ocamlfind
+        | Unknown ) ) -> Findlib.Config.path findlib
     | None, Cross_compilation_using_findlib_toolchain toolchain ->
       User_error.raise
         [ Pp.textf
-            "Could not find ocamlfind in PATH or an environment variable \
+            "Could not find findlib in PATH or an environment variable \
              `OCAMLFIND_CONF' while cross-compiling with toolchain `%s'"
             (Context_name.to_string toolchain)
         ]
@@ -389,11 +389,11 @@ let create ~(kind : Kind.t) ~path ~env ~env_nodes ~name ~merlin ~targets
       | Default, None -> env_ocamlpath
       | _, _ -> ocamlpath
     in
-    let* ocamlfind =
+    let* findlib =
       Findlib.Config.discover_from_env ~env ~which ~ocamlpath ~findlib_toolchain
     in
     let get_tool_using_findlib_config prog =
-      Memo.Option.bind ocamlfind ~f:(Findlib.Config.tool ~prog)
+      Memo.Option.bind findlib ~f:(Findlib.Config.tool ~prog)
     in
     let* ocamlc =
       let ocamlc = "ocamlc" in
@@ -423,8 +423,8 @@ let create ~(kind : Kind.t) ~path ~env ~env_nodes ~name ~merlin ~targets
     in
     let build_dir = Context_name.build_dir name in
     let default_ocamlpath =
-      Build_environment_kind.findlib_paths ocamlfind ~kind ~env
-        ~findlib_toolchain ~dir
+      Build_environment_kind.findlib_paths findlib ~kind ~env ~findlib_toolchain
+        ~dir
     in
     let ocaml_config_ok_exn = function
       | Ok x -> x
@@ -519,7 +519,7 @@ let create ~(kind : Kind.t) ~path ~env ~env_nodes ~name ~merlin ~targets
              | Some host -> Env.get host.env "PATH")
       |> Env.extend_env
            (Option.value ~default:Env.empty
-              (Option.map ocamlfind ~f:Findlib.Config.extra_env))
+              (Option.map findlib ~f:Findlib.Config.extra_env))
       |> Env.extend_env (Env_nodes.extra_env ~profile env_nodes)
     in
     let natdynlink_supported = Ocaml_config.natdynlink_supported ocfg in
