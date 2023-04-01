@@ -368,26 +368,36 @@ let create ~(kind : Kind.t) ~path ~env ~env_nodes ~name ~merlin ~targets
     ~dynamically_linked_foreign_archives ~instrument_with =
   let which = Program.which ~path in
   let env_ocamlpath = Findlib.Config.ocamlpath env in
-  let ocamlpath =
-    let initial_ocamlpath = Findlib.Config.ocamlpath Env.initial in
-    match (env_ocamlpath, initial_ocamlpath) with
-    | [], [] -> []
-    | _ :: _, [] -> env_ocamlpath
-    | [], _ :: _ -> initial_ocamlpath
-    | _, _ -> (
-      match
-        List.compare ~compare:Path.compare env_ocamlpath initial_ocamlpath
-      with
-      | Eq -> []
-      | _ -> env_ocamlpath)
-  in
-
   let create_one ~(name : Context_name.t) ~implicit ~findlib_toolchain ~host
       ~merlin =
     let ocamlpath =
       match (kind, findlib_toolchain) with
-      | Default, None -> env_ocamlpath
-      | _, _ -> ocamlpath
+      | Default, None -> Option.value env_ocamlpath ~default:[]
+      | _, _ -> (
+        let initial_ocamlpath = Findlib.Config.ocamlpath Env.initial in
+        (* If we are not in the default context, we can only use the OCAMLPATH
+           variable if it is specific to this build context *)
+        (* CR-someday diml: maybe we should actually clear OCAMLPATH in other
+           build contexts *)
+        match (env_ocamlpath, initial_ocamlpath) with
+        | None, None -> []
+        | Some s, None ->
+          (* [OCAMLPATH] set for the target context, unset in the
+             [initial_env]. This means it's the [OCAMLPATH] specific to this
+             build context. *)
+          s
+        | None, Some _ ->
+          (* Clear [OCAMLPATH] for this build context if it's defined
+             initially but not for this build context. *)
+          []
+        | Some env_ocamlpath, Some initial_ocamlpath -> (
+          (* Clear [OCAMLPATH] for this build context Unless it's different
+             from the initial [OCAMLPATH] variable. *)
+          match
+            List.compare ~compare:Path.compare env_ocamlpath initial_ocamlpath
+          with
+          | Eq -> []
+          | _ -> env_ocamlpath))
     in
     let* findlib =
       Findlib.Config.discover_from_env ~env ~which ~ocamlpath ~findlib_toolchain

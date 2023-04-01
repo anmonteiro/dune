@@ -61,7 +61,7 @@ module Config : sig
   val ocamlpath_sep : char
 
   (** Read and parse the [OCAMLPATH] environment variable *)
-  val ocamlpath : Env.t -> Path.t list
+  val ocamlpath : Env.t -> Path.t list option
 
   val extra_env : t -> Env.t
 

@@ -183,10 +183,7 @@ module Config = struct
 
   let path_var = Bin.parse_path ~sep:ocamlpath_sep
 
-  let ocamlpath env =
-    match Env.get env "OCAMLPATH" with
-    | None -> []
-    | Some s -> path_var s
+  let ocamlpath env = Env.get env "OCAMLPATH" |> Option.map ~f:path_var
 
   let set_toolchain t ~toolchain =
     match t.toolchain with
