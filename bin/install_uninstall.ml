@@ -449,8 +449,6 @@ let cmd_what = function
 ;;
 
 let install_uninstall ~what =
-  Format.eprintf "PLEASE PRINT SOMETHING @.";
-  Format.printf "PLEASE PRINT SOMETHING22 @.";
   let doc = Format.asprintf "%a packages defined in the workspace." pp_what what in
   let name_ = Arg.info [] ~docv:"PACKAGE" in
   let absolute_path =
