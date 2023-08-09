@@ -449,6 +449,8 @@ let cmd_what = function
 ;;
 
 let install_uninstall ~what =
+  Format.eprintf "PLEASE PRINT SOMETHING @.";
+  Format.printf "PLEASE PRINT SOMETHING22 @.";
   let doc = Format.asprintf "%a packages defined in the workspace." pp_what what in
   let name_ = Arg.info [] ~docv:"PACKAGE" in
   let absolute_path =
@@ -747,6 +749,7 @@ let install_uninstall ~what =
                       | Some Special_file.META | Some Special_file.Dune_package ->
                         Fiber.return true
                     in
+                    print_line ~verbosity "INSTALL PHASE %s@." (Path.to_string dst);
                     let msg =
                       if create_install_files then "Copying to" else "Installing"
                     in

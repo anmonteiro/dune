@@ -618,6 +618,7 @@ let run_sign_hook conf ~has_subst file =
   match has_subst with
   | No_substitution -> Fiber.return ()
   | Some_substitution ->
+    Format.eprintf "sign me:  %s@." (Path.to_string file);
     (match Lazy.force conf.sign_hook with
      | Some hook -> hook file
      | None -> Fiber.return ())
@@ -664,6 +665,7 @@ let copy_file ~conf ?chmod ?(delete_dst_if_it_is_a_directory = false) ~src ~dst 
       let open Fiber.O in
       Path.parent dst |> Option.iter ~f:Path.mkdir_p;
       let* has_subst = copy_file_non_atomic ~conf ?chmod ~src ~dst:temp_file () in
+      if has_subst = Some_substitution then Format.eprintf "WAT %s@." (Path.to_string dst);
       let+ () = run_sign_hook conf ~has_subst temp_file in
       replace_if_different ~delete_dst_if_it_is_a_directory ~src:temp_file ~dst)
     ~finally:(fun () ->
