@@ -352,7 +352,6 @@ module T = struct
     { info : Lib_info.external_
     ; name : Lib_name.t
     ; unique_id : Id.t
-    ; sentinel : Lib_info.Sentinel.t
     ; re_exports : t list Resolve.t
     ; (* [requires] is contains all required libraries, including the ones
          mentioned in [re_exports]. *)
@@ -432,11 +431,11 @@ end
 
 type db =
   { parent : db option
-  ; resolve_name : Lib_name.t -> resolve_result_with_multiple_results Memo.t
-  ; resolve_sentinel : Lib_info.Sentinel.t -> resolve_result Memo.t
+  ; resolve : Lib_name.t -> resolve_result_with_multiple_results Memo.t
+  ; resolve_library_id : Lib_info.Library_id.t -> resolve_result Memo.t
   ; instantiate :
       (Lib_name.t -> Path.t Lib_info.t -> hidden:string option -> Status.t Memo.t) Lazy.t
-  ; all : Lib_info.Sentinel.t list Memo.Lazy.t
+  ; all : Lib_info.Library_id.t list Memo.Lazy.t
   ; lib_config : Lib_config.t
   ; instrument_with : Lib_name.t list
   }
@@ -448,15 +447,14 @@ and resolve_result =
   | Invalid of User_message.t
   | Ignore
   | Redirect_in_the_same_db of (Loc.t * Lib_name.t)
-  | Redirect of db * Lib_info.Sentinel.t
+  | Redirect of db * Lib_info.Library_id.t
 
 and resolve_result_with_multiple_results =
   | Resolve_result of resolve_result
-  | Multiple_results of resolve_result list
+  | Multiple_results of resolve_result Nonempty_list.t
 
 let lib_config (t : lib) = t.lib_config
 let name t = t.name
-let sentinel t = t.sentinel
 let info t = t.info
 let project t = t.project
 let implements t = Option.map ~f:Memo.return t.implements
@@ -858,9 +856,9 @@ module rec Resolve_names : sig
     -> private_deps:private_deps
     -> lib Resolve.t option Memo.t
 
-  val resolve_sentinel : db -> Lib_info.Sentinel.t -> Status.t Memo.t
-  val available_internal : db -> Lib_info.Sentinel.t -> bool Memo.t
-  val available_by_name_internal : db -> Lib_name.t -> bool Memo.t
+  val resolve_library_id : db -> Lib_info.Library_id.t -> Status.t Memo.t
+  val available_internal : db -> Lib_name.t -> bool Memo.t
+  val available_by_library_id_internal : db -> Lib_info.Library_id.t -> bool Memo.t
 
   val resolve_simple_deps
     :  db
@@ -1071,7 +1069,6 @@ end = struct
         let* package = Lib_info.package info in
         Package.Name.Map.find projects_by_package package
     in
-    let sentinel = Lib_info.sentinel info in
     let rec t =
       lazy
         (let open Resolve.O in
@@ -1081,7 +1078,6 @@ end = struct
          { info
          ; name
          ; unique_id
-         ; sentinel
          ; requires
          ; ppx_runtime_deps
          ; pps
@@ -1130,9 +1126,10 @@ end = struct
     type t = Lib_name.t * Path.t Lib_info.t * string option
 
     let equal (lib_name, info, _) (lib_name', info', _) =
-      let sentinel = Lib_info.sentinel info
-      and sentinel' = Lib_info.sentinel info' in
-      Lib_name.equal lib_name lib_name' && Lib_info.Sentinel.equal sentinel sentinel'
+      let library_id = Lib_info.library_id info
+      and library_id' = Lib_info.library_id info' in
+      Lib_name.equal lib_name lib_name'
+      && Lib_info.Library_id.equal library_id library_id'
     ;;
 
     let hash (x, _, _) = Lib_name.hash x
@@ -1172,8 +1169,8 @@ end = struct
     (match db.parent with
      | None -> Memo.return Status.Not_found
      | Some db ->
-       let sentinel = Lib_info.sentinel info in
-       resolve_sentinel db sentinel)
+       let library_id = Lib_info.library_id info in
+       resolve_library_id db library_id)
     >>= function
     | Status.Found _ as x -> Memo.return x
     | _ ->
@@ -1184,7 +1181,7 @@ end = struct
   let handle_resolve_result db ~super = function
     | Ignore -> Memo.return Status.Ignore
     | Redirect_in_the_same_db (_, name') -> find_internal db name'
-    | Redirect (db', sentinel') -> resolve_sentinel db' sentinel'
+    | Redirect (db', library_id') -> resolve_library_id db' library_id'
     | Found info ->
       let name = Lib_info.name info in
       instantiate db name info ~hidden:None
@@ -1201,10 +1198,11 @@ end = struct
     | Multiple_results candidates ->
       let open Memo.O in
       let+ libs =
-        Memo.List.filter_map candidates ~f:(function
+        Memo.List.filter_map (Nonempty_list.to_list candidates) ~f:(function
           | Ignore -> Memo.return (Some Status.Ignore)
           | Redirect_in_the_same_db (_, name') -> find_internal db name' >>| Option.some
-          | Redirect (db', sentinel') -> resolve_sentinel db' sentinel' >>| Option.some
+          | Redirect (db', library_id') ->
+            resolve_library_id db' library_id' >>| Option.some
           | Found info ->
             Lib_info.enabled info
             >>= (function
@@ -1218,13 +1216,15 @@ end = struct
             resolve_hidden db ~info hidden >>| Option.some)
       in
       (match libs with
-       | [] -> assert false
+       | [] -> Status.Not_found
        | [ status ] -> status
        | _ :: _ :: _ ->
          List.fold_left libs ~init:Status.Not_found ~f:(fun acc status ->
            match acc, status with
            | Status.Found a, Status.Found b ->
-             (match Lib_info.Sentinel.equal a.sentinel b.sentinel with
+             let library_id_a = Lib_info.library_id a.info
+             and library_id_b = Lib_info.library_id b.info in
+             (match Lib_info.Library_id.equal library_id_a library_id_b with
               | true -> acc
               | false ->
                 let a = info a
@@ -1233,11 +1233,11 @@ end = struct
                 and dir_a = Lib_info.best_src_dir a
                 and dir_b = Lib_info.best_src_dir b
                 and name_a =
-                  let sentinel = Lib_info.sentinel a in
-                  Lib_info.Sentinel.name sentinel
+                  let library_id = Lib_info.library_id a in
+                  Lib_info.Library_id.name library_id
                 and name_b =
-                  let sentinel = Lib_info.sentinel b in
-                  Lib_info.Sentinel.name sentinel
+                  let library_id = Lib_info.library_id b in
+                  Lib_info.Library_id.name library_id
                 in
                 Status.Invalid (Error.duplicated ~loc ~name_a ~name_b ~dir_a ~dir_b))
            | Invalid _, _ -> acc
@@ -1250,7 +1250,7 @@ end = struct
   let find_internal db (name : Lib_name.t) =
     let open Memo.O in
     let super db = find_internal db name in
-    db.resolve_name name >>= handle_resolve_result_with_multiple_results ~super db
+    db.resolve name >>= handle_resolve_result_with_multiple_results ~super db
   ;;
 
   let resolve_dep db (loc, name) ~private_deps : t Resolve.t option Memo.t =
@@ -1265,13 +1265,13 @@ end = struct
     | Hidden h -> Hidden.error h ~loc ~name >>| Option.some
   ;;
 
-  let resolve_sentinel db sentinel =
+  let resolve_library_id db library_id =
     let open Memo.O in
-    let super db = resolve_sentinel db sentinel in
-    db.resolve_sentinel sentinel >>= handle_resolve_result ~super db
+    let super db = resolve_library_id db library_id in
+    db.resolve_library_id library_id >>= handle_resolve_result ~super db
   ;;
 
-  let available_by_name_internal db (name : Lib_name.t) =
+  let available_internal db (name : Lib_name.t) =
     let open Memo.O in
     find_internal db name
     >>| function
@@ -1279,9 +1279,9 @@ end = struct
     | Not_found | Invalid _ | Hidden _ -> false
   ;;
 
-  let available_internal db (sentinel : Lib_info.Sentinel.t) =
+  let available_by_library_id_internal db (library_id : Lib_info.Library_id.t) =
     let open Memo.O in
-    resolve_sentinel db sentinel
+    resolve_library_id db library_id
     >>| function
     | Ignore | Found _ -> true
     | Not_found | Invalid _ | Hidden _ -> false
@@ -1406,7 +1406,7 @@ end = struct
       let+ select =
         Memo.List.find_map choices ~f:(fun { required; forbidden; file } ->
           Lib_name.Set.to_list forbidden
-          |> Memo.List.exists ~f:(available_by_name_internal db)
+          |> Memo.List.exists ~f:(available_internal db)
           >>= function
           | true -> Memo.return None
           | false ->
@@ -1906,7 +1906,7 @@ module DB = struct
       | Invalid of User_message.t
       | Ignore
       | Redirect_in_the_same_db of (Loc.t * Lib_name.t)
-      | Redirect of db * Lib_info.Sentinel.t
+      | Redirect of db * Lib_info.Library_id.t
 
     let found f = Found f
     let not_found = Not_found
@@ -1921,25 +1921,16 @@ module DB = struct
       | Found lib -> variant "Found" [ Lib_info.to_dyn Path.to_dyn lib ]
       | Hidden h -> variant "Hidden" [ Hidden.to_dyn (Lib_info.to_dyn Path.to_dyn) h ]
       | Ignore -> variant "Ignore" []
-      | Redirect (_, sentinel) -> variant "Redirect" [ Lib_info.Sentinel.to_dyn sentinel ]
+      | Redirect (_, library_id) ->
+        variant "Redirect" [ Lib_info.Library_id.to_dyn library_id ]
       | Redirect_in_the_same_db (_, name) ->
         variant "Redirect_in_the_same_db" [ Lib_name.to_dyn name ]
     ;;
 
-    module With_multiple_results : sig
-      type resolve_result := t
-
+    module With_multiple_results = struct
       type t = resolve_result_with_multiple_results =
         | Resolve_result of resolve_result
-        | Multiple_results of resolve_result list
-
-      val to_dyn : t Dyn.builder
-      val resolve_result : resolve_result -> t
-      val multiple_results : resolve_result list -> t
-    end = struct
-      type t = resolve_result_with_multiple_results =
-        | Resolve_result of resolve_result
-        | Multiple_results of resolve_result list
+        | Multiple_results of resolve_result Nonempty_list.t
 
       let resolve_result r = Resolve_result r
       let multiple_results libs : t = Multiple_results libs
@@ -1948,19 +1939,20 @@ module DB = struct
         let open Dyn in
         match t with
         | Resolve_result r -> variant "Resolve_result" [ to_dyn r ]
-        | Multiple_results xs -> variant "Multiple_results" [ (Dyn.list to_dyn) xs ]
+        | Multiple_results xs ->
+          variant "Multiple_results" [ Dyn.list to_dyn (Nonempty_list.to_list xs) ]
       ;;
     end
   end
 
   type t = db
 
-  let create ~parent ~resolve_name ~resolve_sentinel ~all ~lib_config ~instrument_with () =
+  let create ~parent ~resolve ~resolve_library_id ~all ~lib_config ~instrument_with () =
     let rec t =
       lazy
         { parent
-        ; resolve_name
-        ; resolve_sentinel
+        ; resolve
+        ; resolve_library_id
         ; all = Memo.lazy_ all
         ; lib_config
         ; instrument_with
@@ -1973,12 +1965,12 @@ module DB = struct
   let create_from_findlib =
     let bigarray = Lib_name.of_string "bigarray" in
     fun findlib ~has_bigarray_library ~lib_config ->
-      let resolve_name name =
+      let resolve name =
         let open Memo.O in
         Findlib.find findlib name
         >>| function
         | Ok (Library pkg) -> Resolve_result (Found (Dune_package.Lib.info pkg))
-        | Ok (Deprecated_library_name (_, d)) ->
+        | Ok (Deprecated_library_name d) ->
           Resolve_result (Redirect_in_the_same_db (d.loc, d.new_public_name))
         | Ok (Hidden_library pkg) ->
           Resolve_result (Hidden (Hidden.unsatisfied_exist_if pkg))
@@ -1999,17 +1991,17 @@ module DB = struct
         ()
         ~parent:None
         ~lib_config
-        ~resolve_name
-        ~resolve_sentinel:(fun sentinel ->
+        ~resolve
+        ~resolve_library_id:(fun library_id ->
           let open Memo.O in
-          let name = Lib_info.Sentinel.name sentinel in
-          resolve_name name
+          let name = Lib_info.Library_id.name library_id in
+          resolve name
           >>| function
           | Multiple_results _ -> assert false
           | Resolve_result r -> r)
         ~all:(fun () ->
           let open Memo.O in
-          Findlib.all_packages findlib >>| List.map ~f:Dune_package.Entry.sentinel)
+          Findlib.all_packages findlib >>| List.map ~f:Dune_package.Entry.library_id)
   ;;
 
   let installed (context : Context.t) =
@@ -2031,9 +2023,9 @@ module DB = struct
     | Ignore | Not_found | Invalid _ | Hidden _ -> None
   ;;
 
-  let find_sentinel t sentinel =
+  let find_library_id t library_id =
     let open Memo.O in
-    Resolve_names.resolve_sentinel t sentinel
+    Resolve_names.resolve_library_id t library_id
     >>| function
     | Found t -> Some t
     | Ignore | Not_found | Invalid _ | Hidden _ -> None
@@ -2047,9 +2039,9 @@ module DB = struct
     | Ignore | Invalid _ | Not_found -> None
   ;;
 
-  let find_sentinel_even_when_hidden t sentinel =
+  let find_library_id_even_when_hidden t library_id =
     let open Memo.O in
-    Resolve_names.resolve_sentinel t sentinel
+    Resolve_names.resolve_library_id t library_id
     >>| function
     | Found t | Hidden { lib = t; reason = _; path = _ } -> Some t
     | Ignore | Invalid _ | Not_found -> None
@@ -2075,18 +2067,21 @@ module DB = struct
     | Some k -> Memo.return k
   ;;
 
-  let available_by_name t name = Resolve_names.available_by_name_internal t name
-  let available t sentinel = Resolve_names.available_internal t sentinel
+  let available t name = Resolve_names.available_internal t name
 
-  let get_compile_info t ~allow_overlaps sentinel =
+  let available_by_library_id t library_id =
+    Resolve_names.available_by_library_id_internal t library_id
+  ;;
+
+  let get_compile_info t ~allow_overlaps library_id =
     let open Memo.O in
-    find_sentinel_even_when_hidden t sentinel
+    find_library_id_even_when_hidden t library_id
     >>| function
     | Some lib -> lib, Compile.for_lib ~allow_overlaps t lib
     | None ->
       Code_error.raise
         "Lib.DB.get_compile_info got library that doesn't exist"
-        [ "sentinel", Lib_info.Sentinel.to_dyn sentinel ]
+        [ "library_id", Lib_info.Library_id.to_dyn library_id ]
   ;;
 
   let resolve_user_written_deps
@@ -2180,7 +2175,7 @@ module DB = struct
     let open Memo.O in
     let* l =
       Memo.Lazy.force t.all
-      >>= Memo.parallel_map ~f:(find_sentinel t)
+      >>= Memo.parallel_map ~f:(find_library_id t)
       >>| List.filter_opt
       >>| Set.of_list
     in

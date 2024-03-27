@@ -87,7 +87,7 @@ module Main_module_name : sig
 end
 
 (** What's the subset of fields that uniquely identifies this stanza? *)
-module Sentinel : sig
+module Library_id : sig
   type t
 
   module Map : Map.S with type key = t
@@ -95,7 +95,7 @@ module Sentinel : sig
 
   val equal : t -> t -> bool
   val make : loc:Loc.t -> src_dir:Path.Source.t -> enabled_if:Blang.t -> Lib_name.t -> t
-  val external_ : loc:Loc.t -> src_dir:Path.t -> enabled_if:Blang.t -> Lib_name.t -> t
+  val external_ : loc:Loc.t -> src_dir:Path.t -> Lib_name.t -> t
   val name : t -> Lib_name.t
   val loc : t -> Loc.t
   val to_dyn : t -> Dyn.t
@@ -104,7 +104,7 @@ end
 type 'path t
 
 val name : _ t -> Lib_name.t
-val sentinel : _ t -> Sentinel.t
+val library_id : _ t -> Library_id.t
 val loc : _ t -> Loc.t
 
 (** The [*.cma] and [*.cmxa] files for OCaml libraries. Libraries built by Dune
@@ -207,7 +207,7 @@ val create
   :  loc:Loc.t
   -> path_kind:'a path
   -> name:Lib_name.t
-  -> sentinel:Sentinel.t
+  -> library_id:Library_id.t
   -> kind:Lib_kind.t
   -> status:Status.t
   -> src_dir:'a

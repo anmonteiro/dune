@@ -11,7 +11,6 @@ val to_dyn : t -> Dyn.t
     or the [name] if not. *)
 val name : t -> Lib_name.t
 
-val sentinel : t -> Lib_info.Sentinel.t
 val lib_config : t -> Lib_config.t
 val implements : t -> t Resolve.Memo.t option
 
@@ -101,7 +100,7 @@ module DB : sig
     val not_found : t
     val found : Lib_info.external_ -> t
     val to_dyn : t Dyn.builder
-    val redirect : db -> Lib_info.Sentinel.t -> t
+    val redirect : db -> Lib_info.Library_id.t -> t
     val redirect_in_the_same_db : Loc.t * Lib_name.t -> t
 
     module With_multiple_results : sig
@@ -109,11 +108,11 @@ module DB : sig
 
       type t = private
         | Resolve_result of resolve_result
-        | Multiple_results of resolve_result list
+        | Multiple_results of resolve_result Nonempty_list.t
 
       val to_dyn : t Dyn.builder
       val resolve_result : resolve_result -> t
-      val multiple_results : resolve_result list -> t
+      val multiple_results : resolve_result Nonempty_list.t -> t
     end
   end
 
@@ -126,9 +125,9 @@ module DB : sig
       [all] returns the list of names of libraries available in this database. *)
   val create
     :  parent:t option
-    -> resolve_name:(Lib_name.t -> Resolve_result.With_multiple_results.t Memo.t)
-    -> resolve_sentinel:(Lib_info.Sentinel.t -> Resolve_result.t Memo.t)
-    -> all:(unit -> Lib_info.Sentinel.t list Memo.t)
+    -> resolve:(Lib_name.t -> Resolve_result.With_multiple_results.t Memo.t)
+    -> resolve_library_id:(Lib_info.Library_id.t -> Resolve_result.t Memo.t)
+    -> all:(unit -> Lib_info.Library_id.t list Memo.t)
     -> lib_config:Lib_config.t
     -> instrument_with:Lib_name.t list
     -> unit
@@ -136,17 +135,17 @@ module DB : sig
 
   val find : t -> Lib_name.t -> lib option Memo.t
   val find_even_when_hidden : t -> Lib_name.t -> lib option Memo.t
-  val find_sentinel : t -> Lib_info.Sentinel.t -> lib option Memo.t
-  val find_sentinel_even_when_hidden : t -> Lib_info.Sentinel.t -> lib option Memo.t
-  val available : t -> Lib_info.Sentinel.t -> bool Memo.t
-  val available_by_name : t -> Lib_name.t -> bool Memo.t
+  val find_library_id : t -> Lib_info.Library_id.t -> lib option Memo.t
+  val find_library_id_even_when_hidden : t -> Lib_info.Library_id.t -> lib option Memo.t
+  val available : t -> Lib_name.t -> bool Memo.t
+  val available_by_library_id : t -> Lib_info.Library_id.t -> bool Memo.t
 
   (** Retrieve the compile information for the given library. Works for
       libraries that are optional and not available as well. *)
   val get_compile_info
     :  t
     -> allow_overlaps:bool
-    -> Lib_info.Sentinel.t
+    -> Lib_info.Library_id.t
     -> (lib * Compile.t) Memo.t
 
   val resolve : t -> Loc.t * Lib_name.t -> lib Resolve.Memo.t

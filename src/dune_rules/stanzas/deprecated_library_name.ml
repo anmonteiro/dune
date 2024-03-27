@@ -48,10 +48,9 @@ let decode =
      { Library_redirect.loc; project; old_name; new_public_name })
 ;;
 
-let to_sentinel ~src_dir (t : t) =
-  let loc, name =
-    let lib, _ = t.old_name in
-    Public_lib.loc lib, Public_lib.name lib
+let to_library_id ~src_dir (t : t) =
+  let lib, _ = t.old_name in
+  let loc = Public_lib.loc lib
   and enabled_if = Blang.true_ in
-  Lib_info.Sentinel.make ~loc ~src_dir ~enabled_if name
+  Lib_info.Library_id.make ~loc ~src_dir ~enabled_if (Public_lib.name lib)
 ;;

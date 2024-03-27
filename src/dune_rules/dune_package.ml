@@ -228,9 +228,7 @@ module Lib = struct
        let entry_modules = Modules.entry_modules modules |> List.map ~f:Module.name in
        let info : Path.t Lib_info.t =
          let src_dir = Obj_dir.dir obj_dir in
-         let sentinel =
-           Lib_info.Sentinel.external_ ~loc ~src_dir ~enabled_if:Blang.true_ name
-         in
+         let library_id = Lib_info.Library_id.external_ ~loc ~src_dir name in
          let enabled = Memo.return Lib_info.Enabled_status.Normal in
          let status =
            match Lib_name.analyze name with
@@ -255,7 +253,7 @@ module Lib = struct
            ~path_kind:External
            ~loc
            ~name
-           ~sentinel
+           ~library_id
            ~kind
            ~status
            ~src_dir
@@ -362,12 +360,12 @@ end
 module Entry = struct
   type t =
     | Library of Lib.t
-    | Deprecated_library_name of Path.t * Deprecated_library_name.t
+    | Deprecated_library_name of Deprecated_library_name.t
     | Hidden_library of Lib.t
 
   let name = function
     | Library lib | Hidden_library lib -> Lib_info.name (Lib.info lib)
-    | Deprecated_library_name (_, d) -> d.old_public_name
+    | Deprecated_library_name d -> d.old_public_name
   ;;
 
   let version = function
@@ -377,13 +375,11 @@ module Entry = struct
 
   let loc = function
     | Library lib | Hidden_library lib -> Lib_info.loc (Lib.info lib)
-    | Deprecated_library_name (_, d) -> d.loc
+    | Deprecated_library_name d -> d.loc
   ;;
 
-  let sentinel = function
-    | Library lib | Hidden_library lib ->
-      let info = Lib.info lib in
-      Lib_info.sentinel info
+  let library_id = function
+    | Library lib | Hidden_library lib -> Lib_info.library_id (Lib.info lib)
     | Deprecated_library_name _ -> assert false
   ;;
 
@@ -394,7 +390,7 @@ module Entry = struct
         Library lib )
     ; ( "deprecated_library_name"
       , let+ x = Deprecated_library_name.decode in
-        Deprecated_library_name (dir, x) )
+        Deprecated_library_name x )
     ]
   ;;
 
@@ -402,7 +398,7 @@ module Entry = struct
     let open Dyn in
     match x with
     | Library lib -> variant "Library" [ Lib.to_dyn lib ]
-    | Deprecated_library_name (_, lib) ->
+    | Deprecated_library_name lib ->
       variant "Deprecated_library_name" [ Deprecated_library_name.to_dyn lib ]
     | Hidden_library lib -> variant "Hidden_library" [ Lib.to_dyn lib ]
   ;;
@@ -527,7 +523,7 @@ let encode ~dune_version { entries; name; version; dir; sections; sites; files }
       match e with
       | Entry.Library lib ->
         list (Dune_lang.atom "library" :: Lib.encode lib ~package_root:dir ~stublibs)
-      | Deprecated_library_name (_, d) ->
+      | Deprecated_library_name d ->
         list (Dune_lang.atom "deprecated_library_name" :: Deprecated_library_name.encode d)
       | Hidden_library lib ->
         Code_error.raise
