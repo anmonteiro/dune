@@ -98,6 +98,7 @@ type t =
   ; bin_annot : bool
   ; loc : Loc.t option
   ; ocaml : Ocaml_toolchain.t
+  ; melange_modules : Module_name.Set.t option
   }
 
 let loc t = t.loc
@@ -125,6 +126,7 @@ let bin_annot t = t.bin_annot
 let context t = Super_context.context t.super_context
 let dep_graphs t = t.modules.dep_graphs
 let ocaml t = t.ocaml
+let melange_modules t = t.melange_modules
 
 let create
       ~super_context
@@ -144,6 +146,7 @@ let create
       ?modes
       ?bin_annot
       ?loc
+      ~melange_modules
       ()
   =
   let project = Scope.project scope in
@@ -212,6 +215,7 @@ let create
   ; bin_annot
   ; loc
   ; ocaml
+  ; melange_modules
   }
 ;;
 
@@ -256,6 +260,7 @@ let for_alias_module t alias_module =
   ; stdlib = None
   ; sandbox
   ; modules
+  ; melange_modules = None
   }
 ;;
 
@@ -297,6 +302,7 @@ let for_module_generated_at_link_time cctx ~requires ~module_ =
   ; requires_compile = requires
   ; includes
   ; modules
+  ; melange_modules = None
   }
 ;;
 
@@ -312,10 +318,10 @@ let for_plugin_executable t ~embed_in_plugin_libraries =
     Memo.lazy_ (fun () ->
       Resolve.Memo.List.map ~f:(Lib.DB.resolve libs) embed_in_plugin_libraries)
   in
-  { t with requires_link }
+  { t with requires_link; melange_modules = None }
 ;;
 
-let without_bin_annot t = { t with bin_annot = false }
+let without_bin_annot t = { t with bin_annot = false; melange_modules = None }
 
 let entry_module_names sctx t =
   match Lib_info.entry_modules (Lib.info t) with
@@ -335,5 +341,5 @@ let root_module_entries t =
   Action_builder.return (List.concat l)
 ;;
 
-let set_obj_dir t obj_dir = { t with obj_dir }
-let set_modes t ~modes = { t with modes }
+let set_obj_dir t obj_dir = { t with obj_dir; melange_modules = None }
+let set_modes t ~modes = { t with modes; melange_modules = None }
