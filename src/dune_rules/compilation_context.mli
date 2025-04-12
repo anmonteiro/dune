@@ -37,6 +37,7 @@ val create
   -> ?modes:Mode_conf.Set.Details.t Lib_mode.Map.t
   -> ?bin_annot:bool
   -> ?loc:Loc.t
+  -> melange_modules:Module_name.Set.t option
   -> unit
   -> t Memo.t
 

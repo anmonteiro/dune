@@ -100,6 +100,7 @@ let modules_rules
       modules
       ~lib_name
       ~empty_intf_modules
+      ~melange_modules
   =
   let* pp =
     let instrumentation_backend = Lib.DB.instrumentation_backend (Scope.libs scope) in
@@ -134,6 +135,17 @@ let modules_rules
         fun name -> default || List.mem executable_names name ~equal:Module_name.equal)
       else fun _ -> default
   in
+  let* melange_modules =
+    match melange_modules with
+    | None -> Memo.return None
+    | Some osl ->
+      let standard = Action_builder.return [] in
+      Expander.expand_and_eval_set expander osl ~standard
+      |> Action_builder.evaluate_and_collect_facts
+      >>| fst
+      >>| Module_name.Set.of_list
+      >>| Option.some
+  in
   let+ modules =
     Modules.map_user_written modules ~f:(fun m ->
       let* m = Pp_spec.pp_module pp m in
@@ -141,7 +153,7 @@ let modules_rules
       then Module_compilation.with_empty_intf ~sctx ~dir m
       else Memo.return m)
   in
-  modules, pp
+  modules, pp, melange_modules
 ;;
 
 let modules_rules sctx kind expander ~dir scope modules =

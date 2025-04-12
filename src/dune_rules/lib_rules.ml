@@ -491,8 +491,16 @@ let cctx (lib : Library.t) ~sctx ~source_modules ~dir ~expander ~scope ~compile_
       ~dir
       scope
       source_modules
+      ~melange_modules:lib.melange_modules
   in
   let modules = Vimpl.impl_modules vimpl modules in
+  let melange_modules =
+    match vimpl with
+    | None -> melange_modules
+    | Some _ ->
+      (* TODO We haven't decided if melange modules can be virtualized. *)
+      None
+  in
   let requires_compile = Lib.Compile.direct_requires compile_info in
   let requires_link = Lib.Compile.requires_link compile_info in
   let* modes =
