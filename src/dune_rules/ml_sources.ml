@@ -568,10 +568,27 @@ let make
       ~lookup_vlib
       ~include_subdirs:(loc_include_subdirs, (include_subdirs : Include_subdirs.t))
       ~dirs
+      ~melange_modules
+      ~melange_sources_dir
   =
   let+ modules_of_stanzas =
     let modules =
       let dialects = Dune_project.dialects project in
+      let melange_file_processor =
+        match melange_modules, melange_sources_dir with
+        | Some melange_modules, Some melange_sources_dir ->
+          fun name file ->
+            if Module_name.Set.mem melange_modules name
+            then (
+              let original_path = Module.File.path file in
+              let src_in_lib =
+                Path.drop_prefix_exn original_path ~prefix:(Path.build dir)
+              in
+              let path = Path.Build.append_local melange_sources_dir src_in_lib in
+              { file with path = Path.build path; original_path })
+            else file
+        | _, _ -> fun _name file -> file
+      in
       match include_subdirs with
       | Include Qualified ->
         List.fold_left
@@ -620,7 +637,12 @@ let make
           dirs
           ~init:Module_name.Map.empty
           ~f:(fun acc { Source_file_dir.dir; files; path_to_root = _ } ->
-            let modules = modules_of_files ~dialects ~dir ~files ~path:[] in
+            let modules =
+              modules_of_files ~dialects ~dir ~files ~path:[]
+              |> Module_name.Map.mapi ~f:(fun name m ->
+                Source.map_files m ~f:(fun _kind file ->
+                  Option.map file ~f:(melange_file_processor name)))
+            in
             Module_name.Map.union acc modules ~f:(fun name x y ->
               User_error.raise
                 ~loc
