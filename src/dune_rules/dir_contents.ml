@@ -25,6 +25,7 @@ type t =
   ; mlds : (Documentation.t * Path.Build.t list) list Memo.Lazy.t
   ; coq : Coq_sources.t Memo.Lazy.t
   ; ml : Ml_sources.t Memo.Lazy.t
+  ; melange : Ml_sources.t Memo.Lazy.t
   }
 
 and kind =
@@ -37,6 +38,7 @@ let empty kind ~dir =
   ; dir
   ; text_files = Filename.Set.empty
   ; ml = Memo.Lazy.of_val Ml_sources.empty
+  ; melange = Memo.Lazy.of_val Ml_sources.empty
   ; mlds = Memo.Lazy.of_val []
   ; foreign_sources = Memo.Lazy.of_val Foreign_sources.empty
   ; coq = Memo.Lazy.of_val Coq_sources.empty
@@ -86,6 +88,7 @@ type triage =
 let dir t = t.dir
 let coq t = Memo.Lazy.force t.coq
 let ocaml t = Memo.Lazy.force t.ml
+let melange t = Memo.Lazy.force t.melange
 let artifacts t = Memo.Lazy.force t.ml >>= Ml_sources.artifacts
 
 let dirs t =
@@ -276,6 +279,25 @@ end = struct
                     ~expander
                     ~dir
                     ~libs
+                    ~mode:(Ocaml Byte)
+                    ~project
+                    ~lib_config
+                    ~loc
+                    ~include_subdirs
+                    ~lookup_vlib
+                    ~dirs)
+          and melange =
+            Memo.lazy_ (fun () ->
+              let lookup_vlib = lookup_vlib sctx ~current_dir:dir in
+              let loc = loc_of_dune_file st_dir in
+              let libs = Scope.DB.find_by_dir dir >>| Scope.libs in
+              let* expander = Super_context.expander sctx ~dir in
+              stanzas
+              >>= Ml_sources.make
+                    ~expander
+                    ~dir
+                    ~libs
+                    ~mode:Melange
                     ~project
                     ~lib_config
                     ~loc
@@ -288,6 +310,7 @@ end = struct
               ; dir
               ; text_files = files
               ; ml
+              ; melange
               ; mlds = Memo.lazy_ (fun () -> build_mlds_map d ~dir ~files)
               ; foreign_sources =
                   Memo.lazy_ (fun () ->
@@ -361,6 +384,24 @@ end = struct
                      ~dir
                      ~project
                      ~libs
+                     ~mode:(Ocaml Byte)
+                     ~lib_config
+                     ~loc
+                     ~lookup_vlib
+                     ~include_subdirs
+                     ~dirs)
+           and melange =
+             Memo.lazy_ (fun () ->
+               let lookup_vlib = lookup_vlib sctx ~current_dir:dir in
+               let libs = Scope.DB.find_by_dir dir >>| Scope.libs in
+               let* expander = Super_context.expander sctx ~dir in
+               stanzas
+               >>= Ml_sources.make
+                     ~expander
+                     ~dir
+                     ~project
+                     ~libs
+                     ~mode:Melange
                      ~lib_config
                      ~loc
                      ~lookup_vlib
@@ -382,6 +423,7 @@ end = struct
                ; dir
                ; text_files = files
                ; ml
+               ; melange
                ; foreign_sources
                ; mlds = Memo.lazy_ (fun () -> build_mlds_map dune_file ~dir ~files)
                ; coq
@@ -392,6 +434,7 @@ end = struct
              ; dir
              ; text_files = files
              ; ml
+             ; melange
              ; foreign_sources
              ; mlds = Memo.lazy_ (fun () -> build_mlds_map dune_file ~dir ~files)
              ; coq

@@ -300,7 +300,7 @@ let setup_emit_cmj_rules
   let dir = Dir_contents.dir dir_contents in
   let f () =
     let* modules, obj_dir =
-      Dir_contents.ocaml dir_contents
+      Dir_contents.melange dir_contents
       >>= Ml_sources.modules_and_obj_dir
             ~libs:(Scope.libs scope)
             ~for_:(Melange { target = mel.target })
@@ -328,6 +328,7 @@ let setup_emit_cmj_rules
     let* flags = melange_compile_flags ~sctx ~dir mel in
     let* cctx =
       let direct_requires = Lib.Compile.direct_requires compile_info in
+      let modules = { Lib_mode.By_mode.ocaml = None; melange = Some modules } in
       Compilation_context.create
         ()
         ~loc:mel.loc
@@ -343,8 +344,6 @@ let setup_emit_cmj_rules
         ~opaque:Inherit_from_settings
         ~melange_package_name:None
         ~package:mel.package
-        ~modes:
-          { ocaml = { byte = None; native = None }; melange = Some (Requested mel.loc) }
     in
     let* () = Module_compilation.build_all cctx in
     let* requires_compile = Compilation_context.requires_compile cctx in

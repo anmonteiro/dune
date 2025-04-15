@@ -37,8 +37,7 @@ val modules_rules
   -> dir:Path.Build.t
   -> Scope.t
   -> Modules.t
-  -> melange_modules:Ordered_set_lang.Unexpanded.t option
-  -> (Modules.t * Pp_spec.t * Module_name.Set.t option) Memo.t
+  -> (Modules.t * Pp_spec.t) Memo.t
 
 (** Compute the ocaml flags based on the directory environment and a buildable
     stanza *)

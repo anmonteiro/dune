@@ -12,7 +12,8 @@ let index_path_in_obj_dir obj_dir =
   Path.Build.relative dir index_file_name
 ;;
 
-let cctx_rules cctx =
+(* TODO(anmonteiro): support ocaml-index for Melange *)
+let cctx_rules cctx ~for_ =
   (* Indexing is performed by the external binary [ocaml-index] which performs
      full shape reduction to compute the actual definition of all the elements in
      the typedtree. This step is therefore dependent on all the cmts of those
@@ -66,7 +67,7 @@ let cctx_rules cctx =
     let modules_deps =
       let cm_kind = Lib_mode.Cm_kind.(Ocaml Cmi) in
       (* We only index occurrences in user-written modules *)
-      Compilation_context.modules cctx
+      Compilation_context.modules cctx ~for_
       |> Modules.With_vlib.drop_vlib
       |> Modules.fold_user_written ~init:[] ~f:(fun module_ acc ->
         let cmts =

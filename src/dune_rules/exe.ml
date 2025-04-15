@@ -300,7 +300,8 @@ let link_many
     | None -> Mode.Map.empty
     | Some o_files -> o_files
   in
-  let modules = Compilation_context.modules cctx in
+  let for_ = Lib_mode.Ocaml Byte in
+  let modules = Compilation_context.modules cctx ~for_ in
   let* link_time_code_gen = Link_time_code_gen.handle_special_libs cctx in
   let+ for_exes =
     Memo.parallel_map programs ~f:(fun { Program.name; main_module_name; loc } ->
@@ -316,7 +317,7 @@ let link_many
               ]
         in
         Dep_graph.top_closed_implementations
-          (Compilation_context.dep_graphs cctx).impl
+          (Compilation_context.dep_graphs cctx ~for_).impl
           [ main ]
       in
       let cm_files =
@@ -394,7 +395,7 @@ let build_and_link_many
   let* () = Module_compilation.build_all cctx in
   let* () =
     Memo.when_ (Compilation_context.bin_annot cctx) (fun () ->
-      Ocaml_index.cctx_rules cctx)
+      Ocaml_index.cctx_rules cctx ~for_:(Ocaml Byte))
   in
   link_many
     ?link_args

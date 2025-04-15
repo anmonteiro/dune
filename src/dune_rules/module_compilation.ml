@@ -177,7 +177,9 @@ let build_cm
    in
    let opaque = Compilation_context.opaque cctx in
    let other_cm_files =
-     let dep_graph = Ml_kind.Dict.get (Compilation_context.dep_graphs cctx) ml_kind in
+     let dep_graph =
+       Ml_kind.Dict.get (Compilation_context.dep_graphs cctx ~for_:mode) ml_kind
+     in
      let module_deps = Dep_graph.deps_of dep_graph m in
      Action_builder.dyn_paths_unit
        (Action_builder.map module_deps ~f:(other_cm_files ~opaque ~cm_kind ~obj_dir))
@@ -232,7 +234,7 @@ let build_cm
      | Some Compile | Some All | None -> src
    in
    let opens =
-     let modules = Compilation_context.modules cctx in
+     let modules = Compilation_context.modules cctx ~for_:mode in
      opens modules m
    in
    let obj_dirs =
@@ -282,58 +284,56 @@ let build_cm
   |> Memo.Option.iter ~f:Fun.id
 ;;
 
-let build_module ?(force_write_cmi = false) ?(precompiled_cmi = false) cctx m =
+let build_module ?(force_write_cmi = false) ?(precompiled_cmi = false) cctx m ~for_ =
   let open Memo.O in
-  let { Lib_mode.Map.ocaml; melange } = Compilation_context.modes cctx in
   let build_cm = build_cm cctx m ~force_write_cmi ~precompiled_cmi in
-  let* () =
-    Memo.when_ (ocaml.byte || ocaml.native) (fun () ->
-      let* () = build_cm ~cm_kind:(Ocaml Cmo) ~phase:None
-      and* () =
-        let ctx = Compilation_context.context cctx in
-        let ocaml = Compilation_context.ocaml cctx in
-        let can_split =
-          Ocaml.Version.supports_split_at_emit ocaml.version
-          || Ocaml_config.is_dev_version ocaml.ocaml_config
-        in
-        match Context.fdo_target_exe ctx, can_split with
-        | None, _ -> build_cm ~cm_kind:(Ocaml Cmx) ~phase:None
-        | Some _, false -> build_cm ~cm_kind:(Ocaml Cmx) ~phase:(Some All)
-        | Some _, true ->
-          build_cm ~cm_kind:(Ocaml Cmx) ~phase:(Some Compile)
-          >>> Fdo.opt_rule cctx m
-          >>> build_cm ~cm_kind:(Ocaml Cmx) ~phase:(Some Emit)
-      and* () =
-        Memo.when_ (not precompiled_cmi) (fun () ->
-          build_cm ~cm_kind:(Ocaml Cmi) ~phase:None)
+  match for_ with
+  | Lib_mode.Ocaml _ ->
+    let* () = build_cm ~cm_kind:(Ocaml Cmo) ~phase:None
+    and* () =
+      let ctx = Compilation_context.context cctx in
+      let ocaml = Compilation_context.ocaml cctx in
+      let can_split =
+        Ocaml.Version.supports_split_at_emit ocaml.version
+        || Ocaml_config.is_dev_version ocaml.ocaml_config
       in
-      let obj_dir = Compilation_context.obj_dir cctx in
-      match Obj_dir.Module.cm_file obj_dir m ~kind:(Ocaml Cmo) with
-      | None -> Memo.return ()
-      | Some src ->
-        Memo.parallel_iter Js_of_ocaml.Mode.all ~f:(fun mode ->
-          Compilation_context.js_of_ocaml cctx
-          |> Js_of_ocaml.Mode.Pair.select ~mode
-          |> Memo.Option.iter ~f:(fun in_context ->
-            (* Build *.cmo.js / *.wasmo *)
-            let sctx = Compilation_context.super_context cctx in
-            let dir = Compilation_context.dir cctx in
-            let action_with_targets =
-              Jsoo_rules.build_cm
-                sctx
-                ~dir
-                ~in_context
-                ~mode
-                ~src:(Path.build src)
-                ~obj_dir
-                ~config:None
-            in
-            Super_context.add_rule sctx ~dir action_with_targets)))
-  in
-  Memo.when_ melange (fun () ->
+      match Context.fdo_target_exe ctx, can_split with
+      | None, _ -> build_cm ~cm_kind:(Ocaml Cmx) ~phase:None
+      | Some _, false -> build_cm ~cm_kind:(Ocaml Cmx) ~phase:(Some All)
+      | Some _, true ->
+        build_cm ~cm_kind:(Ocaml Cmx) ~phase:(Some Compile)
+        >>> Fdo.opt_rule cctx m
+        >>> build_cm ~cm_kind:(Ocaml Cmx) ~phase:(Some Emit)
+    and* () =
+      Memo.when_ (not precompiled_cmi) (fun () ->
+        build_cm ~cm_kind:(Ocaml Cmi) ~phase:None)
+    in
+    let obj_dir = Compilation_context.obj_dir cctx in
+    (match Obj_dir.Module.cm_file obj_dir m ~kind:(Ocaml Cmo) with
+     | None -> Memo.return ()
+     | Some src ->
+       Memo.parallel_iter Js_of_ocaml.Mode.all ~f:(fun mode ->
+         Compilation_context.js_of_ocaml cctx
+         |> Js_of_ocaml.Mode.Pair.select ~mode
+         |> Memo.Option.iter ~f:(fun in_context ->
+           (* Build *.cmo.js / *.wasmo *)
+           let sctx = Compilation_context.super_context cctx in
+           let dir = Compilation_context.dir cctx in
+           let action_with_targets =
+             Jsoo_rules.build_cm
+               sctx
+               ~dir
+               ~in_context
+               ~mode
+               ~src:(Path.build src)
+               ~obj_dir
+               ~config:None
+           in
+           Super_context.add_rule sctx ~dir action_with_targets)))
+  | Melange ->
     let* () = build_cm ~cm_kind:(Melange Cmj) ~phase:None in
     Memo.when_ (not precompiled_cmi) (fun () ->
-      build_cm ~cm_kind:(Melange Cmi) ~phase:None))
+      build_cm ~cm_kind:(Melange Cmi) ~phase:None)
 ;;
 
 let ocamlc_i ~deps cctx (m : Module.t) ~output =
@@ -350,8 +350,9 @@ let ocamlc_i ~deps cctx (m : Module.t) ~output =
        List.concat_map deps ~f:(fun m ->
          [ Path.build (Obj_dir.Module.cm_file_exn obj_dir m ~kind:(Ocaml Cmi)) ]))
   in
-  let ocaml_flags = Ocaml_flags.get (Compilation_context.flags cctx) (Ocaml Byte) in
-  let modules = Compilation_context.modules cctx in
+  let for_ = Lib_mode.Ocaml Byte in
+  let ocaml_flags = Ocaml_flags.get (Compilation_context.flags cctx) for_ in
+  let modules = Compilation_context.modules cctx ~for_ in
   let ocaml = Compilation_context.ocaml cctx in
   Super_context.add_rule
     sctx
@@ -448,14 +449,14 @@ module Alias_module = struct
   ;;
 end
 
-let build_alias_module cctx group =
+let build_alias_module cctx group ~for_ =
   let alias_file () =
     let project = Compilation_context.scope cctx |> Scope.project in
-    let modules = Compilation_context.modules cctx in
+    let modules = Compilation_context.modules cctx ~for_ in
     Alias_module.of_modules project modules group |> Alias_module.to_ml
   in
   let alias_module = Modules.Group.alias group in
-  let cctx = Compilation_context.for_alias_module cctx alias_module in
+  let cctx = Compilation_context.for_alias_module cctx alias_module ~for_ in
   let sctx = Compilation_context.super_context cctx in
   let file = Option.value_exn (Module.file alias_module ~ml_kind:Impl) in
   let dir = Compilation_context.dir cctx in
@@ -467,8 +468,8 @@ let build_alias_module cctx group =
       (Action_builder.delayed alias_file
        |> Action_builder.write_file_dyn (Path.as_in_build_dir_exn file))
   in
-  let cctx = Compilation_context.for_alias_module cctx alias_module in
-  build_module cctx alias_module
+  let cctx = Compilation_context.for_alias_module cctx alias_module ~for_ in
+  build_module cctx alias_module ~for_
 ;;
 
 let root_source entries =
@@ -482,9 +483,9 @@ let root_source entries =
   Buffer.contents b
 ;;
 
-let build_root_module cctx root_module =
+let build_root_module cctx root_module ~for_ =
   let entries = Compilation_context.root_module_entries cctx in
-  let cctx = Compilation_context.for_root_module cctx root_module in
+  let cctx = Compilation_context.for_root_module cctx root_module ~for_ in
   let sctx = Compilation_context.super_context cctx in
   let file = Option.value_exn (Module.file root_module ~ml_kind:Impl) in
   let dir = Compilation_context.dir cctx in
@@ -500,37 +501,38 @@ let build_root_module cctx root_module =
           let+ entries = entries in
           root_source entries))
   in
-  build_module cctx root_module
+  build_module cctx root_module ~for_
 ;;
 
 let build_all cctx =
   let for_wrapped_compat = lazy (Compilation_context.for_wrapped_compat cctx) in
-  let modules = Compilation_context.modules cctx in
-  Memo.parallel_iter
-    (Modules.With_vlib.fold_no_vlib_with_aliases
-       modules
-       ~init:[]
-       ~normal:(fun x acc -> `Normal x :: acc)
-       ~alias:(fun group acc -> `Alias group :: acc))
-    ~f:(function
-      | `Alias group -> build_alias_module cctx group
-      | `Normal m ->
-        (match Module.kind m with
-         | Alias _ -> assert false
-         | Root -> build_root_module cctx m
-         | Wrapped_compat ->
-           let cctx = Lazy.force for_wrapped_compat in
-           build_module cctx m
-         | _ ->
-           let cctx =
-             if Modules.With_vlib.is_stdlib_alias modules m
-             then
-               (* XXX it would probably be simpler if the flags were just for this
+  let modes = Lib_mode.By_mode.to_list (Compilation_context.modes cctx) in
+  Memo.parallel_iter modes ~f:(fun (for_, modules) ->
+    Memo.parallel_iter
+      (Modules.With_vlib.fold_no_vlib_with_aliases
+         modules
+         ~init:[]
+         ~normal:(fun x acc -> `Normal x :: acc)
+         ~alias:(fun group acc -> `Alias group :: acc))
+      ~f:(function
+        | `Alias group -> build_alias_module cctx group ~for_
+        | `Normal m ->
+          (match Module.kind m with
+           | Alias _ -> assert false
+           | Root -> build_root_module cctx m ~for_
+           | Wrapped_compat ->
+             let cctx = Lazy.force for_wrapped_compat in
+             build_module cctx m ~for_
+           | _ ->
+             let cctx =
+               if Modules.With_vlib.is_stdlib_alias modules m
+               then
+                 (* XXX it would probably be simpler if the flags were just for this
                   module in the definition of the stanza *)
-               Compilation_context.for_alias_module cctx m
-             else cctx
-           in
-           build_module cctx m))
+                 Compilation_context.for_alias_module cctx m ~for_
+               else cctx
+             in
+             build_module cctx m ~for_)))
 ;;
 
 let with_empty_intf ~sctx ~dir module_ =

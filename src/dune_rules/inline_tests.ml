@@ -270,6 +270,7 @@ include Sub_system.Register_end_point (struct
           in
           Lib.closure ~linking:true ((lib :: libs) @ more_libs)
         in
+        let modules = { Lib_mode.By_mode.ocaml = Some modules; melange = None } in
         Compilation_context.create
           ()
           ~super_context:sctx

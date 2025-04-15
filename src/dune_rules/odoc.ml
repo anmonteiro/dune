@@ -416,7 +416,7 @@ let link_odoc_rules sctx (odoc_file : odoc_artefact) ~pkg ~requires =
      Action_builder.with_no_targets deps >>> run_odoc)
 ;;
 
-let setup_library_odoc_rules cctx (local_lib : Lib.Local.t) =
+let setup_library_odoc_rules cctx (local_lib : Lib.Local.t) ~for_ =
   (* Using the proper package name doesn't actually work since odoc assumes that
      a package contains only 1 library *)
   let pkg_or_lnu = pkg_or_lnu (Lib.Local.to_lib local_lib) in
@@ -424,7 +424,10 @@ let setup_library_odoc_rules cctx (local_lib : Lib.Local.t) =
   let ctx = Super_context.context sctx in
   let info = Lib.Local.info local_lib in
   let obj_dir = Compilation_context.obj_dir cctx in
-  let modules = Compilation_context.modules cctx in
+  let modules =
+    (* TODO(anmonteiro): support Melange *)
+    Compilation_context.modules cctx ~for_
+  in
   let* includes =
     let+ requires = Compilation_context.requires_compile cctx in
     let package = Lib_info.package info in
@@ -442,7 +445,7 @@ let setup_library_odoc_rules cctx (local_lib : Lib.Local.t) =
       compile_module
         sctx
         ~includes
-        ~dep_graphs:(Compilation_context.dep_graphs cctx)
+        ~dep_graphs:(Compilation_context.dep_graphs cctx ~for_)
         ~obj_dir
         ~pkg_or_lnu
         ~mode

@@ -13,7 +13,7 @@ open Import
 (** [cctx_rules cctx] sets the rules needed to generate the indexes for every
     module in the compilation context [cctx] and aggregate them in a
     [cctx.uideps] index covering the whole compilation context. *)
-val cctx_rules : Compilation_context.t -> unit Memo.t
+val cctx_rules : Compilation_context.t -> for_:Lib_mode.t -> unit Memo.t
 
 (** [context_indexes] lists all the available cctx.ocaml-index files in the
     given context *)

@@ -171,6 +171,7 @@ let gen_rules sctx t ~dir ~scope =
   let* cctx =
     let requires_compile = Lib.Compile.direct_requires compile_info in
     let requires_link = Lib.Compile.requires_link compile_info in
+    let modules = { Lib_mode.By_mode.ocaml = Some modules; melange = None } in
     Compilation_context.create
       ()
       ~super_context:sctx

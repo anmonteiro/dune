@@ -8,6 +8,7 @@ module File : sig
   val dialect : t -> Dialect.t
   val path : t -> Path.t
   val make : Dialect.t -> Path.t -> t
+  val set_path : t -> Path.t -> t
 end
 
 module Kind : sig
@@ -36,6 +37,7 @@ module Source : sig
   val path : t -> Module_name.Path.t
   val to_dyn : t -> Dyn.t
   val src_dir : t -> Path.t
+  val map_files : t -> f:(Ml_kind.t -> File.t option -> File.t option) -> t
 end
 
 type t
