@@ -47,7 +47,7 @@ let find_module sctx src =
            Melange_rules.setup_emit_cmj_rules ~sctx ~dir_contents ~expander ~scope mel
        in
        let module_ =
-         let modules = Compilation_context.modules cctx in
+         let modules = Compilation_context.modules cctx ~for_:(Ocaml Byte) in
          match Modules.With_vlib.find modules module_name with
          | Some m -> m
          | None ->
@@ -63,7 +63,7 @@ let find_module sctx src =
 let module_deps cctx module_ =
   let+ graph, _ =
     let dep_graph =
-      let dg = Compilation_context.dep_graphs cctx in
+      let dg = Compilation_context.dep_graphs cctx ~for_:(Ocaml Byte) in
       Ocaml.Ml_kind.Dict.get dg Impl
     in
     Dep_graph.deps_of dep_graph module_ |> Action_builder.evaluate_and_collect_facts
@@ -92,9 +92,6 @@ let gen_rules sctx ~dir:rules_dir ~comps =
       private_obj_dir (Super_context.context sctx) src
       |> Compilation_context.set_obj_dir cctx
       |> Compilation_context.without_bin_annot
-      |> Compilation_context.set_modes
-           ~modes:
-             { Lib_mode.Map.melange = false; ocaml = { byte = true; native = false } }
     in
-    Module_compilation.build_module ~force_write_cmi:true cctx module_
+    Module_compilation.build_module ~force_write_cmi:true cctx module_ ~for_:(Ocaml Byte)
 ;;

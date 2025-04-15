@@ -314,7 +314,11 @@ let build_ppx_driver sctx ~scope ~target ~pps ~pp_names =
     let requires_link = Memo.lazy_ (fun () -> Memo.return requires_compile) in
     let flags = Ocaml_flags.of_list [ "-g"; "-w"; "-24" ] in
     let opaque = Compilation_context.Explicit false in
-    let modules = Modules.With_vlib.singleton_exe module_ in
+    let modules =
+      { Lib_mode.By_mode.ocaml = Some (Modules.With_vlib.singleton_exe module_)
+      ; melange = None
+      }
+    in
     Compilation_context.create
       ~super_context:sctx
       ~scope

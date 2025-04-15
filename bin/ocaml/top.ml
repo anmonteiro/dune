@@ -151,7 +151,9 @@ module Module = struct
                in
                let cmos () =
                  let obj_dir = Compilation_context.obj_dir cctx in
-                 let dep_graph = (Compilation_context.dep_graphs cctx).impl in
+                 let dep_graph =
+                   (Compilation_context.dep_graphs cctx ~for_:(Ocaml Byte)).impl
+                 in
                  let* modules =
                    let graph =
                      Dune_rules.Dep_graph.top_closed_implementations dep_graph [ module_ ]
@@ -196,7 +198,7 @@ module Module = struct
       in
       let+ (pp, ppx), files_to_load = Memo.fork_and_join pps files_to_load in
       let code =
-        let modules = Dune_rules.Compilation_context.modules cctx in
+        let modules = Dune_rules.Compilation_context.modules cctx ~for_:(Ocaml Byte) in
         let opens_ = Dune_rules.Modules.With_vlib.local_open modules module_ in
         List.map opens_ ~f:(fun name ->
           sprintf "open %s" (Dune_rules.Module_name.to_string name))

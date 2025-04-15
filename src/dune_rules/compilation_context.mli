@@ -23,7 +23,7 @@ val create
   :  super_context:Super_context.t
   -> scope:Scope.t
   -> obj_dir:Path.Build.t Obj_dir.t
-  -> modules:Modules.With_vlib.t
+  -> modules:Modules.With_vlib.t option Lib_mode.By_mode.t
   -> flags:Ocaml_flags.t
   -> requires_compile:Lib.t list Resolve.Memo.t
   -> requires_link:Lib.t list Resolve.t Memo.Lazy.t
@@ -34,15 +34,13 @@ val create
   -> package:Package.t option
   -> melange_package_name:Lib_name.t option
   -> ?vimpl:Vimpl.t
-  -> ?modes:Mode_conf.Set.Details.t Lib_mode.Map.t
   -> ?bin_annot:bool
-  -> ?loc:Loc.t
-  -> melange_modules:Module_name.Set.t option
+  -> ?loc:Loc.t (* -> melange_modules:Module_name.Set.t option *)
   -> unit
   -> t Memo.t
 
 (** Return a compilation context suitable for compiling the alias module. *)
-val for_alias_module : t -> Module.t -> t
+val for_alias_module : t -> Module.t -> for_:Lib_mode.t -> t
 
 val super_context : t -> Super_context.t
 val context : t -> Context.t
@@ -53,7 +51,8 @@ val scope : t -> Scope.t
 val dir : t -> Path.Build.t
 
 val obj_dir : t -> Path.Build.t Obj_dir.t
-val modules : t -> Modules.With_vlib.t
+val modules : t -> for_:Lib_mode.t -> Modules.With_vlib.t
+val modes : t -> Modules.With_vlib.t option Lib_mode.By_mode.t
 val flags : t -> Ocaml_flags.t
 val requires_link : t -> Lib.t list Resolve.Memo.t
 val requires_hidden : t -> Lib.t list Resolve.Memo.t
@@ -68,15 +67,15 @@ val set_sandbox : t -> Sandbox_config.t -> t
 val package : t -> Package.t option
 val vimpl : t -> Vimpl.t option
 val melange_package_name : t -> Lib_name.t option
-val modes : t -> Lib_mode.Map.Set.t
 val for_wrapped_compat : t -> t
-val for_root_module : t -> Module.t -> t
+val for_root_module : t -> Module.t -> for_:Lib_mode.t -> t
 val ocaml : t -> Ocaml_toolchain.t
 
 val for_module_generated_at_link_time
   :  t
   -> requires:Lib.t list Resolve.Memo.t
   -> module_:Module.t
+  -> for_:Lib_mode.t
   -> t
 
 val for_plugin_executable : t -> embed_in_plugin_libraries:(Loc.t * Lib_name.t) list -> t
@@ -85,9 +84,8 @@ val without_bin_annot : t -> t
 val root_module_entries : t -> Module_name.t list Action_builder.t
 
 (** The dependency graph for the modules of the library. *)
-val dep_graphs : t -> Dep_graph.t Ml_kind.Dict.t
+val dep_graphs : t -> for_:Lib_mode.t -> Dep_graph.t Ml_kind.Dict.t
 
-val ocamldep_modules_data : t -> Ocamldep.Modules_data.t
+val ocamldep_modules_data : t -> for_:Lib_mode.t -> Ocamldep.Modules_data.t
 val loc : t -> Loc.t option
 val set_obj_dir : t -> Path.Build.t Obj_dir.t -> t
-val set_modes : t -> modes:Lib_mode.Map.Set.t -> t
