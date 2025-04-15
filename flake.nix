@@ -55,9 +55,12 @@
       add-experimental-configure-flags = pkg: pkg.overrideAttrs {
         configureFlags =
           [
-            "--pkg-build-progress" "enable"
-            "--lock-dev-tool" "enable"
-            "--bin-dev-tools" "enable"
+            "--pkg-build-progress"
+            "enable"
+            "--lock-dev-tool"
+            "enable"
+            "--bin-dev-tools"
+            "enable"
           ];
       };
 
@@ -85,6 +88,7 @@
         pkg-config
         opam
         ocamlformat
+        tree
       ];
 
       docInputs = with pkgs.python3.pkgs; [

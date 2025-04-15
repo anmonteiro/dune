@@ -35,10 +35,11 @@ let generate_and_compile_module cctx ~precompiled_cmi ~obj_name ~name ~lib ~code
        Action_builder.write_file_dyn ml code)
   in
   let+ () =
+    let for_ = Lib_mode.Ocaml Byte in
     let cctx =
-      Compilation_context.for_module_generated_at_link_time cctx ~requires ~module_
+      Compilation_context.for_module_generated_at_link_time cctx ~requires ~module_ ~for_
     in
-    Module_compilation.build_module ~precompiled_cmi cctx module_
+    Module_compilation.build_module ~precompiled_cmi cctx module_ ~for_
   in
   Resolve.return module_
 ;;

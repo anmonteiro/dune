@@ -175,6 +175,7 @@ let setup sctx ~dir =
   in
   let* cctx =
     let requires_link = Memo.lazy_ (fun () -> requires) in
+    let modules = { Lib_mode.By_mode.ocaml = Some modules; melange = None } in
     Compilation_context.create
       ()
       ~super_context:sctx
