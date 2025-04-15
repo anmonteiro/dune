@@ -55,12 +55,11 @@ val make
   -> expander:Expander.t
   -> dir:Path.Build.t
   -> libs:Lib.DB.t Memo.t
+  -> mode:Lib_mode.t
   -> project:Dune_project.t
   -> lib_config:Lib_config.t Memo.t
   -> loc:Loc.t
   -> lookup_vlib:(loc:Loc.t -> dir:Path.Build.t -> t Memo.t)
   -> include_subdirs:Loc.t * Include_subdirs.t
   -> dirs:Source_file_dir.t list
-  -> melange_modules:Module_name.Set.t option
-  -> melange_sources_dir:Path.Build.t option
   -> t Memo.t

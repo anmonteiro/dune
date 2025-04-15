@@ -22,6 +22,7 @@ val text_files : t -> Filename.Set.t
 val foreign_sources : t -> Foreign_sources.t Memo.t
 
 val ocaml : t -> Ml_sources.t Memo.t
+val melange : t -> Ml_sources.t Memo.t
 
 (** All mld files attached to this documentation stanza *)
 val mlds : t -> stanza:Documentation.t -> Doc_sources.mld list Memo.t

@@ -24,6 +24,7 @@ module File = struct
 
   let dialect t = t.dialect
   let path t = t.path
+  let set_path t path = { t with path }
 
   let version_installed t ~src_root ~install_dir =
     let path =

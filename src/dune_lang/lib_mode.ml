@@ -76,6 +76,35 @@ let of_cm_kind : Cm_kind.t -> t = function
   | Melange (Cmi | Cmj) -> Melange
 ;;
 
+module By_mode = struct
+  type nonrec 'a t =
+    { ocaml : 'a
+    ; melange : 'a
+    }
+
+  let for_merlin { ocaml; melange } =
+    match ocaml, melange with
+    | None, Some x -> x
+    | Some x, _ -> x
+    | None, None -> assert false
+  ;;
+
+  let to_list t =
+    match t.ocaml, t.melange with
+    | Some ocaml, Some melange -> [ Ocaml Byte, ocaml; Melange, melange ]
+    | Some ocaml, None -> [ Ocaml Byte, ocaml ]
+    | None, Some melange -> [ Melange, melange ]
+    | None, None -> []
+  ;;
+
+  let of_list xs =
+    List.fold_left xs ~init:{ ocaml = None; melange = None } ~f:(fun acc (k, item) ->
+      match k with
+      | Ocaml _ -> { acc with ocaml = Some item }
+      | Melange -> { acc with melange = Some item })
+  ;;
+end
+
 module Map = struct
   let mode_equal = equal
 

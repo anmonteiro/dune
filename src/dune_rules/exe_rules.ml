@@ -190,6 +190,7 @@ let executables_rules
           ((not explicit_js_mode) || List.exists linkages ~f:(Exe.Linkage.is_jsoo ~mode))
           x)
     in
+    let modules = { Lib_mode.By_mode.ocaml = Some modules; melange = None } in
     Compilation_context.create
       ()
       ~loc:exes.buildable.loc

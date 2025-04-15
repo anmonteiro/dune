@@ -85,6 +85,7 @@
         pkg-config
         opam
         ocamlformat
+        tree
       ];
 
       docInputs = with pkgs.python3.pkgs; [

@@ -80,7 +80,8 @@ type t =
   { super_context : Super_context.t
   ; scope : Scope.t
   ; obj_dir : Path.Build.t Obj_dir.t
-  ; modules : modules
+  ; modules : modules option Lib_mode.By_mode.t
+  ; melange_package_name : Lib_name.t option
   ; flags : Ocaml_flags.t
   ; requires_compile : Lib.t list Resolve.Memo.t
   ; requires_hidden : Lib.t list Resolve.Memo.t
@@ -93,12 +94,9 @@ type t =
   ; sandbox : Sandbox_config.t
   ; package : Package.t option
   ; vimpl : Vimpl.t option
-  ; melange_package_name : Lib_name.t option
-  ; modes : Lib_mode.Map.Set.t
   ; bin_annot : bool
   ; loc : Loc.t option
   ; ocaml : Ocaml_toolchain.t
-  ; melange_modules : Module_name.Set.t option
   }
 
 let loc t = t.loc
@@ -106,7 +104,22 @@ let super_context t = t.super_context
 let scope t = t.scope
 let dir t = Obj_dir.dir t.obj_dir
 let obj_dir t = t.obj_dir
-let modules t = t.modules.modules
+
+let modules t ~for_ =
+  let modules =
+    match for_ with
+    | Lib_mode.Ocaml _ -> t.modules.ocaml
+    | Melange -> t.modules.melange
+  in
+  (Option.value_exn modules).modules
+;;
+
+let modes t =
+  { Lib_mode.By_mode.ocaml = Option.map t.modules.ocaml ~f:(fun t -> t.modules)
+  ; Lib_mode.By_mode.melange = Option.map t.modules.melange ~f:(fun t -> t.modules)
+  }
+;;
+
 let flags t = t.flags
 let requires_compile t = t.requires_compile
 let requires_hidden t = t.requires_hidden
@@ -121,18 +134,25 @@ let set_sandbox t sandbox = { t with sandbox }
 let package t = t.package
 let melange_package_name t = t.melange_package_name
 let vimpl t = t.vimpl
-let modes t = t.modes
 let bin_annot t = t.bin_annot
 let context t = Super_context.context t.super_context
-let dep_graphs t = t.modules.dep_graphs
+
+let dep_graphs t ~for_ =
+  let modules =
+    match for_ with
+    | Lib_mode.Ocaml _ -> t.modules.ocaml
+    | Melange -> t.modules.melange
+  in
+  (Option.value_exn modules).dep_graphs
+;;
+
 let ocaml t = t.ocaml
-let melange_modules t = t.melange_modules
 
 let create
       ~super_context
       ~scope
       ~obj_dir
-      ~modules
+      ~(modules : Modules.With_vlib.t option Lib_mode.By_mode.t)
       ~flags
       ~requires_compile
       ~requires_link
@@ -143,10 +163,8 @@ let create
       ~package
       ~melange_package_name
       ?vimpl
-      ?modes
       ?bin_annot
       ?loc
-      ~melange_modules
       ()
   =
   let project = Scope.project scope in
@@ -168,35 +186,48 @@ let create
       requires_compile, requires_hidden
   in
   let sandbox = Sandbox_config.no_special_requirements in
-  let modes =
-    let default =
-      { Lib_mode.Map.ocaml = Mode.Dict.make_both (Some Mode_conf.Kind.Inherited)
-      ; melange = None
-      }
-    in
-    Option.value ~default modes |> Lib_mode.Map.map ~f:Option.is_some
-  in
   let opaque =
     let profile = Context.profile context in
     eval_opaque ocaml profile opaque
   in
-  let+ dep_graphs =
-    Dep_rules.rules
-      ~dir:(Obj_dir.dir obj_dir)
-      ~sandbox
-      ~obj_dir
-      ~sctx:super_context
-      ~vimpl
-      ~modules
+  let+ ocaml_modules =
+    match modules.ocaml with
+    | Some modules ->
+      let+ dep_graphs =
+        Dep_rules.rules
+          ~dir:(Obj_dir.dir obj_dir)
+          ~sandbox
+          ~obj_dir
+          ~sctx:super_context
+          ~vimpl
+          ~modules
+      in
+      Some { modules; dep_graphs }
+    | None -> Memo.return None
+  and+ melange_modules =
+    match modules.melange with
+    | Some modules ->
+      let+ dep_graphs =
+        Dep_rules.rules
+          ~dir:(Obj_dir.dir obj_dir)
+          ~sandbox
+          ~obj_dir
+          ~sctx:super_context
+          ~vimpl
+          ~modules
+      in
+      Some { modules; dep_graphs }
+    | None -> Memo.return None
   and+ bin_annot =
     match bin_annot with
     | Some b -> Memo.return b
     | None -> Env_stanza_db.bin_annot ~dir:(Obj_dir.dir obj_dir)
   in
+  let modules = { Lib_mode.By_mode.ocaml = ocaml_modules; melange = melange_modules } in
   { super_context
   ; scope
   ; obj_dir
-  ; modules = { modules; dep_graphs }
+  ; modules
   ; flags
   ; requires_compile = direct_requires
   ; requires_hidden = hidden_requires
@@ -211,11 +242,9 @@ let create
   ; package
   ; vimpl
   ; melange_package_name
-  ; modes
   ; bin_annot
   ; loc
   ; ocaml
-  ; melange_modules
   }
 ;;
 
@@ -224,8 +253,9 @@ let alias_and_root_module_flags =
   fun base -> Ocaml_flags.append_common base extra
 ;;
 
-let for_alias_module t alias_module =
-  let keep_flags = Modules.With_vlib.is_stdlib_alias (modules t) alias_module in
+let for_alias_module t alias_module ~for_ =
+  let modules = modules t ~for_ in
+  let keep_flags = Modules.With_vlib.is_stdlib_alias modules alias_module in
   let flags =
     if keep_flags
     then (* in the case of stdlib, these flags can be written by the user *)
@@ -245,26 +275,32 @@ let for_alias_module t alias_module =
     else Sandbox_config.no_special_requirements
   in
   let (modules, includes) : modules * Includes.t =
-    match Modules.With_vlib.is_stdlib_alias t.modules.modules alias_module with
+    match Modules.With_vlib.is_stdlib_alias modules alias_module with
     | false -> singleton_modules alias_module, Includes.empty
     | true ->
       (* The stdlib alias module is different from the alias modules usually
          produced by Dune: it contains code and depends on a few other
          [CamlinnternalXXX] modules from the stdlib, so we need the full set of
          modules to compile it. *)
-      t.modules, t.includes
+      ( (match for_ with
+         | Ocaml _ -> t.modules.ocaml
+         | Melange -> t.modules.melange)
+        |> Option.value_exn
+      , t.includes )
   in
   { t with
     flags = alias_and_root_module_flags flags
   ; includes
   ; stdlib = None
   ; sandbox
-  ; modules
-  ; melange_modules = None
+  ; modules =
+      (match for_ with
+       | Ocaml _ -> { t.modules with ocaml = Some modules }
+       | Melange -> { t.modules with melange = Some modules })
   }
 ;;
 
-let for_root_module t root_module =
+let for_root_module t root_module ~for_ =
   let flags =
     let project = Scope.project t.scope in
     let dune_version = Dune_project.dune_version project in
@@ -274,35 +310,43 @@ let for_root_module t root_module =
   { t with
     flags = alias_and_root_module_flags flags
   ; stdlib = None
-  ; modules = singleton_modules root_module
+  ; modules =
+      (let new_modules = singleton_modules root_module in
+       match for_ with
+       | Lib_mode.Melange -> { t.modules with melange = Some new_modules }
+       | Ocaml _ -> { t.modules with ocaml = Some new_modules })
   }
 ;;
 
-let for_module_generated_at_link_time cctx ~requires ~module_ =
+let for_module_generated_at_link_time t ~requires ~module_ ~for_ =
   let opaque =
     (* Cmi's of link time generated modules are compiled with -opaque, hence
        their implementation must also be compiled with -opaque *)
-    Ocaml.Version.supports_opaque_for_mli cctx.ocaml.version
+    Ocaml.Version.supports_opaque_for_mli t.ocaml.version
   in
   let direct_requires = requires in
   let hidden_requires = Resolve.Memo.return [] in
-  let modules = singleton_modules module_ in
+  let modules =
+    let modules = Some (singleton_modules module_) in
+    match for_ with
+    | Lib_mode.Ocaml _ -> { t.modules with ocaml = modules }
+    | Melange -> { t.modules with melange = modules }
+  in
   let includes =
     Includes.make
-      ~project:(Scope.project cctx.scope)
+      ~project:(Scope.project t.scope)
       ~opaque
       ~direct_requires
       ~hidden_requires
-      cctx.ocaml.lib_config
+      t.ocaml.lib_config
   in
-  { cctx with
+  { t with
     opaque
   ; flags = Ocaml_flags.empty
   ; requires_link = Memo.lazy_ (fun () -> requires)
   ; requires_compile = requires
   ; includes
   ; modules
-  ; melange_modules = None
   }
 ;;
 
@@ -318,10 +362,10 @@ let for_plugin_executable t ~embed_in_plugin_libraries =
     Memo.lazy_ (fun () ->
       Resolve.Memo.List.map ~f:(Lib.DB.resolve libs) embed_in_plugin_libraries)
   in
-  { t with requires_link; melange_modules = None }
+  { t with requires_link }
 ;;
 
-let without_bin_annot t = { t with bin_annot = false; melange_modules = None }
+let without_bin_annot t = { t with bin_annot = false }
 
 let entry_module_names sctx t =
   match Lib_info.entry_modules (Lib.info t) with
@@ -341,5 +385,4 @@ let root_module_entries t =
   Action_builder.return (List.concat l)
 ;;
 
-let set_obj_dir t obj_dir = { t with obj_dir; melange_modules = None }
-let set_modes t ~modes = { t with modes; melange_modules = None }
+let set_obj_dir t obj_dir = { t with obj_dir }

@@ -8,6 +8,7 @@ val build_module
   -> ?precompiled_cmi:bool
   -> Compilation_context.t
   -> Module.t
+  -> for_:Lib_mode.t
   -> unit Memo.t
 
 val ocamlc_i

@@ -222,7 +222,10 @@ module Stanza = struct
         (Ocaml_flags.default ~dune_version ~profile)
         [ "-w"; "-24" ]
     in
-    let* modules = Source.modules source preprocessing in
+    let* modules =
+      let+ modules = Source.modules source preprocessing in
+      { Lib_mode.By_mode.ocaml = Some modules; melange = None }
+    in
     let* cctx =
       Compilation_context.create
         ()

@@ -62,6 +62,13 @@ module Modules = struct
     ; melange_emits : Melange_stanzas.Emit.t group_part list
     }
 
+  let _melange_file_processor ~dir file =
+    let original_path = Module.File.path file in
+    let src_in_lib = Path.drop_prefix_exn original_path ~prefix:(Path.build dir) in
+    let path = Path.Build.append_local dir src_in_lib in
+    Module.File.set_path file (Path.build path)
+  ;;
+
   let make { libraries = libs; executables = exes; melange_emits = emits } =
     let libraries, libraries_by_obj_dir =
       List.fold_left
@@ -153,7 +160,8 @@ let empty =
 
 let artifacts t = Memo.Lazy.force t.artifacts
 
-let modules_of_files ~path ~dialects ~dir ~files =
+let modules_of_files ~mode:_ ~path ~dialects ~dir ~files =
+  (* TODO: melange mode here. *)
   let dir = Path.build dir in
   let impl_files, intf_files =
     let make_module dialect name fn =
@@ -562,33 +570,17 @@ let make
       ~expander
       ~dir
       ~libs
+      ~mode
       ~project
       ~lib_config
       ~loc
       ~lookup_vlib
       ~include_subdirs:(loc_include_subdirs, (include_subdirs : Include_subdirs.t))
       ~dirs
-      ~melange_modules
-      ~melange_sources_dir
   =
   let+ modules_of_stanzas =
     let modules =
       let dialects = Dune_project.dialects project in
-      let melange_file_processor =
-        match melange_modules, melange_sources_dir with
-        | Some melange_modules, Some melange_sources_dir ->
-          fun name file ->
-            if Module_name.Set.mem melange_modules name
-            then (
-              let original_path = Module.File.path file in
-              let src_in_lib =
-                Path.drop_prefix_exn original_path ~prefix:(Path.build dir)
-              in
-              let path = Path.Build.append_local melange_sources_dir src_in_lib in
-              { file with path = Path.build path; original_path })
-            else file
-        | _, _ -> fun _name file -> file
-      in
       match include_subdirs with
       | Include Qualified ->
         List.fold_left
@@ -600,7 +592,7 @@ let make
                 Module_name.parse_string_exn
                   (Loc.in_dir (Path.drop_optional_build_context (Path.build dir)), m))
             in
-            let modules = modules_of_files ~dialects ~dir ~files ~path in
+            let modules = modules_of_files ~mode ~dialects ~dir ~files ~path in
             match Module_trie.set_map acc path modules with
             | Ok s -> s
             | Error module_ ->
@@ -637,12 +629,7 @@ let make
           dirs
           ~init:Module_name.Map.empty
           ~f:(fun acc { Source_file_dir.dir; files; path_to_root = _ } ->
-            let modules =
-              modules_of_files ~dialects ~dir ~files ~path:[]
-              |> Module_name.Map.mapi ~f:(fun name m ->
-                Source.map_files m ~f:(fun _kind file ->
-                  Option.map file ~f:(melange_file_processor name)))
-            in
+            let modules = modules_of_files ~mode ~dialects ~dir ~files ~path:[] in
             Module_name.Map.union acc modules ~f:(fun name x y ->
               User_error.raise
                 ~loc
