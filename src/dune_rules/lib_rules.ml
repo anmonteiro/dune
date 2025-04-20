@@ -406,7 +406,7 @@ let setup_melange_sources_copy_rules ~sctx ~dir ~expander:_ ~modules (lib : Libr
     let obj_dir = Library.obj_dir ~dir lib in
     Obj_dir.dir obj_dir
   in *)
-  let dst_dir = Path.Build.append dir (Path.Build.of_string ".melange_src") in
+  let dst_dir = Path.Build.append dir (Path.Build.of_string Obj_dir.melange_srcs_dir) in
   (* Format.eprintf
     "TOINE %s %s@."
     (Path.Build.to_string dir)
