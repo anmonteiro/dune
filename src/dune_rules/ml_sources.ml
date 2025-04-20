@@ -62,13 +62,6 @@ module Modules = struct
     ; melange_emits : Melange_stanzas.Emit.t group_part list
     }
 
-  let _melange_file_processor ~dir file =
-    let original_path = Module.File.path file in
-    let src_in_lib = Path.drop_prefix_exn original_path ~prefix:(Path.build dir) in
-    let path = Path.Build.append_local dir src_in_lib in
-    Module.File.set_path file (Path.build path)
-  ;;
-
   let make { libraries = libs; executables = exes; melange_emits = emits } =
     let libraries, libraries_by_obj_dir =
       List.fold_left
@@ -160,12 +153,23 @@ let empty =
 
 let artifacts t = Memo.Lazy.force t.artifacts
 
-let modules_of_files ~mode:_ ~path ~dialects ~dir ~files =
-  (* TODO: melange mode here. *)
+let modules_of_files ~root_dir ~path_to_root ~mode ~path ~dialects ~dir ~files =
+  let root_dir = Path.build root_dir in
   let dir = Path.build dir in
   let impl_files, intf_files =
     let make_module dialect name fn =
-      name, Module.File.make dialect (Path.relative dir fn)
+      let path_in_build_dir =
+        match mode with
+        | Lib_mode.Ocaml _ -> Path.relative dir fn
+        | Melange ->
+          let melange_src = Path.relative root_dir Obj_dir.melange_srcs_dir in
+          let module_dir =
+            Path.relative melange_src (String.concat ~sep:Filename.dir_sep path_to_root)
+          in
+          Format.eprintf "x:  %s @." (Path.to_string (Path.relative module_dir fn));
+          Path.relative module_dir fn
+      in
+      name, Module.File.make dialect path_in_build_dir
     in
     let loc = Loc.in_dir dir in
     Filename.Set.to_list files
@@ -578,6 +582,7 @@ let make
       ~include_subdirs:(loc_include_subdirs, (include_subdirs : Include_subdirs.t))
       ~dirs
   =
+  let root_dir = dir in
   let+ modules_of_stanzas =
     let modules =
       let dialects = Dune_project.dialects project in
@@ -592,7 +597,9 @@ let make
                 Module_name.parse_string_exn
                   (Loc.in_dir (Path.drop_optional_build_context (Path.build dir)), m))
             in
-            let modules = modules_of_files ~mode ~dialects ~dir ~files ~path in
+            let modules =
+              modules_of_files ~root_dir ~path_to_root ~mode ~dialects ~dir ~files ~path
+            in
             match Module_trie.set_map acc path modules with
             | Ok s -> s
             | Error module_ ->
@@ -628,8 +635,17 @@ let make
         List.fold_left
           dirs
           ~init:Module_name.Map.empty
-          ~f:(fun acc { Source_file_dir.dir; files; path_to_root = _ } ->
-            let modules = modules_of_files ~mode ~dialects ~dir ~files ~path:[] in
+          ~f:(fun acc { Source_file_dir.dir; files; path_to_root } ->
+            let modules =
+              modules_of_files
+                ~root_dir
+                ~path_to_root
+                ~mode
+                ~dialects
+                ~dir
+                ~files
+                ~path:[]
+            in
             Module_name.Map.union acc modules ~f:(fun name x y ->
               User_error.raise
                 ~loc

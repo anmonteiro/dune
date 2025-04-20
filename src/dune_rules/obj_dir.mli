@@ -29,6 +29,7 @@ open Import
 
 type 'path t
 
+val melange_srcs_dir : string
 val of_local : Path.Build.t t -> Path.t t
 val equal : 'a t -> 'a t -> bool
 
