@@ -5,13 +5,13 @@
   > (using melange 0.1)
   > EOF
 
-  $ mkdir a a/b
+  $ mkdir a a/b a/b/c
 
   $ cat > a/dune <<EOF
   > (include_subdirs unqualified)
   > (library
   >  (name a)
-  >  (modes byte melange)
+  >  (modes melange) ; byte
   >  (package pkg))
   > EOF
 
@@ -19,6 +19,9 @@
   > let x = "foo"
   > EOF
   $ cat > a/b/bar.ml <<EOF
+  > let x = "bar"
+  > EOF
+  $ cat > a/b/c/qux.ml <<EOF
   > let x = "bar"
   > EOF
 
