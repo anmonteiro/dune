@@ -200,6 +200,7 @@ let create
           ~obj_dir
           ~sctx:super_context
           ~vimpl
+          ~for_:(Ocaml Byte)
           ~modules
       in
       Some { modules; dep_graphs }
@@ -209,6 +210,7 @@ let create
     | Some modules ->
       let+ dep_graphs =
         Dep_rules.rules
+          ~for_:Melange
           ~dir:(Obj_dir.dir obj_dir)
           ~sandbox
           ~obj_dir

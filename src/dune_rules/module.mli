@@ -7,7 +7,8 @@ module File : sig
 
   val dialect : t -> Dialect.t
   val path : t -> Path.t
-  val make : Dialect.t -> Path.t -> t
+  val original_path : t -> Path.t
+  val make : ?original_path:Path.t -> Dialect.t -> Path.t -> t
   val set_path : t -> Path.t -> t
 end
 

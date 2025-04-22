@@ -9,6 +9,7 @@ val for_module
   -> vimpl:Vimpl.t option
   -> dir:Path.Build.t
   -> sctx:Super_context.t
+  -> for_:Lib_mode.t
   -> Module.t
   -> Module.t list Action_builder.t Ml_kind.Dict.t Memo.t
 
@@ -17,6 +18,7 @@ val immediate_deps_of
   -> Modules.With_vlib.t
   -> obj_dir:Path.Build.t Obj_dir.t
   -> ml_kind:Ml_kind.t
+  -> for_:Lib_mode.t
   -> Module.t list Action_builder.t
 
 val rules
@@ -26,4 +28,5 @@ val rules
   -> vimpl:Vimpl.t option
   -> sctx:Super_context.t
   -> dir:Path.Build.t
+  -> for_:Lib_mode.t
   -> Dep_graph.Ml_kind.t Memo.t

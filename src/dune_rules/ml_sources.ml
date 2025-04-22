@@ -153,23 +153,28 @@ let empty =
 
 let artifacts t = Memo.Lazy.force t.artifacts
 
+let module_dir ~mode ~path_to_root ~root_dir dir =
+  match mode with
+  | Lib_mode.Ocaml _ -> dir
+  | Melange ->
+    let melange_src = Path.relative root_dir Obj_dir.melange_srcs_dir in
+    let module_dir =
+      Path.relative melange_src (String.concat ~sep:Filename.dir_sep path_to_root)
+    in
+    (* Format.eprintf "x:  %s @." (Path.to_string module_dir); *)
+    module_dir
+;;
+
 let modules_of_files ~root_dir ~path_to_root ~mode ~path ~dialects ~dir ~files =
   let root_dir = Path.build root_dir in
   let dir = Path.build dir in
   let impl_files, intf_files =
     let make_module dialect name fn =
       let path_in_build_dir =
-        match mode with
-        | Lib_mode.Ocaml _ -> Path.relative dir fn
-        | Melange ->
-          let melange_src = Path.relative root_dir Obj_dir.melange_srcs_dir in
-          let module_dir =
-            Path.relative melange_src (String.concat ~sep:Filename.dir_sep path_to_root)
-          in
-          Format.eprintf "x:  %s @." (Path.to_string (Path.relative module_dir fn));
-          Path.relative module_dir fn
+        Path.relative (module_dir ~mode ~path_to_root ~root_dir dir) fn
       in
-      name, Module.File.make dialect path_in_build_dir
+      let original_path = Path.relative dir fn in
+      name, Module.File.make dialect ~original_path path_in_build_dir
     in
     let loc = Loc.in_dir dir in
     Filename.Set.to_list files
@@ -364,6 +369,7 @@ let make_lib_modules
       ~libs
       ~lookup_vlib
       ~(lib : Library.t)
+      ~mode
       ~modules
       ~include_subdirs:(loc_include_subdirs, (include_subdirs : Include_subdirs.t))
       ~version
@@ -458,6 +464,7 @@ let make_lib_modules
         ~obj_dir:dir
         ~modules
         ~main_module_name
+        ~for_:mode
         ~wrapped )
 ;;
 
@@ -507,7 +514,15 @@ let modules_of_stanzas =
     in
     `Executables { Modules.stanza = exes; sources; modules; obj_dir; dir }
   in
-  fun stanzas ~expander ~project ~dir ~libs ~lookup_vlib ~modules ~include_subdirs ->
+  fun stanzas
+    ~expander
+    ~project
+    ~dir
+    ~libs
+    ~lookup_vlib
+    ~modules
+    ~mode
+    ~include_subdirs ->
     Memo.parallel_map stanzas ~f:(fun stanza ->
       let enabled_if =
         match Stanza.repr stanza with
@@ -536,6 +551,7 @@ let modules_of_stanzas =
                ~lookup_vlib
                ~modules
                ~lib
+               ~mode
                ~include_subdirs
                ~version:lib.dune_version
              >>= Resolve.read_memo
@@ -664,6 +680,7 @@ let make
       ~project
       ~dir
       ~libs
+      ~mode
       ~lookup_vlib
       ~modules
       ~include_subdirs:(loc_include_subdirs, include_subdirs)
