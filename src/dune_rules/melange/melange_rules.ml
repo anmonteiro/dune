@@ -22,6 +22,32 @@ module Output_kind = struct
   ;;
 end
 
+let setup_melange_sources_copy_rules ~sctx ~dir ~loc ~expander:_ ~modules =
+  (* let lib_src_dir =
+    let obj_dir = Library.obj_dir ~dir lib in
+    Obj_dir.dir obj_dir
+  in *)
+  let dst_dir = Path.Build.append dir (Path.Build.of_string Obj_dir.melange_srcs_dir) in
+  (* Format.eprintf
+    "TOINE %s %s@."
+    (Path.Build.to_string dir)
+    (Path.Build.to_string lib_src_dir); *)
+  let mods = Modules.fold_user_written modules ~init:[] ~f:(fun m acc -> m :: acc) in
+  Memo.parallel_iter mods ~f:(fun m ->
+    (* use the original path to set up the correct symlinks *)
+    Module.sources_without_pp m
+    |> Memo.parallel_iter ~f:(fun src ->
+      let dst =
+        let src_in_lib = Path.drop_prefix_exn src ~prefix:(Path.build dir) in
+        Path.Build.append_local dst_dir src_in_lib
+      in
+      (* Format.eprintf *)
+      (* "TOINEpaths: %s -> %s@." *)
+      (* (Path.to_string src) *)
+      (* (Path.Build.to_string dst); *)
+      Super_context.add_rule sctx ~loc ~dir (Action_builder.symlink ~src ~dst)))
+;;
+
 let output_of_lib =
   let public_lib ~info ~target_dir lib_name =
     Output_kind.Public_library
@@ -53,7 +79,13 @@ let lib_output_path ~output_dir ~lib_dir src =
 
 let make_js_name ~js_ext ~output m =
   let dst_dir =
-    let src_dir = Module.file m ~ml_kind:Impl |> Option.value_exn |> Path.parent_exn in
+    let src_dir =
+      Module.source m ~ml_kind:Impl
+      |> Option.value_exn
+      (* TODO(anmonteiro): will not work when `foo.melange.ml` is a thing *)
+      |> Module.File.original_path
+      |> Path.Build.parent_exn
+    in
     match output with
     | Output_kind.Public_library { lib_dir; output_dir } ->
       lib_output_path ~output_dir ~lib_dir src_dir
@@ -299,7 +331,7 @@ let setup_emit_cmj_rules
   let merlin_ident = Merlin_ident.for_melange ~target:mel.target in
   let dir = Dir_contents.dir dir_contents in
   let f () =
-    let* modules, obj_dir =
+    let* source_modules, obj_dir =
       Dir_contents.melange dir_contents
       >>= Ml_sources.modules_and_obj_dir
             ~libs:(Scope.libs scope)
@@ -320,7 +352,7 @@ let setup_emit_cmj_rules
           expander
           ~dir
           scope
-          modules
+          source_modules
       in
       Modules.With_vlib.modules modules, pp
     in
@@ -344,6 +376,14 @@ let setup_emit_cmj_rules
         ~opaque:Inherit_from_settings
         ~melange_package_name:None
         ~package:mel.package
+    in
+    let* () =
+      setup_melange_sources_copy_rules
+        ~sctx
+        ~dir
+        ~loc:mel.loc
+        ~expander
+        ~modules:source_modules
     in
     let* () = Module_compilation.build_all cctx in
     let* requires_compile = Compilation_context.requires_compile cctx in

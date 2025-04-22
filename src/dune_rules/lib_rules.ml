@@ -401,36 +401,6 @@ let build_shared (lib : Library.t) ~native_archives ~sctx ~dir ~flags =
     |> Super_context.add_rule sctx ~dir ~loc:lib.buildable.loc)
 ;;
 
-let setup_melange_sources_copy_rules ~sctx ~dir ~expander:_ ~modules (lib : Library.t) =
-  (* let lib_src_dir =
-    let obj_dir = Library.obj_dir ~dir lib in
-    Obj_dir.dir obj_dir
-  in *)
-  let dst_dir = Path.Build.append dir (Path.Build.of_string Obj_dir.melange_srcs_dir) in
-  (* Format.eprintf
-    "TOINE %s %s@."
-    (Path.Build.to_string dir)
-    (Path.Build.to_string lib_src_dir); *)
-  let mods = Modules.fold_user_written modules ~init:[] ~f:(fun m acc -> m :: acc) in
-  Memo.parallel_iter mods ~f:(fun m ->
-    (* use the original path to set up the correct symlinks *)
-    Module.sources_without_pp m
-    |> Memo.parallel_iter ~f:(fun src ->
-      let dst =
-        let src_in_lib = Path.drop_prefix_exn src ~prefix:(Path.build dir) in
-        Path.Build.append_local dst_dir src_in_lib
-      in
-      (* Format.eprintf *)
-      (* "TOINEpaths: %s -> %s@." *)
-      (* (Path.to_string src) *)
-      (* (Path.Build.to_string dst); *)
-      Super_context.add_rule
-        sctx
-        ~loc:lib.buildable.loc
-        ~dir
-        (Action_builder.symlink ~src ~dst)))
-;;
-
 (**
 
 a/foo.ml
@@ -661,7 +631,12 @@ let library_rules
   in
   let* () =
     Memo.Option.iter source_modules.melange ~f:(fun source_modules ->
-      setup_melange_sources_copy_rules ~sctx ~dir ~expander ~modules:source_modules lib)
+      Melange_rules.setup_melange_sources_copy_rules
+        ~sctx
+        ~dir
+        ~loc:lib.buildable.loc
+        ~expander
+        ~modules:source_modules)
   in
   let* () = Module_compilation.build_all cctx
   and* lib_info =
