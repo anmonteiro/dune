@@ -413,21 +413,22 @@ let setup_melange_sources_copy_rules ~sctx ~dir ~expander:_ ~modules (lib : Libr
     (Path.Build.to_string lib_src_dir); *)
   let mods = Modules.fold_user_written modules ~init:[] ~f:(fun m acc -> m :: acc) in
   Memo.parallel_iter mods ~f:(fun m ->
-    Module.sources m
+    (* use the original path to set up the correct symlinks *)
+    Module.sources_without_pp m
     |> Memo.parallel_iter ~f:(fun src ->
       let dst =
         let src_in_lib = Path.drop_prefix_exn src ~prefix:(Path.build dir) in
         Path.Build.append_local dst_dir src_in_lib
       in
-      Format.eprintf
-        "TOINEpaths: %s -> %s@."
-        (Path.to_string src)
-        (Path.Build.to_string dst);
+      (* Format.eprintf *)
+      (* "TOINEpaths: %s -> %s@." *)
+      (* (Path.to_string src) *)
+      (* (Path.Build.to_string dst); *)
       Super_context.add_rule
         sctx
         ~loc:lib.buildable.loc
         ~dir
-        (Action_builder.copy ~src ~dst)))
+        (Action_builder.symlink ~src ~dst)))
 ;;
 
 (**
@@ -510,8 +511,9 @@ let setup_build_archives
       in
       Cm_files.make ~excluded_modules ~obj_dir ~ext_obj ~modules ~top_sorted_modules ()
     in
-    iter_modes_concurrently modes.ocaml ~f:(fun mode ->
-      build_lib lib ~native_archives ~dir ~sctx ~expander ~flags ~mode ~cm_files)
+    Memo.when_ (Lib_mode.is_ocaml for_) (fun () ->
+      iter_modes_concurrently modes.ocaml ~f:(fun mode ->
+        build_lib lib ~native_archives ~dir ~sctx ~expander ~flags ~mode ~cm_files))
   and* () =
     (* Build *.cma.js / *.wasma *)
     Memo.when_ modes.ocaml.byte (fun () ->
@@ -626,7 +628,13 @@ let library_rules
   let* expander = Super_context.expander sctx ~dir in
   let vimpl = Compilation_context.vimpl cctx in
   let* top_sorted_modules =
-    let modes = Lib_mode.By_mode.to_list (Compilation_context.modes cctx) in
+    let lib_modes = Compilation_context.modes cctx in
+    let modes = Lib_mode.By_mode.to_list lib_modes in
+    let both =
+      match lib_modes with
+      | { melange = Some _; ocaml = Some _ } -> true
+      | _ -> false
+    in
     Memo.parallel_map modes ~f:(fun (for_, modules) ->
       let dir = Compilation_context.dir cctx in
       let top_sorted_modules =
@@ -636,14 +644,19 @@ let library_rules
           impl_only
       in
       let* () =
-        Memo.Option.iter vimpl ~f:(Virtual_rules.setup_copy_rules_for_impl ~sctx ~dir)
+        Memo.Option.iter
+          vimpl
+          ~f:(Virtual_rules.setup_copy_rules_for_impl ~sctx ~dir ~for_)
       in
       let* () = Check_rules.add_cycle_check sctx ~dir top_sorted_modules in
       let+ () = gen_wrapped_compat_modules lib cctx ~for_
       and+ () =
         Memo.when_ (Compilation_context.bin_annot cctx) (fun () ->
           Ocaml_index.cctx_rules cctx ~for_)
-      and+ () = Odoc.setup_library_odoc_rules cctx local_lib ~for_ in
+      and+ () =
+        Memo.when_ (not both) (fun () ->
+          Odoc.setup_library_odoc_rules cctx local_lib ~for_)
+      in
       for_, top_sorted_modules)
   in
   let* () =
@@ -748,12 +761,14 @@ let rules (lib : Library.t) ~sctx ~dir_contents ~expander ~scope =
     let* source_modules =
       let+ source_modules =
         match lib.modes.ocaml.byte, lib.modes.ocaml.native with
-        | Some (Requested _), _ | _, Some (Requested _) ->
+        | Some (Requested _), _
+        | _, Some (Requested _)
+        | Some Inherited, _
+        | _, Some Inherited ->
           Dir_contents.ocaml dir_contents
           >>= Ml_sources.modules ~libs ~for_:(Library lib_id)
           >>| Option.some
         | None, None -> Memo.return None
-        | Some Inherited, _ | _, Some Inherited -> assert false
       and+ melange_source_modules =
         match lib.modes.melange with
         | Some (Requested _) ->

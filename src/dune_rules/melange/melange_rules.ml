@@ -251,7 +251,7 @@ let build_js
         | Some (modules, obj_dir) ->
           let paths =
             let+ module_deps =
-              Dep_rules.immediate_deps_of m modules ~obj_dir ~ml_kind:Impl
+              Dep_rules.immediate_deps_of m modules ~obj_dir ~ml_kind:Impl ~for_:Melange
             in
             List.fold_left module_deps ~init:[] ~f:(fun acc dep_m ->
               if Module.has dep_m ~ml_kind:Impl
@@ -471,7 +471,7 @@ let setup_runtime_assets_rules sctx ~dir ~target_dir ~mode ~output ~for_ mel =
 
 let modules_for_js_and_obj_dir ~sctx ~dir_contents ~scope (mel : Melange_stanzas.Emit.t) =
   let* modules, obj_dir =
-    Dir_contents.ocaml dir_contents
+    Dir_contents.melange dir_contents
     >>= Ml_sources.modules_and_obj_dir
           ~libs:(Scope.libs scope)
           ~for_:(Melange { target = mel.target })

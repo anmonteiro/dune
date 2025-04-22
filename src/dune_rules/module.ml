@@ -24,6 +24,7 @@ module File = struct
 
   let dialect t = t.dialect
   let path t = t.path
+  let original_path t = t.original_path
   let set_path t path = { t with path }
 
   let version_installed t ~src_root ~install_dir =
@@ -36,7 +37,9 @@ module File = struct
     { t with path }
   ;;
 
-  let make dialect path = { dialect; path; original_path = path }
+  let make ?original_path dialect path =
+    { dialect; path; original_path = Option.value original_path ~default:path }
+  ;;
 
   let to_dyn { path; original_path; dialect } =
     let open Dyn in

@@ -1,7 +1,7 @@
 open Import
 open Memo.O
 
-let setup_copy_rules_for_impl ~sctx ~dir vimpl =
+let setup_copy_rules_for_impl ~sctx ~dir ~for_ vimpl =
   let ctx = Super_context.context sctx in
   let vlib = Vimpl.vlib vimpl in
   let impl = Vimpl.impl vimpl in
@@ -27,8 +27,10 @@ let setup_copy_rules_for_impl ~sctx ~dir vimpl =
     match Obj_dir.to_local vlib_obj_dir with
     | None -> Memo.return ()
     | Some vlib_obj_dir ->
-      let src = Obj_dir.Module.dep vlib_obj_dir (Immediate (m, Impl)) |> Path.build in
-      let dst = Obj_dir.Module.dep impl_obj_dir (Immediate (m, Impl)) in
+      let src =
+        Obj_dir.Module.dep vlib_obj_dir ~for_ (Immediate (m, Impl)) |> Path.build
+      in
+      let dst = Obj_dir.Module.dep impl_obj_dir ~for_ (Immediate (m, Impl)) in
       copy_to_obj_dir ~src ~dst
   in
   let copy_interface_to_impl ~src kind () =

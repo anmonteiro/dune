@@ -3,6 +3,7 @@ open Import
 val setup_copy_rules_for_impl
   :  sctx:Super_context.t
   -> dir:Path.Build.t
+  -> for_:Lib_mode.t
   -> Vimpl.t
   -> unit Memo.t
 

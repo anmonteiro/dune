@@ -700,7 +700,8 @@ module Unprocessed = struct
              | None -> Memo.return (requires_compile, requires_hidden))
       in
       let+ flags = flags
-      and+ indexes = Action_builder.of_memo (Ocaml_index.context_indexes sctx)
+      and+ indexes =
+        Action_builder.of_memo (Ocaml_index.context_indexes ~for_:t.config.mode sctx)
       and+ deps_src_dirs, deps_obj_dirs = add_lib_dirs sctx mode requires_compile
       and+ hidden_src_dirs, hidden_obj_dirs = add_lib_dirs sctx mode requires_hidden in
       let src_dirs =

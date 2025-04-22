@@ -219,7 +219,7 @@ let create
         ; stdlib
         }
       in
-      let+ dep_graphs = Dep_rules.rules ocamldep_modules_data in
+      let+ dep_graphs = Dep_rules.rules ~for_:(Ocaml Byte) ocamldep_modules_data in
       Some { modules; dep_graphs; ocamldep_modules_data }
     | None -> Memo.return None
   and+ melange_modules =
@@ -235,7 +235,7 @@ let create
         ; stdlib
         }
       in
-      let+ dep_graphs = Dep_rules.rules ocamldep_melange_modules_data in
+      let+ dep_graphs = Dep_rules.rules ~for_:Melange ocamldep_melange_modules_data in
       Some { modules; dep_graphs; ocamldep_modules_data = ocamldep_melange_modules_data }
     | None -> Memo.return None
   and+ bin_annot =

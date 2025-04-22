@@ -17,7 +17,7 @@ val cctx_rules : Compilation_context.t -> for_:Lib_mode.t -> unit Memo.t
 
 (** [context_indexes] lists all the available cctx.ocaml-index files in the
     given context *)
-val context_indexes : Super_context.t -> Path.t list Memo.t
+val context_indexes : Super_context.t -> for_:Lib_mode.t -> Path.t list Memo.t
 
 (** [project_rule] adds a rule that will aggregate all the generated indexes
     into one global, project-wide, index *)

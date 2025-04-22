@@ -3,6 +3,7 @@ open Memo.O
 module Gen_rules = Build_config.Gen_rules
 
 let ( ++ ) = Path.Build.relative
+let odoc_ext = ".odoc"
 
 module Ext_loc_map = Map.Make (Dune_package.External_location)
 
@@ -123,7 +124,7 @@ module Index = struct
 
   (* Where we find odoc files for artifacts that are children of this index. *)
   let odoc_dir ctx ~all (m : t) =
-    let init = Paths.root ctx ~all ++ "odoc" in
+    let init = Paths.root ctx ~all ++ odoc_ext in
     List.fold_right ~f:(fun x acc -> acc ++ subdir x) ~init m
   ;;
 
@@ -744,7 +745,7 @@ end = struct
     let basename =
       Path.basename source |> Filename.remove_extension |> Stdune.String.uncapitalize
     in
-    let odoc = Index.odoc_dir ctx ~all index ++ (basename ^ ".odoc") in
+    let odoc = Index.odoc_dir ctx ~all index ++ (basename ^ odoc_ext) in
     let html_dir = Index.html_dir ctx ~all index ++ Stdune.String.capitalize basename in
     let html = html_dir ++ "index.html" in
     (* Note: odoc will not create any output for modules that it believes are
@@ -759,7 +760,7 @@ end = struct
     let basename = Path.basename source |> Filename.remove_extension in
     let odoc =
       (if is_index then Index.obj_dir ctx ~all index else Index.odoc_dir ctx ~all index)
-      ++ ("page-" ^ basename ^ ".odoc")
+      ++ ("page-" ^ basename ^ odoc_ext)
     in
     let html_dir = Index.html_dir ctx ~all index in
     let html =

@@ -7,8 +7,12 @@ let ocaml_index sctx ~dir =
 
 let index_file_name = "cctx.ocaml-index"
 
-let index_path_in_obj_dir obj_dir =
-  let dir = Obj_dir.obj_dir obj_dir in
+let index_path_in_obj_dir ~for_ obj_dir =
+  let dir =
+    match for_ with
+    | Lib_mode.Ocaml _ -> Obj_dir.obj_dir obj_dir
+    | Melange -> Obj_dir.melange_dir obj_dir
+  in
   Path.Build.relative dir index_file_name
 ;;
 
@@ -22,7 +26,7 @@ let cctx_rules cctx ~for_ =
   let dir = Compilation_context.dir cctx in
   let aggregate =
     let obj_dir = Compilation_context.obj_dir cctx in
-    let target = index_path_in_obj_dir obj_dir in
+    let target = index_path_in_obj_dir ~for_ obj_dir in
     let additional_libs =
       let scope = Compilation_context.scope cctx in
       if Dune_project.dune_version (Scope.project scope) >= (3, 17)
@@ -39,7 +43,7 @@ let cctx_rules cctx ~for_ =
         Lib_flags.L.include_flags
           ~direct_libs:non_compile_libs
           ~hidden_libs:[]
-          (Lib_mode.Ocaml Byte)
+          for_
           (Compilation_context.ocaml cctx).lib_config
     in
     (* Indexing depends (recursively) on [required_compile] libs:
@@ -52,7 +56,7 @@ let cctx_rules cctx ~for_ =
         >>| List.filter_map ~f:(fun lib ->
           Lib.Local.of_lib lib
           |> Option.map ~f:(fun lib ->
-            Lib.Local.obj_dir lib |> index_path_in_obj_dir |> Path.build))
+            Lib.Local.obj_dir lib |> index_path_in_obj_dir ~for_ |> Path.build))
         >>| Dep.Set.of_files
       in
       Command.Args.Hidden_deps deps
@@ -92,7 +96,7 @@ let cctx_rules cctx ~for_ =
   Super_context.add_rule sctx ~dir aggregate
 ;;
 
-let context_indexes sctx =
+let context_indexes sctx ~for_ =
   let ctx = Super_context.context sctx in
   Context.name ctx
   |> Dune_load.dune_files
@@ -109,7 +113,7 @@ let context_indexes sctx =
     in
     match obj with
     | None -> acc
-    | Some obj_dir -> Path.build (index_path_in_obj_dir obj_dir) :: acc)
+    | Some obj_dir -> Path.build (index_path_in_obj_dir ~for_ obj_dir) :: acc)
 ;;
 
 let project_rule sctx project =
@@ -123,6 +127,6 @@ let project_rule sctx project =
     in
     Alias.make Alias0.ocaml_index ~dir
   in
-  let* indexes = context_indexes sctx in
+  let* indexes = context_indexes ~for_:(Ocaml Byte) sctx in
   Rules.Produce.Alias.add_deps ocaml_index_alias (Action_builder.paths_existing @@ indexes)
 ;;

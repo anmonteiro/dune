@@ -274,9 +274,11 @@ module Run (P : PARAMS) = struct
       |> Compilation_context.without_bin_annot
     in
     let* deps =
+      let for_ = Lib_mode.Ocaml Byte in
       Dep_rules.for_module
         (* TODO(anmonteiro): support melange *)
-        (Compilation_context.ocamldep_modules_data cctx ~for_:(Ocaml Byte))
+        (Compilation_context.ocamldep_modules_data cctx ~for_)
+        ~for_
         mock_module
     in
     let* () =
