@@ -131,5 +131,5 @@ module Module : sig
       | Transitive of Module.t * Ml_kind.t
   end
 
-  val dep : Path.Build.t t -> Dep.t -> Path.Build.t
+  val dep : Path.Build.t t -> Dep.t -> for_:Lib_mode.t -> Path.Build.t
 end

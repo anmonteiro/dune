@@ -616,8 +616,12 @@ module Module = struct
     ;;
   end
 
-  let dep t dep =
-    let dir = obj_dir t in
+  let dep t dep ~for_ =
+    let dir =
+      match for_ with
+      | Lib_mode.Ocaml _ -> obj_dir t
+      | Melange -> melange_dir t
+    in
     let name = Dep.basename dep in
     Path.Build.relative dir name
   ;;

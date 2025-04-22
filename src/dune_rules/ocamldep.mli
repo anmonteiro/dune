@@ -22,6 +22,7 @@ end
 val deps_of
   :  Modules_data.t
   -> ml_kind:Ml_kind.t
+  -> for_:Lib_mode.t
   -> Module.t
   -> Module.t list Action_builder.t Memo.t
 
@@ -29,6 +30,7 @@ val read_deps_of
   :  obj_dir:Path.Build.t Obj_dir.t
   -> modules:Modules.With_vlib.t
   -> ml_kind:Ml_kind.t
+  -> for_:Lib_mode.t
   -> Module.t
   -> Module.t list Action_builder.t
 
@@ -40,5 +42,6 @@ val read_immediate_deps_of
   :  obj_dir:Path.Build.t Obj_dir.t
   -> modules:Modules.With_vlib.t
   -> ml_kind:Ml_kind.t
+  -> for_:Lib_mode.t
   -> Module.t
   -> Module.t list Action_builder.t
