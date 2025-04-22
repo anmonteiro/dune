@@ -3,6 +3,8 @@ type t =
   | Melange
 
 val decode : t Dune_sexp.Decoder.t
+val equal : t -> t -> bool
+val is_ocaml : t -> bool
 
 module Cm_kind : sig
   type t =

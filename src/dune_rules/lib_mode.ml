@@ -22,6 +22,11 @@ let choose byte native melange = function
   | Melange -> melange
 ;;
 
+let is_ocaml = function
+  | Ocaml _ -> true
+  | Melange -> false
+;;
+
 let to_string = choose "byte" "native" "melange"
 let encode t = Dune_sexp.Encoder.string (to_string t)
 

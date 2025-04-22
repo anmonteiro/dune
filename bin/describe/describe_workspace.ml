@@ -339,7 +339,13 @@ module Crawl = struct
       Action_builder.return { Ocaml.Ml_kind.Dict.intf = []; impl = [] }
     | { with_deps = true; _ } ->
       let deps ml_kind =
-        Dune_rules.Dep_rules.immediate_deps_of unit modules ~obj_dir ~ml_kind
+        (* TODO(anmonteiro): support Melange *)
+        Dune_rules.Dep_rules.immediate_deps_of
+          unit
+          modules
+          ~obj_dir
+          ~ml_kind
+          ~for_:(Ocaml Byte)
       in
       let open Action_builder.O in
       let+ intf, impl = Action_builder.both (deps Intf) (deps Impl) in

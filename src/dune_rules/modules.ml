@@ -149,6 +149,7 @@ module Mangle = struct
     type t =
       { main_module_name : Module_name.t
       ; kind : kind
+      ; for_ : Lib_mode.t
       }
   end
 
@@ -158,7 +159,7 @@ module Mangle = struct
     | Melange
     | Unwrapped
 
-  let of_lib ~lib_name ~implements ~main_module_name ~modules =
+  let of_lib ~lib_name ~implements ~main_module_name ~modules ~for_ =
     let kind : Lib.kind =
       if implements
       then Implementation lib_name
@@ -166,12 +167,12 @@ module Mangle = struct
       then Has_lib_interface
       else Neither
     in
-    Lib { main_module_name; kind }
+    Lib { main_module_name; kind; for_ }
   ;;
 
   let prefix t : Module_name.t Visibility.Map.t option =
     match t with
-    | Lib { main_module_name; kind } ->
+    | Lib { main_module_name; kind; for_ = _ } ->
       (match kind with
        | Has_lib_interface | Neither -> Some (Visibility.Map.make_both main_module_name)
        | Implementation lib ->
@@ -230,6 +231,11 @@ module Mangle = struct
              Path.Local.root
              (List.map ~f:Module_name.uncapitalize path)
            |> Path.Local.set_extension ~ext:".ml")
+    in
+    let obj_dir =
+      match t with
+      | Lib { for_ = Melange; _ } -> Path.Build.relative obj_dir Obj_dir.melange_srcs_dir
+      | _ -> obj_dir
     in
     Module.generated ?install_as path ~obj_name ~kind ~src_dir:obj_dir
   ;;
@@ -673,8 +679,8 @@ module Wrapped = struct
     }
   ;;
 
-  let make ~obj_dir ~lib_name ~implements ~modules ~main_module_name ~wrapped =
-    let mangle = Mangle.of_lib ~main_module_name ~lib_name ~implements ~modules in
+  let make ~obj_dir ~lib_name ~implements ~modules ~main_module_name ~for_ ~wrapped =
+    let mangle = Mangle.of_lib ~main_module_name ~lib_name ~implements ~for_ ~modules in
     let wrapped_compat =
       match (wrapped : Dune_lang.Wrapped.t) with
       | Simple false -> assert false
@@ -791,10 +797,17 @@ let to_dyn t =
   | Stdlib s -> variant "Stdlib" [ Stdlib.to_dyn s ]
 ;;
 
-let lib ~obj_dir ~main_module_name ~wrapped ~stdlib ~lib_name ~implements ~modules =
+let lib ~obj_dir ~main_module_name ~wrapped ~stdlib ~lib_name ~implements ~modules ~for_ =
   let make_wrapped main_module_name =
     Wrapped
-      (Wrapped.make ~obj_dir ~lib_name ~implements ~modules ~main_module_name ~wrapped)
+      (Wrapped.make
+         ~obj_dir
+         ~lib_name
+         ~implements
+         ~modules
+         ~main_module_name
+         ~for_
+         ~wrapped)
   in
   let modules =
     match stdlib with
