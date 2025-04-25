@@ -106,7 +106,13 @@ let gen_rules sctx t ~dir ~scope =
     Path.Build.relative dir ("." ^ name ^ "." ^ stamp)
   in
   let main_module_name = Module_name.of_string name in
-  let module_ = Module.generated ~kind:Impl [ main_module_name ] ~src_dir:cinaps_dir in
+  let module_ =
+    Module.generated
+      ~kind:Impl
+      ~for_:(Ocaml Byte)
+      [ main_module_name ]
+      ~src_dir:cinaps_dir
+  in
   let cinaps_ml =
     Module.source ~ml_kind:Ml_kind.Impl module_
     |> Option.value_exn

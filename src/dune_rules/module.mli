@@ -112,6 +112,7 @@ val generated
   :  ?install_as:Path.Local.t
   -> ?obj_name:Module_name.Unique.t
   -> kind:Kind.t
+  -> for_:Lib_mode.t
   -> src_dir:Path.Build.t
   -> Module_name.Path.t
   -> t

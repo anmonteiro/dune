@@ -233,12 +233,14 @@ module Mangle = struct
              (List.map ~f:Module_name.uncapitalize path)
            |> Path.Local.set_extension ~ext:".ml")
     in
-    let obj_dir =
+    let for_ =
       match t with
-      | Lib { for_ = Melange; _ } -> Path.Build.relative obj_dir Obj_dir.melange_srcs_dir
-      | _ -> obj_dir
+      | Lib { for_; _ } -> for_ (* Path.Build.relative obj_dir Obj_dir.melange_srcs_dir *)
+      | Exe -> Ocaml Byte
+      | Melange -> Melange
+      | _ -> Ocaml Byte
     in
-    Module.generated ?install_as path ~obj_name ~kind ~src_dir:obj_dir
+    Module.generated ?install_as path ~obj_name ~kind ~for_ ~src_dir:obj_dir
   ;;
 
   let wrap_module t m ~interface =
