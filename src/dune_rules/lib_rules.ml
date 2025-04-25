@@ -310,7 +310,7 @@ let build_stubs
   if List.for_all ~f:List.is_empty [ all_o_files; vlib_stubs_o_files ]
   then Memo.return ()
   else (
-    let modes = (Compilation_context.modes cctx).ocaml in
+    let modes = modes.ocaml in
     let ocamlmklib =
       let build_targets_together =
         modes.native
