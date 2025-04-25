@@ -430,11 +430,10 @@ let setup_build_archives
       ~expander
       ~lib_info
       ~(modes : Lib_mode.Map.Set.t)
-      ~for_
   =
   let obj_dir = Compilation_context.obj_dir cctx in
   let flags = Compilation_context.flags cctx in
-  let modules = Compilation_context.modules cctx ~for_ in
+  let modules = Compilation_context.modules cctx ~for_:(Ocaml Byte) in
   let sctx = Compilation_context.super_context cctx in
   let { Lib_config.ext_obj; natdynlink_supported; _ } =
     let ocaml = Compilation_context.ocaml cctx in
@@ -481,9 +480,8 @@ let setup_build_archives
       in
       Cm_files.make ~excluded_modules ~obj_dir ~ext_obj ~modules ~top_sorted_modules ()
     in
-    Memo.when_ (Lib_mode.is_ocaml for_) (fun () ->
-      iter_modes_concurrently modes.ocaml ~f:(fun mode ->
-        build_lib lib ~native_archives ~dir ~sctx ~expander ~flags ~mode ~cm_files))
+    iter_modes_concurrently modes.ocaml ~f:(fun mode ->
+      build_lib lib ~native_archives ~dir ~sctx ~expander ~flags ~mode ~cm_files)
   and* () =
     (* Build *.cma.js / *.wasma *)
     Memo.when_ modes.ocaml.byte (fun () ->
@@ -663,18 +661,17 @@ let library_rules
     Lib_mode.Map.map modes ~f:Option.is_some
   in
   let+ () =
+    let top_sorted_modules =
+      List.filter top_sorted_modules ~f:(fun (for_, _) ->
+        match for_ with
+        | Lib_mode.Ocaml _ -> true
+        | Melange -> false)
+    in
     Memo.when_
-      (not (Library.is_virtual lib))
+      ((not (List.is_empty top_sorted_modules)) && not (Library.is_virtual lib))
       (fun () ->
-         Memo.parallel_iter top_sorted_modules ~f:(fun (for_, top_sorted_modules) ->
-           setup_build_archives
-             lib
-             ~lib_info
-             ~top_sorted_modules
-             ~cctx
-             ~expander
-             ~for_
-             ~modes))
+         let _for_, top_sorted_modules = List.hd top_sorted_modules in
+         setup_build_archives lib ~lib_info ~top_sorted_modules ~cctx ~expander ~modes)
   and+ () =
     let vlib_stubs_o_files = Vimpl.vlib_stubs_o_files vimpl in
     Memo.when_

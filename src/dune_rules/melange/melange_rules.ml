@@ -116,8 +116,9 @@ let impl_only_modules_defined_in_this_lib ~sctx ~scope lib =
   | External (Some modules) ->
     Memo.return
       ( modules
-      , (Modules.With_vlib.split_by_lib modules).impl
-        |> List.filter ~f:(Module.has ~ml_kind:Impl) )
+      , List.filter
+          (Modules.With_vlib.split_by_lib modules).impl
+          ~f:(Module.has ~ml_kind:Impl) )
   | Local ->
     let lib = Lib.Local.of_lib_exn lib in
     let info = Lib.Local.info lib in
