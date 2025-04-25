@@ -25,3 +25,5 @@ val with_empty_intf
   -> dir:Path.Build.t
   -> Module.t
   -> Module.t Memo.t
+
+val melange_js_basename : Module.t -> Filename.t
