@@ -5,6 +5,7 @@ type t =
 val decode : t Dune_sexp.Decoder.t
 val equal : t -> t -> bool
 val is_ocaml : t -> bool
+val to_dyn : t -> Dyn.t
 
 module Cm_kind : sig
   type t =

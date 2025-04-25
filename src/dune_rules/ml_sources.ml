@@ -153,26 +153,11 @@ let empty =
 
 let artifacts t = Memo.Lazy.force t.artifacts
 
-let module_dir ~mode ~path_to_root ~root_dir dir =
-  match mode with
-  | Lib_mode.Ocaml _ -> dir
-  | Melange ->
-    let melange_src = Path.relative root_dir Obj_dir.melange_srcs_dir in
-    let module_dir =
-      Path.relative melange_src (String.concat ~sep:Filename.dir_sep path_to_root)
-    in
-    (* Format.eprintf "x:  %s @." (Path.to_string module_dir); *)
-    module_dir
-;;
-
-let modules_of_files ~root_dir ~path_to_root ~mode ~path ~dialects ~dir ~files =
-  let root_dir = Path.build root_dir in
+let modules_of_files ~path ~dialects ~dir ~files =
   let dir = Path.build dir in
   let impl_files, intf_files =
     let make_module dialect name fn =
-      let path_in_build_dir =
-        Path.relative (module_dir ~mode ~path_to_root ~root_dir dir) fn
-      in
+      let path_in_build_dir = Path.relative dir fn in
       let original_path = Path.relative dir fn in
       name, Module.File.make dialect ~original_path path_in_build_dir
     in
@@ -206,6 +191,91 @@ let modules_of_files ~root_dir ~path_to_root ~mode ~path ~dialects ~dir ~files =
         ; Pp.textf "- %s" (Path.to_string_maybe_quoted (Module.File.path f1))
         ; Pp.textf "- %s" (Path.to_string_maybe_quoted (Module.File.path f2))
         ]
+  in
+  let impls = parse_one_set impl_files in
+  let intfs = parse_one_set intf_files in
+  Module_name.Map.merge impls intfs ~f:(fun name impl intf ->
+    Some (Module.Source.make (path @ [ name ]) ?impl ?intf))
+;;
+
+let module_dir ~path_to_root ~root_dir =
+  let melange_src = Path.relative root_dir Obj_dir.melange_srcs_dir in
+  let module_dir =
+    Path.relative melange_src (String.concat ~sep:Filename.dir_sep path_to_root)
+  in
+  (* Format.eprintf "x:  %s @." (Path.to_string module_dir); *)
+  module_dir
+;;
+
+let melange_modules_of_files ~root_dir ~path_to_root ~path ~dialects ~dir ~files =
+  let root_dir = Path.build root_dir in
+  let dir = Path.build dir in
+  let impl_files, intf_files =
+    let make_module dialect name ~original_fn ~fn =
+      let path_in_build_dir = Path.relative (module_dir ~path_to_root ~root_dir) fn in
+      let original_path = Path.relative dir original_fn in
+      name, Module.File.make dialect ~original_path path_in_build_dir
+    in
+    let loc = Loc.in_dir dir in
+    Filename.Set.to_list files
+    |> List.filter_partition_map ~f:(fun fn ->
+      (* we aren't using Filename.extension because we want to handle
+         filenames such as foo.cppo.ml *)
+      match String.lsplit2 fn ~on:'.' with
+      | None -> Skip
+      | Some (s, ext) ->
+        let melange_specific, ext =
+          match String.lsplit2 ext ~on:'.' with
+          | Some ("melange", ext) -> true, ext
+          | Some _ | None -> false, ext
+        in
+        (* Format.eprintf "fn: %B %s %s@." melange_specific_fn s ext; *)
+        (match Dialect.DB.find_by_extension dialects ("." ^ ext) with
+         | None -> Skip
+         | Some (dialect, ml_kind) ->
+           let name = Module_name.of_string_allow_invalid (loc, s) in
+           let module_ =
+             let name, module_ =
+               make_module dialect name ~original_fn:fn ~fn:(s ^ "." ^ ext)
+             in
+             name, (module_, melange_specific)
+           in
+           (match ml_kind with
+            | Impl -> Left module_
+            | Intf -> Right module_)))
+  in
+  let parse_one_set =
+    let exception Duplicate of (Module_name.t * Module.File.t * Module.File.t) in
+    fun (files : (Module_name.t * (Module.File.t * bool)) list) ->
+      let ret =
+        try
+          let map =
+            let inner =
+              Module_name.Map.of_list_reducei files ~f:(fun name a b ->
+                match a, b with
+                | (_, true), (_, false) -> a
+                | (_, false), (_, true) -> b
+                | (f1, false), (f2, false) | (f1, true), (f2, true) ->
+                  raise (Duplicate (name, f1, f2)))
+            in
+            Module_name.Map.map inner ~f:fst
+          in
+          Ok map
+        with
+        | Duplicate (name, f1, f2) -> Error (name, f1, f2)
+      in
+      match ret with
+      | Ok x -> x
+      | Error (name, f1, f2) ->
+        let src_dir = Path.drop_build_context_exn dir in
+        User_error.raise
+          [ Pp.textf
+              "Too many files for module %s in %s:"
+              (Module_name.to_string name)
+              (Path.Source.to_string_maybe_quoted src_dir)
+          ; Pp.textf "- %s" (Path.to_string_maybe_quoted (Module.File.path f1))
+          ; Pp.textf "- %s" (Path.to_string_maybe_quoted (Module.File.path f2))
+          ]
   in
   let impls = parse_one_set impl_files in
   let intfs = parse_one_set intf_files in
@@ -614,7 +684,16 @@ let make
                   (Loc.in_dir (Path.drop_optional_build_context (Path.build dir)), m))
             in
             let modules =
-              modules_of_files ~root_dir ~path_to_root ~mode ~dialects ~dir ~files ~path
+              match mode with
+              | Lib_mode.Ocaml _ -> modules_of_files ~dialects ~dir ~files ~path
+              | Melange ->
+                melange_modules_of_files
+                  ~root_dir
+                  ~path_to_root
+                  ~dialects
+                  ~dir
+                  ~files
+                  ~path
             in
             match Module_trie.set_map acc path modules with
             | Ok s -> s
@@ -653,14 +732,17 @@ let make
           ~init:Module_name.Map.empty
           ~f:(fun acc { Source_file_dir.dir; files; path_to_root } ->
             let modules =
-              modules_of_files
-                ~root_dir
-                ~path_to_root
-                ~mode
-                ~dialects
-                ~dir
-                ~files
-                ~path:[]
+              let path = [] in
+              match mode with
+              | Lib_mode.Ocaml _ -> modules_of_files ~dialects ~dir ~files ~path
+              | Melange ->
+                melange_modules_of_files
+                  ~root_dir
+                  ~path_to_root
+                  ~dialects
+                  ~dir
+                  ~files
+                  ~path
             in
             Module_name.Map.union acc modules ~f:(fun name x y ->
               User_error.raise
