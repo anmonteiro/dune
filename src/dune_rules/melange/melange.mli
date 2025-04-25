@@ -28,8 +28,10 @@ module Cm_kind : sig
   end
 end
 
-module Install : sig
+module Source : sig
   val dir : string
 end
 
-val js_basename : Module.t -> Filename.t
+module Install : sig
+  val dir : string
+end
