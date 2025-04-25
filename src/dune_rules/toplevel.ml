@@ -13,7 +13,7 @@ module Source = struct
 
   let main_module t =
     let main_module_name = Module_name.of_string_allow_invalid (t.loc, t.name) in
-    Module.generated ~kind:Impl ~src_dir:t.dir [ main_module_name ]
+    Module.generated ~kind:Impl ~for_:(Ocaml Byte) ~src_dir:t.dir [ main_module_name ]
   ;;
 
   let source_path t =

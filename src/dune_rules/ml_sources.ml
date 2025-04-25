@@ -199,7 +199,7 @@ let modules_of_files ~path ~dialects ~dir ~files =
 ;;
 
 let module_dir ~path_to_root ~root_dir =
-  let melange_src = Path.relative root_dir Obj_dir.melange_srcs_dir in
+  let melange_src = Path.relative root_dir Melange.Source.dir in
   let module_dir =
     Path.relative melange_src (String.concat ~sep:Filename.dir_sep path_to_root)
   in
@@ -499,6 +499,7 @@ let make_lib_modules
       ~modules
       ~stanza_loc
       ~kind
+      ~for_:mode
       ~private_modules:
         (Option.value ~default:Ordered_set_lang.Unexpanded.standard lib.private_modules)
       ~src_dir:dir
@@ -572,6 +573,7 @@ let modules_of_stanzas =
         ~stanza_loc
         ~src_dir:dir
         ~kind:Modules_field_evaluator.Exe_or_normal_lib
+        ~for_:(Ocaml Byte)
         ~private_modules:Ordered_set_lang.Unexpanded.standard
         ~version:exes.dune_version
         modules_settings
@@ -639,6 +641,7 @@ let modules_of_stanzas =
                ~modules
                ~stanza_loc:mel.loc
                ~kind:Modules_field_evaluator.Exe_or_normal_lib
+               ~for_:Melange (* TODO(anmonteiro): assert mode is always melange? *)
                ~version
                ~private_modules:Ordered_set_lang.Unexpanded.standard
                ~src_dir:dir

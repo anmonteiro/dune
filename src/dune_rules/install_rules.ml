@@ -268,7 +268,7 @@ end = struct
                         | Ocaml _ -> base
                         | Melange ->
                           (* remove leading `.melange_src` from the lib path *)
-                          Path.Local.relative base Obj_dir.melange_srcs_dir
+                          Path.Local.relative base Melange.Source.dir
                       in
                       Path.Build.local src_dir
                       |> Path.Local.descendant ~of_

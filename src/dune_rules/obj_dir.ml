@@ -1,7 +1,5 @@
 open Import
 
-let melange_srcs_dir = ".melange_src"
-
 module Paths = struct
   let library_object_directory ~dir name =
     Path.Build.relative dir ("." ^ Lib_name.Local.to_string name ^ ".objs")

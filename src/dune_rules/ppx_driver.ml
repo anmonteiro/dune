@@ -290,7 +290,9 @@ let build_ppx_driver sctx ~scope ~target ~pps ~pp_names =
      at the point where the driver is defined. *)
   let dir = Path.Build.parent_exn target in
   let main_module_name = Module_name.of_string_allow_invalid (Loc.none, "_ppx") in
-  let module_ = Module.generated ~kind:Impl ~src_dir:dir [ main_module_name ] in
+  let module_ =
+    Module.generated ~kind:Impl ~for_:(Ocaml Byte) ~src_dir:dir [ main_module_name ]
+  in
   let* () =
     let ml_source =
       Module.file ~ml_kind:Impl module_ |> Option.value_exn |> Path.as_in_build_dir_exn

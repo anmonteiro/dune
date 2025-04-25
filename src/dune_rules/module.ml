@@ -411,7 +411,14 @@ let version_installed t ~src_root ~install_dir =
   map_files t ~f:(fun _ -> File.version_installed ~src_root ~install_dir)
 ;;
 
-let generated ?install_as ?obj_name ~(kind : Kind.t) ~src_dir (path : Module_name.Path.t) =
+let generated
+      ?install_as
+      ?obj_name
+      ~(kind : Kind.t)
+      ~(for_ : Lib_mode.t)
+      ~src_dir
+      (path : Module_name.Path.t)
+  =
   let obj_name =
     match obj_name with
     | Some obj_name -> obj_name
@@ -420,7 +427,15 @@ let generated ?install_as ?obj_name ~(kind : Kind.t) ~src_dir (path : Module_nam
   let source =
     let impl =
       let basename = Module_name.Unique.artifact_filename obj_name ~ext:ml_gen in
-      Path.Build.relative src_dir basename |> Path.build |> File.make Dialect.ocaml
+      let original_path = Path.Build.relative src_dir basename |> Path.build in
+      let path =
+        match for_ with
+        | Ocaml _ -> original_path
+        | Melange ->
+          Path.Build.relative (Path.Build.relative src_dir Melange.Source.dir) basename
+          |> Path.build
+      in
+      File.make Dialect.ocaml ~original_path path
     in
     Source.make ~impl path
   in
