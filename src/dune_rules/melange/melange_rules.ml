@@ -23,28 +23,19 @@ module Output_kind = struct
 end
 
 let setup_melange_sources_copy_rules ~sctx ~dir ~loc ~expander:_ ~modules =
-  (* let lib_src_dir =
-    let obj_dir = Library.obj_dir ~dir lib in
-    Obj_dir.dir obj_dir
-  in *)
-  let dst_dir = Path.Build.append dir (Path.Build.of_string Obj_dir.melange_srcs_dir) in
-  (* Format.eprintf
-    "TOINE %s %s@."
-    (Path.Build.to_string dir)
-    (Path.Build.to_string lib_src_dir); *)
   let mods = Modules.fold_user_written modules ~init:[] ~f:(fun m acc -> m :: acc) in
   Memo.parallel_iter mods ~f:(fun m ->
     (* use the original path to set up the correct symlinks *)
-    Module.sources_without_pp m
-    |> Memo.parallel_iter ~f:(fun src ->
+    List.combine (Module.sources_without_pp m) (Module.sources m)
+    |> Memo.parallel_iter ~f:(fun (src, dst) ->
       let dst =
-        let src_in_lib = Path.drop_prefix_exn src ~prefix:(Path.build dir) in
-        Path.Build.append_local dst_dir src_in_lib
+        let src_in_lib = Path.drop_prefix_exn dst ~prefix:(Path.build dir) in
+        Path.Build.append_local dir src_in_lib
       in
-      (* Format.eprintf *)
-      (* "TOINEpaths: %s -> %s@." *)
-      (* (Path.to_string src) *)
-      (* (Path.Build.to_string dst); *)
+      (* Format.eprintf
+        "src -> dest: %s -> %s@."
+        (Path.to_string src)
+        (Path.Build.to_string dst); *)
       Super_context.add_rule sctx ~loc ~dir (Action_builder.symlink ~src ~dst)))
 ;;
 
