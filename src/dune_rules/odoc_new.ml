@@ -124,7 +124,7 @@ module Index = struct
 
   (* Where we find odoc files for artifacts that are children of this index. *)
   let odoc_dir ctx ~all (m : t) =
-    let init = Paths.root ctx ~all ++ odoc_ext in
+    let init = Paths.root ctx ~all ++ "odoc" in
     List.fold_right ~f:(fun x acc -> acc ++ subdir x) ~init m
   ;;
 
