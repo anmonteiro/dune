@@ -1477,7 +1477,7 @@ let index_info_of_lib_def =
       | None -> Index.of_external_lib maps lib
     in
     let+ artifacts =
-      let+ modules = Dir_contents.modules_of_lib sctx (lib :> Lib.t) in
+      let+ modules = Dir_contents.modules_of_lib sctx (lib :> Lib.t) ~for_:(Ocaml Byte) in
       match modules with
       | Some m -> lib_artifacts ctx all index (lib :> Lib.t) m
       | None ->

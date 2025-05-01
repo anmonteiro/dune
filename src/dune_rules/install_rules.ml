@@ -89,7 +89,8 @@ end = struct
 
   let lib_files ~scope ~dir_contents ~dir ~lib_config lib =
     let+ modules =
-      let* ml_sources = Dir_contents.ocaml dir_contents in
+      (* TODO(anmonteiro): check this *)
+      let* ml_sources = Dir_contents.for_ dir_contents ~mode:(Ocaml Byte) in
       Ml_sources.modules
         ml_sources
         ~libs:(Scope.libs scope)
@@ -205,13 +206,8 @@ end = struct
         | false, false -> assert false
       in
       Memo.parallel_map lib_modes ~f:(fun mode ->
-        let ml_sources =
-          match mode with
-          | Ocaml _ -> Dir_contents.ocaml dir_contents
-          | Melange -> Dir_contents.melange dir_contents
-        in
         let+ modules =
-          ml_sources
+          Dir_contents.for_ dir_contents ~mode
           >>= Ml_sources.modules
                 ~libs:(Scope.libs scope)
                 ~for_:(Library (Lib_info.lib_id info |> Lib_id.to_local_exn))
@@ -728,11 +724,19 @@ end = struct
             |> List.map ~f:Path.build
           and* modules =
             let* libs = Scope.DB.find_by_dir dir >>| Scope.libs in
-            Dir_contents.ocaml dir_contents
-            >>= Ml_sources.modules
-                  ~libs
-                  ~for_:(Library (Lib_info.lib_id info |> Lib_id.to_local_exn))
-            >>| Modules.With_vlib.modules
+            let lib_modes = Lib_mode.Map.Set.to_list_unique (Lib_info.modes info) in
+            let+ modules =
+              Memo.parallel_map lib_modes ~f:(fun mode ->
+                let+ modules =
+                  Dir_contents.for_ dir_contents ~mode
+                  >>= Ml_sources.modules
+                        ~libs
+                        ~for_:(Library (Lib_info.lib_id info |> Lib_id.to_local_exn))
+                  >>| Modules.With_vlib.modules
+                in
+                mode, modules)
+            in
+            Lib_mode.By_mode.of_list modules
           and* melange_runtime_deps = file_deps (Lib_info.melange_runtime_deps info)
           and* public_headers = file_deps (Lib_info.public_headers info) in
           let+ dune_lib =

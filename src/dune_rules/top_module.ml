@@ -30,7 +30,7 @@ let find_module sctx src =
   | Some module_name ->
     let dir = Path.Build.parent_exn src in
     let* dir_contents = drop_rules @@ fun () -> Dir_contents.get sctx ~dir in
-    let* ocaml = Dir_contents.ocaml dir_contents
+    let* ocaml = Dir_contents.for_ dir_contents ~mode:(Ocaml Byte)
     and* scope = Dir_contents.dir dir_contents |> Scope.DB.find_by_dir in
     Ml_sources.find_origin ocaml ~libs:(Scope.libs scope) [ module_name ]
     >>= (function

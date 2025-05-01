@@ -614,7 +614,10 @@ let libs_of_pkg ctx ~pkg =
 ;;
 
 let entry_modules_by_lib sctx lib =
-  Dir_contents.modules_of_local_lib sctx lib >>| Modules.entry_modules
+  let info = Lib.Local.info lib in
+  let modes = Lib_info.modes info in
+  let mode = Lib_mode.Map.Set.for_merlin modes in
+  Dir_contents.modules_of_local_lib sctx lib ~for_:mode >>| Modules.entry_modules
 ;;
 
 let entry_modules sctx ~pkg =

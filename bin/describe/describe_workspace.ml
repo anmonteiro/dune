@@ -405,7 +405,7 @@ module Crawl = struct
       let* modules_, obj_dir =
         let+ modules_, obj_dir =
           Dir_contents.get sctx ~dir
-          >>= Dir_contents.ocaml
+          >>= Dir_contents.for_ ~mode:(Ocaml Byte)
           >>= Ml_sources.modules_and_obj_dir
                 ~libs:(Scope.libs scope)
                 ~for_:(Exe { first_exe })
@@ -474,7 +474,7 @@ module Crawl = struct
             in
             let+ modules_, obj_dir_ =
               Dir_contents.get sctx ~dir:(Path.as_in_build_dir_exn src_dir)
-              >>= Dir_contents.ocaml
+              >>= Dir_contents.for_ ~mode:(Ocaml Byte)
               >>= Ml_sources.modules_and_obj_dir
                     ~libs
                     ~for_:(Library (Lib_info.lib_id info |> Lib_id.to_local_exn))
