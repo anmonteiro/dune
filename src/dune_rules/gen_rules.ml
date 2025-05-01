@@ -239,7 +239,7 @@ let gen_rules_for_stanzas sctx dir_contents cctxs expander ~dune_file ~dir:ctx_d
         >>= (function
          | false -> Memo.return ()
          | true ->
-           let* ml_sources = Dir_contents.ocaml dir_contents in
+           let* ml_sources = Dir_contents.for_ ~mode:(Ocaml Byte) dir_contents in
            let base_path =
              match Ml_sources.include_subdirs ml_sources with
              | Include Unqualified | No -> []

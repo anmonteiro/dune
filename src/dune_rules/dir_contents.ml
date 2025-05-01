@@ -87,8 +87,14 @@ type triage =
 
 let dir t = t.dir
 let coq t = Memo.Lazy.force t.coq
-let ocaml t = Memo.Lazy.force t.ml
-let melange t = Memo.Lazy.force t.melange
+
+let for_ t ~mode =
+  Memo.Lazy.force
+    (match mode with
+     | Lib_mode.Ocaml _ -> t.ml
+     | Melange -> t.melange)
+;;
+
 let artifacts t = Memo.Lazy.force t.ml >>= Ml_sources.artifacts
 
 let dirs t =
@@ -232,7 +238,7 @@ end = struct
     let hash = Tuple.T2.hash Super_context.hash Path.Build.hash
   end
 
-  let lookup_vlib sctx ~current_dir ~loc ~dir =
+  let lookup_vlib sctx ~current_dir ~loc ~dir ~for_:mode =
     match Path.Build.equal current_dir dir with
     | true ->
       User_error.raise
@@ -241,7 +247,7 @@ end = struct
             "Virtual library and its implementation(s) cannot be defined in the same \
              directory"
         ]
-    | false -> Load.get sctx ~dir >>= ocaml
+    | false -> Load.get sctx ~dir >>= for_ ~mode
   ;;
 
   let human_readable_description dir =
@@ -270,7 +276,7 @@ end = struct
           let dirs = [ { Source_file_dir.dir; path_to_root = []; files } ] in
           let ml =
             Memo.lazy_ (fun () ->
-              let lookup_vlib = lookup_vlib sctx ~current_dir:dir in
+              let lookup_vlib = lookup_vlib sctx ~current_dir:dir ~for_:(Ocaml Byte) in
               let loc = loc_of_dune_file st_dir in
               let libs = Scope.DB.find_by_dir dir >>| Scope.libs in
               let* expander = Super_context.expander sctx ~dir in
@@ -288,7 +294,7 @@ end = struct
                     ~dirs)
           and melange =
             Memo.lazy_ (fun () ->
-              let lookup_vlib = lookup_vlib sctx ~current_dir:dir in
+              let lookup_vlib = lookup_vlib sctx ~current_dir:dir ~for_:Melange in
               let loc = loc_of_dune_file st_dir in
               let libs = Scope.DB.find_by_dir dir >>| Scope.libs in
               let* expander = Super_context.expander sctx ~dir in
@@ -375,7 +381,7 @@ end = struct
            in
            let ml =
              Memo.lazy_ (fun () ->
-               let lookup_vlib = lookup_vlib sctx ~current_dir:dir in
+               let lookup_vlib = lookup_vlib sctx ~current_dir:dir ~for_:(Ocaml Byte) in
                let libs = Scope.DB.find_by_dir dir >>| Scope.libs in
                let* expander = Super_context.expander sctx ~dir in
                stanzas
@@ -392,7 +398,7 @@ end = struct
                      ~dirs)
            and melange =
              Memo.lazy_ (fun () ->
-               let lookup_vlib = lookup_vlib sctx ~current_dir:dir in
+               let lookup_vlib = lookup_vlib sctx ~current_dir:dir ~for_:Melange in
                let libs = Scope.DB.find_by_dir dir >>| Scope.libs in
                let* expander = Super_context.expander sctx ~dir in
                stanzas
@@ -493,25 +499,25 @@ end
 
 include Load
 
-let modules_of_local_lib sctx lib =
+let modules_of_local_lib sctx lib ~for_:mode =
   let info = Lib.Local.info lib in
   let dir = Lib_info.src_dir info in
   let* t = get sctx ~dir
   and* libs = Scope.DB.find_by_dir dir >>| Scope.libs in
-  ocaml t
+  for_ t ~mode
   >>= Ml_sources.modules
         ~libs
         ~for_:(Library (Lib_info.lib_id info |> Lib_id.to_local_exn))
 ;;
 
-let modules_of_lib sctx lib =
+let modules_of_lib sctx lib ~for_ =
   match
     let info = Lib.info lib in
-    Lib_info.modules info
+    Lib_info.modules info ~for_
   with
   | External modules -> Memo.return modules
   | Local ->
-    let+ modules = modules_of_local_lib sctx (Lib.Local.of_lib_exn lib) in
+    let+ modules = modules_of_local_lib sctx (Lib.Local.of_lib_exn lib) ~for_ in
     Some (Modules.With_vlib.modules modules)
 ;;
 
