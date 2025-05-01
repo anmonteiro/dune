@@ -9,8 +9,9 @@ type t = Link_time_code_gen_type.t =
 let generate_and_compile_module cctx ~precompiled_cmi ~obj_name ~name ~lib ~code ~requires
   =
   let sctx = Compilation_context.super_context cctx in
+  let for_ = Lib_mode.Ocaml Byte in
   let* module_ =
-    let+ modules = Dir_contents.modules_of_lib sctx lib in
+    let+ modules = Dir_contents.modules_of_lib sctx lib ~for_ in
     let obj_name =
       match obj_name with
       | Some _ -> obj_name

@@ -604,11 +604,11 @@ module Unprocessed = struct
       Some { Processed.flag = Processed.Pp_kind.Ppx; args }
   ;;
 
-  let src_dirs sctx lib =
+  let src_dirs sctx lib ~for_ =
     match Lib.Local.of_lib lib with
     | None -> Lib.info lib |> Lib_info.src_dir |> Path.Set.singleton |> Memo.return
     | Some lib ->
-      Dir_contents.modules_of_local_lib sctx lib
+      Dir_contents.modules_of_local_lib sctx lib ~for_
       >>| Modules.source_dirs
       >>| Path.Set.map ~f:Path.drop_optional_build_context
   ;;

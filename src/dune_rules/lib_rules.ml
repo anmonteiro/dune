@@ -737,14 +737,14 @@ let rules (lib : Library.t) ~sctx ~dir_contents ~expander ~scope =
         | _, Some (Requested _)
         | Some Inherited, _
         | _, Some Inherited ->
-          Dir_contents.ocaml dir_contents
+          Dir_contents.for_ ~mode:(Ocaml Byte) dir_contents
           >>= Ml_sources.modules ~libs ~for_:(Library lib_id)
           >>| Option.some
         | None, None -> Memo.return None
       and+ melange_source_modules =
         match lib.modes.melange with
         | Some (Requested _) ->
-          Dir_contents.melange dir_contents
+          Dir_contents.for_ dir_contents ~mode:Melange
           >>= Ml_sources.modules ~libs ~for_:(Library lib_id)
           >>| Option.some
         | None -> Memo.return None

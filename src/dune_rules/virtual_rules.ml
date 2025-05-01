@@ -108,7 +108,7 @@ let impl sctx ~(lib : Library.t) ~scope =
                  ~instrumentation_backend:(Lib.DB.instrumentation_backend db)
                |> Resolve.Memo.read_memo
              in
-             Dir_contents.ocaml dir_contents
+             Dir_contents.for_ ~mode:for_ dir_contents
              >>= Ml_sources.modules
                    ~libs:db
                    ~for_:(Library (Lib_info.lib_id info |> Lib_id.to_local_exn))
