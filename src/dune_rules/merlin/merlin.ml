@@ -622,10 +622,10 @@ module Unprocessed = struct
       ~f:(pp_flags ctx ~expander t.config.libname)
   ;;
 
-  let add_lib_dirs sctx mode libs =
+  let add_lib_dirs sctx mode libs ~for_ =
     Action_builder.of_memo
       (Memo.parallel_map libs ~f:(fun lib ->
-         let+ dirs = src_dirs sctx lib in
+         let+ dirs = src_dirs sctx lib ~for_ in
          lib, dirs)
        >>| List.fold_left
              ~init:(Path.Set.empty, Path.Set.empty)
@@ -702,8 +702,11 @@ module Unprocessed = struct
       let+ flags = flags
       and+ indexes =
         Action_builder.of_memo (Ocaml_index.context_indexes ~for_:t.config.mode sctx)
-      and+ deps_src_dirs, deps_obj_dirs = add_lib_dirs sctx mode requires_compile
-      and+ hidden_src_dirs, hidden_obj_dirs = add_lib_dirs sctx mode requires_hidden in
+      and+ deps_src_dirs, deps_obj_dirs =
+        add_lib_dirs sctx mode requires_compile ~for_:t.config.mode
+      and+ hidden_src_dirs, hidden_obj_dirs =
+        add_lib_dirs sctx mode requires_hidden ~for_:t.config.mode
+      in
       let src_dirs =
         Path.Set.of_list_map ~f:Path.source more_src_dirs |> Path.Set.union deps_src_dirs
       in

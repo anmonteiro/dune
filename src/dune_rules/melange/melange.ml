@@ -43,10 +43,10 @@ module Cm_kind = struct
   end
 end
 
-module Install = struct
-  let dir = "melange"
-end
-
 module Source = struct
   let dir = ".melange_src"
+end
+
+module Install = struct
+  let dir = "melange"
 end

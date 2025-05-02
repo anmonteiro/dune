@@ -519,10 +519,9 @@ let cctx
       ~scope
       ~compile_info
   =
-  let* flags = Buildable_rules.ocaml_flags sctx ~dir lib.buildable.flags
-  and* vimpl = Virtual_rules.impl sctx ~lib ~scope in
+  let* flags = Buildable_rules.ocaml_flags sctx ~dir lib.buildable.flags in
   let obj_dir = Library.obj_dir ~dir lib in
-  let modules_pp source_modules =
+  let modules_vimpl_pp source_modules ~for_ =
     let+ modules, pp =
       Buildable_rules.modules_rules
         sctx
@@ -531,18 +530,27 @@ let cctx
         ~dir
         scope
         source_modules
-    in
+    and+ vimpl = Virtual_rules.impl sctx ~lib ~scope ~for_ in
     let modules = Vimpl.impl_modules vimpl modules in
-    modules, pp
+    modules, vimpl, pp
   in
-  let* modules, pp =
-    let+ modules_pp = Memo.Option.map source_modules.ocaml ~f:modules_pp
-    and+ melange_modules_pp = Memo.Option.map source_modules.melange ~f:modules_pp in
-    ( { Lib_mode.By_mode.ocaml = Option.map ~f:fst modules_pp
-      ; melange = Option.map ~f:fst melange_modules_pp
+  let* modules, vimpl, pp =
+    let+ modules_pp =
+      Memo.Option.map source_modules.ocaml ~f:(modules_vimpl_pp ~for_:(Ocaml Byte))
+    and+ melange_modules_pp =
+      Memo.Option.map source_modules.melange ~f:(modules_vimpl_pp ~for_:Melange)
+    in
+    let modules (ms, _, _) = ms
+    and vimpl (_, v, _) = v
+    and pp (_, _, pp) = pp in
+    ( { Lib_mode.By_mode.ocaml = Option.map ~f:modules modules_pp
+      ; melange = Option.map ~f:modules melange_modules_pp
       }
-    , match modules_pp, melange_modules_pp with
-      | Some (_, pp), Some _ | Some (_, pp), None | None, Some (_, pp) -> pp
+    , (match Option.bind ~f:vimpl modules_pp, Option.bind ~f:vimpl melange_modules_pp with
+       | None, None -> None
+       | ocaml, melange -> Some { Lib_mode.By_mode.ocaml; melange })
+    , match Option.map ~f:pp modules_pp, Option.map ~f:pp melange_modules_pp with
+      | Some pp, Some _ | Some pp, None | None, Some pp -> pp
       | None, None -> assert false )
   in
   let requires_compile = Lib.Compile.direct_requires compile_info in
@@ -594,16 +602,16 @@ let library_rules
   let lib_config = (Compilation_context.ocaml cctx).lib_config in
   let dir = Compilation_context.dir cctx in
   let* expander = Super_context.expander sctx ~dir in
-  let vimpl = Compilation_context.vimpl cctx in
   let* top_sorted_modules =
     let lib_modes = Compilation_context.modes cctx in
     let modes = Lib_mode.By_mode.to_list lib_modes in
-    let both =
+    let mode =
       match lib_modes with
-      | { melange = Some _; ocaml = Some _ } -> true
-      | _ -> false
+      | { melange = Some _; ocaml = None } -> Lib_mode.Melange
+      | _ -> Ocaml Byte
     in
     Memo.parallel_map modes ~f:(fun (for_, modules) ->
+      let vimpl = Compilation_context.vimpl ~for_ cctx in
       let dir = Compilation_context.dir cctx in
       let top_sorted_modules =
         let impl_only = Modules.With_vlib.impl_only modules in
@@ -622,8 +630,9 @@ let library_rules
         Memo.when_ (Compilation_context.bin_annot cctx) (fun () ->
           Ocaml_index.cctx_rules cctx ~for_)
       and+ () =
-        Memo.when_ (not both) (fun () ->
-          Odoc.setup_library_odoc_rules cctx local_lib ~for_)
+        Memo.when_ (Lib_mode.equal mode for_) (fun () ->
+          (* TODO(anmonteiro): support both modes *)
+          Odoc.setup_library_odoc_rules cctx local_lib)
       in
       for_, top_sorted_modules)
   in
@@ -673,7 +682,10 @@ let library_rules
          let _for_, top_sorted_modules = List.hd top_sorted_modules in
          setup_build_archives lib ~lib_info ~top_sorted_modules ~cctx ~expander ~modes)
   and+ () =
-    let vlib_stubs_o_files = Vimpl.vlib_stubs_o_files vimpl in
+    let vlib_stubs_o_files =
+      (* TODO(anmonteiro): don't execute this for Melange? *)
+      Vimpl.vlib_stubs_o_files (Compilation_context.vimpl ~for_:(Ocaml Byte) cctx)
+    in
     Memo.when_
       (Library.has_foreign lib || List.is_non_empty vlib_stubs_o_files)
       (fun () ->

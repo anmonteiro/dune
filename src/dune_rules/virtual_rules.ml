@@ -61,7 +61,7 @@ let setup_copy_rules_for_impl ~sctx ~dir ~for_ vimpl =
   Modules.fold vlib_modules ~init:(Memo.return ()) ~f:(fun m acc -> acc >>> copy_objs m)
 ;;
 
-let impl sctx ~(lib : Library.t) ~scope =
+let impl sctx ~(lib : Library.t) ~scope ~for_ =
   match lib.implements with
   | None -> Memo.return None
   | Some (loc, implements) ->
@@ -85,7 +85,7 @@ let impl sctx ~(lib : Library.t) ~scope =
                (Lib_name.to_string implements)
            ];
        let+ vlib_modules, vlib_foreign_objects =
-         match Lib_info.modules info, Lib_info.foreign_objects info with
+         match Lib_info.modules info ~for_, Lib_info.foreign_objects info with
          | External modules, External fa ->
            let modules = Option.value_exn modules in
            Memo.return (Modules.With_vlib.drop_vlib modules, fa)

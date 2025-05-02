@@ -22,6 +22,17 @@ module Output_kind = struct
   ;;
 end
 
+let maybe_prepend_melange_install_dir ~for_ dir =
+  match for_ with
+  | Lib_mode.Ocaml _ -> dir
+  | Melange ->
+    let base = Melange.Install.dir in
+    Option.map dir ~f:(fun dir ->
+      Path.Local.relative (Path.Local.of_string base) dir |> Path.Local.to_string)
+    |> Option.value ~default:base
+    |> Option.some
+;;
+
 let setup_melange_sources_copy_rules ~sctx ~dir ~loc ~expander:_ ~modules =
   let mods = Modules.fold_user_written modules ~init:[] ~f:(fun m acc -> m :: acc) in
   Memo.parallel_iter mods ~f:(fun m ->
@@ -32,10 +43,6 @@ let setup_melange_sources_copy_rules ~sctx ~dir ~loc ~expander:_ ~modules =
         let src_in_lib = Path.drop_prefix_exn dst ~prefix:(Path.build dir) in
         Path.Build.append_local dir src_in_lib
       in
-      (* Format.eprintf
-        "src -> dest: %s -> %s@."
-        (Path.to_string src)
-        (Path.Build.to_string dst); *)
       Super_context.add_rule sctx ~loc ~dir (Action_builder.symlink ~src ~dst)))
 ;;
 
@@ -73,9 +80,8 @@ let make_js_name ~js_ext ~output m =
     let src_dir =
       Module.source m ~ml_kind:Impl
       |> Option.value_exn
-      (* TODO(anmonteiro): will not work when `foo.melange.ml` is a thing *)
       |> Module.File.original_path
-      |> Path.Build.parent_exn
+      |> Path.parent_exn
     in
     match output with
     | Output_kind.Public_library { lib_dir; output_dir } ->
@@ -104,48 +110,47 @@ let modules_in_obj_dir ~sctx ~scope ~preprocess modules =
 ;;
 
 let impl_only_modules_defined_in_this_lib ~sctx ~scope lib =
-  match Lib_info.modules (Lib.info lib) with
-  | External None ->
-    User_error.raise
-      [ Pp.textf
-          "The library %s was not compiled with Dune or it was compiled with Dune but \
-           published with a META template. Such libraries are not compatible with \
-           melange support"
-          (Lib.name lib |> Lib_name.to_string)
-      ]
-  | External (Some modules) ->
-    Memo.return
-      ( modules
-      , List.filter
-          (Modules.With_vlib.split_by_lib modules).impl
-          ~f:(Module.has ~ml_kind:Impl) )
-  | Local ->
-    let lib = Lib.Local.of_lib_exn lib in
-    let info = Lib.Local.info lib in
-    let+ modules =
-      let* modules = Dir_contents.modules_of_local_lib sctx lib in
-      let preprocess = Lib_info.preprocess info in
-      modules_in_obj_dir ~sctx ~scope ~preprocess modules >>| Modules.With_vlib.modules
-    in
-    let () =
-      let modes = Lib_info.modes info in
-      match modes.melange with
-      | false ->
-        let lib_name = Lib_name.to_string (Lib_info.name info) in
-        User_error.raise
-          ~loc:(Lib_info.loc info)
-          [ Pp.textf
-              "The library `%s` was added as a dependency of a `melange.emit` stanza, \
-               but this library is not compatible with Melange. To fix this, add \
-               `melange` to the `modes` field of the library `%s`."
-              lib_name
-              lib_name
-          ]
-      | true -> ()
-    in
-    ( modules
-    , (Modules.With_vlib.split_by_lib modules).impl
-      |> List.filter ~f:(Module.has ~ml_kind:Impl) )
+  let for_ = Lib_mode.Melange in
+  let+ modules =
+    match Lib_info.modules (Lib.info lib) ~for_ with
+    | External None ->
+      User_error.raise
+        [ Pp.textf
+            "The library %s was not compiled with Dune or it was compiled with Dune but \
+             published with a META template. Such libraries are not compatible with \
+             melange support"
+            (Lib.name lib |> Lib_name.to_string)
+        ]
+    | External (Some modules) -> Memo.return modules
+    | Local ->
+      let lib = Lib.Local.of_lib_exn lib in
+      let info = Lib.Local.info lib in
+      let+ modules =
+        let* modules = Dir_contents.modules_of_local_lib sctx lib ~for_ in
+        let preprocess = Lib_info.preprocess info in
+        modules_in_obj_dir ~sctx ~scope ~preprocess modules >>| Modules.With_vlib.modules
+      in
+      let () =
+        let modes = Lib_info.modes info in
+        match modes.melange with
+        | false ->
+          let lib_name = Lib_name.to_string (Lib_info.name info) in
+          User_error.raise
+            ~loc:(Lib_info.loc info)
+            [ Pp.textf
+                "The library `%s` was added as a dependency of a `melange.emit` stanza, \
+                 but this library is not compatible with Melange. To fix this, add \
+                 `melange` to the `modes` field of the library `%s`."
+                lib_name
+                lib_name
+            ]
+        | true -> ()
+      in
+      modules
+  in
+  ( modules
+  , (Modules.With_vlib.split_by_lib modules).impl
+    |> List.filter ~f:(Module.has ~ml_kind:Impl) )
 ;;
 
 let cmj_includes =
