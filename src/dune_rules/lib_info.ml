@@ -325,13 +325,14 @@ type 'path t =
   ; dune_version : Dune_lang.Syntax.Version.t option
   ; sub_systems : Sub_system_info.t Sub_system_name.Map.t
   ; virtual_ : bool
-  ; entry_modules : (Module_name.t list, User_message.t) result Source.t
+  ; entry_modules :
+      (Module_name.t list option Lib_mode.By_mode.t, User_message.t) result Source.t
   ; implements : (Loc.t * Lib_name.t) option
   ; default_implementation : (Loc.t * Lib_name.t) option
   ; wrapped : Wrapped.t Inherited.t option
   ; main_module_name : Main_module_name.t
   ; modes : Lib_mode.Map.Set.t
-  ; modules : Modules.With_vlib.t option Source.t
+  ; modules : Modules.With_vlib.t option Lib_mode.By_mode.t Source.t
   ; special_builtin_support : (Loc.t * Special_builtin_support.t) option
   ; exit_module : Module_name.t option
   ; instrumentation_backend : (Loc.t * Lib_name.t) option
@@ -349,7 +350,8 @@ let preprocess t = t.preprocess
 let ppx_runtime_deps t = t.ppx_runtime_deps
 let sub_systems t = t.sub_systems
 let modes t = t.modes
-let modules t = t.modules
+let modules t ~for_ = Source.map t.modules ~f:(Lib_mode.By_mode.get ~for_)
+let modules_by_mode t = t.modules
 let archives t = t.archives
 let foreign_archives t = t.foreign_archives
 let native_archives t = t.native_archives
@@ -377,7 +379,13 @@ let main_module_name t = t.main_module_name
 let orig_src_dir t = t.orig_src_dir
 let best_src_dir t = Option.value ~default:t.src_dir t.orig_src_dir
 let set_version t version = { t with version }
-let entry_modules t = t.entry_modules
+
+let entry_modules t ~for_ =
+  Source.map t.entry_modules ~f:(fun entry_modules ->
+    Result.map entry_modules ~f:(fun entry_modules ->
+      Lib_mode.By_mode.get entry_modules ~for_ |> Option.value_exn))
+;;
+
 let dynlink_supported t = Mode.Dict.get t.plugins Native <> []
 
 let eval_native_archives_exn (type path) (t : path t) ~modules =
@@ -600,14 +608,18 @@ let to_dyn
     ; "virtual_", bool virtual_
     ; ( "entry_modules"
       , Source.to_dyn
-          (Result.to_dyn (list Module_name.to_dyn) string)
+          (Result.to_dyn
+             (Lib_mode.By_mode.to_dyn (option (list Module_name.to_dyn)))
+             string)
           (Source.map entry_modules ~f:(Result.map_error ~f:User_message.to_string)) )
     ; "implements", option (snd Lib_name.to_dyn) implements
     ; "default_implementation", option (snd Lib_name.to_dyn) default_implementation
     ; "wrapped", option (Inherited.to_dyn Wrapped.to_dyn) wrapped
     ; "main_module_name", Main_module_name.to_dyn main_module_name
     ; "modes", Lib_mode.Map.Set.to_dyn modes
-    ; "modules", Source.to_dyn (Dyn.option Modules.With_vlib.to_dyn) modules
+    ; ( "modules"
+      , Source.to_dyn (Lib_mode.By_mode.to_dyn (option Modules.With_vlib.to_dyn)) modules
+      )
     ; ( "special_builtin_support"
       , option (snd Special_builtin_support.to_dyn) special_builtin_support )
     ; "exit_module", option Module_name.to_dyn exit_module
@@ -635,7 +647,7 @@ let for_dune_package
       ~sub_systems
       ~melange_runtime_deps
       ~public_headers
-      ~modules
+      ~(modules : Modules.With_vlib.t option Lib_mode.By_mode.t)
   =
   let foreign_objects = Source.External foreign_objects in
   let orig_src_dir =
@@ -651,8 +663,16 @@ let for_dune_package
             | Some src_dir ->
               Path.source src_dir |> Path.to_absolute_filename |> Path.of_string))
   in
-  let native_archives = Files (eval_native_archives_exn t ~modules:(Some modules)) in
-  let modules = Source.External (Some modules) in
+  let native_archives =
+    Files
+      (eval_native_archives_exn
+         t
+         ~modules:
+           (match modules.ocaml with
+            | Some _ as modules -> modules
+            | None -> modules.melange))
+  in
+  let modules = Source.External modules in
   let melange_runtime_deps = File_deps.External melange_runtime_deps in
   let public_headers = File_deps.External public_headers in
   { t with

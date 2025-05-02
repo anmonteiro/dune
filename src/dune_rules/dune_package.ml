@@ -98,8 +98,8 @@ module Lib = struct
       | Local -> assert false
     in
     let modules =
-      match Lib_info.modules info with
-      | External ms -> ms
+      match Lib_info.modules_by_mode info with
+      | External ms -> Some ms
       | Local -> None
     in
     let melange_runtime_deps = additional_paths (Lib_info.melange_runtime_deps info) in
@@ -146,7 +146,38 @@ module Lib = struct
        ; field_o "main_module_name" Module_name.encode main_module_name
        ; field_l "modes" sexp (Lib_mode.Map.Set.encode modes)
        ; field_l "obj_dir" sexp (Obj_dir.encode obj_dir)
-       ; field_o "modules" (Modules.With_vlib.encode ~src_dir:package_root) modules
+       ; field_o
+           "modules"
+           (Modules.With_vlib.encode ~src_dir:package_root)
+           (Option.bind modules ~f:(fun modules ->
+              Lib_mode.By_mode.get modules ~for_:(Ocaml Byte)))
+       ; field_o
+           "melange_modules"
+           (Modules.With_vlib.encode ~src_dir:package_root)
+           (Option.bind modules ~f:(fun modules ->
+              let modules = Lib_mode.By_mode.get modules ~for_:Melange in
+              Option.map modules ~f:(fun modules ->
+                Modules.With_vlib.map modules ~f:(fun m ->
+                  List.fold_left Ml_kind.all ~init:m ~f:(fun m ml_kind ->
+                    match Module.source m ~ml_kind with
+                    | None -> m
+                    | Some msrc ->
+                      (match
+                         Path.descendant
+                           (Module.File.path msrc)
+                           ~of_:(Path.relative (Lib_info.src_dir info) Melange.Source.dir)
+                       with
+                       | None -> m
+                       | Some segment ->
+                         let m' =
+                           let path' =
+                             Path.append_local
+                               (Lib_info.src_dir info)
+                               (Path.local_part segment)
+                           in
+                           Module.File.set_path msrc path'
+                         in
+                         Module.set_source m ~ml_kind (Some m')))))))
        ; paths "melange_runtime_deps" melange_runtime_deps
        ; field_o
            "special_builtin_support"
@@ -221,7 +252,8 @@ module Lib = struct
        and+ virtual_ = field_b "virtual"
        and+ sub_systems = Sub_system_info.record_parser
        and+ orig_src_dir = field_o "orig_src_dir" path
-       and+ modules = field "modules" (Modules.decode ~src_dir:base)
+       and+ modules = field_o "modules" (Modules.decode ~src_dir:base)
+       and+ melange_modules = field_o "melange_modules" (Modules.decode ~src_dir:base)
        and+ special_builtin_support =
          field_o
            "special_builtin_support"
@@ -247,13 +279,25 @@ module Lib = struct
          let preprocess = Preprocess.Per_module.no_preprocessing () in
          let virtual_deps = [] in
          let dune_version = None in
-         let entry_modules = Modules.entry_modules modules |> List.map ~f:Module.name in
-         let modules = Modules.With_vlib.modules modules in
+         let modules = { Lib_mode.By_mode.ocaml = modules; melange = melange_modules } in
+         let entry_modules =
+           Lib_mode.By_mode.map modules ~f:(fun ~for_:_ modules ->
+             Modules.entry_modules modules |> List.map ~f:Module.name)
+         in
+         let modules =
+           Lib_mode.By_mode.map modules ~f:(fun ~for_:_ modules ->
+             Modules.With_vlib.modules modules)
+         in
          let wrapped =
-           Some (Lib_info.Inherited.This (Modules.With_vlib.wrapped modules))
+           let any_modules =
+             match modules.ocaml with
+             | Some modules -> modules
+             | None -> Option.value_exn modules.melange
+           in
+           Some (Lib_info.Inherited.This (Modules.With_vlib.wrapped any_modules))
          in
          let entry_modules = Lib_info.Source.External (Ok entry_modules) in
-         let modules = Lib_info.Source.External (Some modules) in
+         let modules = Lib_info.Source.External modules in
          let melange_runtime_deps = Lib_info.File_deps.External melange_runtime_deps in
          Lib_info.create
            ~path_kind:External
