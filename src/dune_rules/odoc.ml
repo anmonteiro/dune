@@ -416,18 +416,17 @@ let link_odoc_rules sctx (odoc_file : odoc_artefact) ~pkg ~requires =
      Action_builder.with_no_targets deps >>> run_odoc)
 ;;
 
-let setup_library_odoc_rules cctx (local_lib : Lib.Local.t) ~for_ =
+let setup_library_odoc_rules cctx (local_lib : Lib.Local.t) =
   (* Using the proper package name doesn't actually work since odoc assumes that
      a package contains only 1 library *)
   let pkg_or_lnu = pkg_or_lnu (Lib.Local.to_lib local_lib) in
   let sctx = Compilation_context.super_context cctx in
   let ctx = Super_context.context sctx in
   let info = Lib.Local.info local_lib in
+  let modes = Lib_info.modes info in
+  let mode = Lib_mode.Map.Set.for_merlin modes in
   let obj_dir = Compilation_context.obj_dir cctx in
-  let modules =
-    (* TODO(anmonteiro): support Melange *)
-    Compilation_context.modules cctx ~for_
-  in
+  let modules = Compilation_context.modules cctx ~for_:mode in
   let* includes =
     let+ requires = Compilation_context.requires_compile cctx in
     let package = Lib_info.package info in
@@ -440,12 +439,10 @@ let setup_library_odoc_rules cctx (local_lib : Lib.Local.t) ~for_ =
   |> Modules.With_vlib.drop_vlib
   |> Modules.fold ~init:[] ~f:(fun m acc ->
     let compiled =
-      let modes = Lib_info.modes info in
-      let mode = Lib_mode.Map.Set.for_merlin modes in
       compile_module
         sctx
         ~includes
-        ~dep_graphs:(Compilation_context.dep_graphs cctx ~for_)
+        ~dep_graphs:(Compilation_context.dep_graphs cctx ~for_:mode)
         ~obj_dir
         ~pkg_or_lnu
         ~mode

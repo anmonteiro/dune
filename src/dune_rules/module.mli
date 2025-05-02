@@ -63,7 +63,7 @@ val has : t -> ml_kind:Ml_kind.t -> bool
 val set_obj_name : t -> Module_name.Unique.t -> t
 val set_path : t -> Module_name.Path.t -> t
 val add_file : t -> Ml_kind.t -> File.t -> t
-val set_source : t -> Ml_kind.t -> File.t option -> t
+val set_source : t -> ml_kind:Ml_kind.t -> File.t option -> t
 
 (** Set preprocessing flags *)
 val set_pp : t -> (string list Action_builder.t * Sandbox_config.t) option -> t

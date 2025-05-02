@@ -193,39 +193,25 @@ end = struct
         ~lib_config
     in
     let { Lib_config.has_native; ext_obj; _ } = lib_config in
-    let { Lib_mode.Map.ocaml = { Mode.Dict.byte; native } as ocaml; melange } =
+    let ({ Lib_mode.Map.ocaml = { Mode.Dict.byte; native } as ocaml; melange } as
+         lib_modes)
+      =
       Mode_conf.Lib.Set.eval lib.modes ~has_native
     in
     let lib_name = Library.best_name lib in
+    let lib_modes = Lib_mode.Map.Set.to_list_unique lib_modes in
     let* installable_modules =
-      let lib_modes =
-        match byte || native, melange with
-        | true, true -> [ Lib_mode.Ocaml (if byte then Byte else Native); Melange ]
-        | true, false -> [ Ocaml (if byte then Byte else Native) ]
-        | false, true -> [ Melange ]
-        | false, false -> assert false
-      in
       Memo.parallel_map lib_modes ~f:(fun mode ->
         let+ modules =
           Dir_contents.for_ dir_contents ~mode
           >>= Ml_sources.modules
                 ~libs:(Scope.libs scope)
                 ~for_:(Library (Lib_info.lib_id info |> Lib_id.to_local_exn))
-        and+ impl = Virtual_rules.impl sctx ~lib ~scope in
+        and+ impl = Virtual_rules.impl sctx ~lib ~scope ~for_:mode in
         mode, Vimpl.impl_modules impl modules |> Modules.With_vlib.split_by_lib)
     in
     let lib_src_dir = Lib_info.src_dir info in
     let sources =
-      let maybe_prepend_melange_dir ~for_ dir =
-        match for_ with
-        | Lib_mode.Ocaml _ -> dir
-        | Melange ->
-          let base = Melange.Install.dir in
-          Option.map dir ~f:(fun dir ->
-            Path.Local.relative (Path.Local.of_string base) dir |> Path.Local.to_string)
-          |> Option.value ~default:base
-          |> Option.some
-      in
       List.concat_map installable_modules ~f:(fun (for_, installable_modules) ->
         List.rev_concat_map installable_modules.impl ~f:(fun m ->
           List.rev_map (Module.sources m) ~f:(fun source ->
@@ -243,7 +229,7 @@ end = struct
                     then None
                     else Some (Path.Local.explode parent |> String.concat ~sep:"/")
                   in
-                  maybe_prepend_melange_dir ~for_ base
+                  Melange_rules.maybe_prepend_melange_install_dir ~for_ base
                 in
                 sub_dir, Some (Path.Local.basename p)
               | None ->
@@ -270,7 +256,7 @@ end = struct
                       |> Path.Local.descendant ~of_
                       |> Option.map ~f:Path.Local.to_string)
                   in
-                  maybe_prepend_melange_dir ~for_ base
+                  Melange_rules.maybe_prepend_melange_install_dir ~for_ base
                 in
                 sub_dir, dst
             in

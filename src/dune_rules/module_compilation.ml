@@ -275,7 +275,9 @@ let build_cm
       Action_builder.with_no_targets (Action_builder.paths extra_deps)
       >>> Action_builder.with_no_targets other_cm_files
       >>> Command.run
-            ~dir:(Path.build (Context.build_dir ctx))
+            ~dir:
+              (* TODO(anmonteiro): .melange_src dir here? *)
+              (Path.build (Context.build_dir ctx))
             compiler
             [ flags
             ; cmt_args
@@ -505,7 +507,7 @@ let root_source entries =
 ;;
 
 let build_root_module cctx root_module ~for_ =
-  let entries = Compilation_context.root_module_entries cctx in
+  let entries = Compilation_context.root_module_entries cctx ~for_ in
   let cctx = Compilation_context.for_root_module cctx root_module ~for_ in
   let sctx = Compilation_context.super_context cctx in
   let file = Option.value_exn (Module.file root_module ~ml_kind:Impl) in

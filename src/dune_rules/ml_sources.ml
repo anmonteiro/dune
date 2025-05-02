@@ -198,21 +198,18 @@ let modules_of_files ~path ~dialects ~dir ~files =
     Some (Module.Source.make (path @ [ name ]) ?impl ?intf))
 ;;
 
-let module_dir ~path_to_root ~root_dir =
-  let melange_src = Path.relative root_dir Melange.Source.dir in
-  let module_dir =
-    Path.relative melange_src (String.concat ~sep:Filename.dir_sep path_to_root)
-  in
-  (* Format.eprintf "x:  %s @." (Path.to_string module_dir); *)
-  module_dir
-;;
-
 let melange_modules_of_files ~root_dir ~path_to_root ~path ~dialects ~dir ~files =
   let root_dir = Path.build root_dir in
   let dir = Path.build dir in
   let impl_files, intf_files =
     let make_module dialect name ~original_fn ~fn =
-      let path_in_build_dir = Path.relative (module_dir ~path_to_root ~root_dir) fn in
+      let path_in_build_dir =
+        let melange_src = Path.relative root_dir Melange.Source.dir in
+        let module_dir =
+          Path.relative melange_src (String.concat ~sep:Filename.dir_sep path_to_root)
+        in
+        Path.relative module_dir fn
+      in
       let original_path = Path.relative dir original_fn in
       name, Module.File.make dialect ~original_path path_in_build_dir
     in
@@ -229,7 +226,6 @@ let melange_modules_of_files ~root_dir ~path_to_root ~path ~dialects ~dir ~files
           | Some ("melange", ext) -> true, ext
           | Some _ | None -> false, ext
         in
-        (* Format.eprintf "fn: %B %s %s@." melange_specific_fn s ext; *)
         (match Dialect.DB.find_by_extension dialects ("." ^ ext) with
          | None -> Skip
          | Some (dialect, ml_kind) ->
@@ -412,10 +408,10 @@ let modules_and_obj_dir t ~libs ~for_ =
 
 let modules t ~libs ~for_ = modules_and_obj_dir t ~libs ~for_ >>| fst
 
-let virtual_modules ~lookup_vlib ~libs vlib =
+let virtual_modules ~lookup_vlib ~libs ~for_ vlib =
   let info = Lib.info vlib in
   let+ modules =
-    match Lib_info.modules info with
+    match Lib_info.modules info ~for_ with
     | External modules ->
       let modules = Option.value_exn modules in
       Memo.return (Modules_group.With_vlib.drop_vlib modules)
@@ -486,7 +482,7 @@ let make_lib_modules
       let* main_module_name = Lib.main_module_name resolved in
       let+ impl =
         let* vlib = Lib.implements resolved |> Option.value_exn in
-        virtual_modules ~lookup_vlib ~libs vlib |> Resolve.Memo.lift_memo
+        virtual_modules ~lookup_vlib ~libs ~for_:mode vlib |> Resolve.Memo.lift_memo
       in
       let kind : Modules_field_evaluator.kind = Implementation impl in
       kind, main_module_name, wrapped

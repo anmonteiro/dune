@@ -686,8 +686,7 @@ end = struct
     let empty = { implemented = Set.empty; unimplemented = Set.empty }
 
     let add t lib =
-      let virtual_ = Lib_info.virtual_ lib.info in
-      match lib.implements, virtual_ with
+      match lib.implements, Lib_info.virtual_ lib.info with
       | None, false -> Resolve.Memo.return t
       | Some _, true -> assert false (* can't be virtual and implement *)
       | None, true ->
@@ -724,8 +723,7 @@ end = struct
         let rec loop acc = function
           | [] -> Resolve.Memo.return acc
           | (lib, stack) :: libs ->
-            let virtual_ = Lib_info.virtual_ lib.info in
-            (match lib.implements, virtual_ with
+            (match lib.implements, Lib_info.virtual_ lib.info with
              | None, false -> loop acc libs
              | Some _, true -> assert false (* can't be virtual and implement *)
              | None, true -> loop (Map.set acc lib (No_impl stack)) libs
@@ -946,8 +944,7 @@ end = struct
         let res =
           let open Resolve.Memo.O in
           let* vlib = resolve_forbid_ignore name in
-          let virtual_ = Lib_info.virtual_ vlib.info in
-          match virtual_ with
+          match Lib_info.virtual_ vlib.info with
           | false -> Error.not_virtual_lib ~loc ~impl:info ~not_vlib:vlib.info
           | true -> Resolve.Memo.return vlib
         in
@@ -2158,11 +2155,13 @@ let to_dune_lib
     | Some obj_dir -> Obj_dir.convert_to_external ~dir obj_dir
   in
   let modules =
+    (* TODO(anmonteiro): probably need to account for Melange mode *)
     let install_dir = Obj_dir.dir obj_dir in
-    Modules.With_vlib.version_installed
-      modules
-      ~src_root:(Lib_info.src_dir lib.info)
-      ~install_dir
+    Lib_mode.By_mode.map modules ~f:(fun ~for_:_ modules ->
+      Modules.With_vlib.version_installed
+        modules
+        ~src_root:(Lib_info.src_dir lib.info)
+        ~install_dir)
   in
   let use_public_name ~lib_field ~info_field =
     match info_field, lib_field with

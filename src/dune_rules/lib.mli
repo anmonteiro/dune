@@ -208,7 +208,7 @@ end
 
 val to_dune_lib
   :  t
-  -> modules:Modules.With_vlib.t
+  -> modules:Modules.With_vlib.t option Lib_mode.By_mode.t
   -> foreign_objects:Path.t list
   -> melange_runtime_deps:Path.t list
   -> public_headers:Path.t list

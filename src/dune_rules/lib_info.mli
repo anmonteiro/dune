@@ -140,12 +140,18 @@ val wasmoo_runtime : 'path t -> 'path list
 val melange_runtime_deps : 'path t -> 'path File_deps.t
 val obj_dir : 'path t -> 'path Obj_dir.t
 val virtual_ : _ t -> bool
-val entry_modules : _ t -> (Module_name.t list, User_message.t) result Source.t
+
+val entry_modules
+  :  _ t
+  -> for_:Lib_mode.t
+  -> (Module_name.t list, User_message.t) result Source.t
+
 val main_module_name : _ t -> Main_module_name.t
 val wrapped : _ t -> Wrapped.t Inherited.t option
 val special_builtin_support : _ t -> (Loc.t * Special_builtin_support.t) option
 val modes : _ t -> Lib_mode.Map.Set.t
-val modules : _ t -> Modules.With_vlib.t option Source.t
+val modules : _ t -> for_:Lib_mode.t -> Modules.With_vlib.t option Source.t
+val modules_by_mode : _ t -> Modules.With_vlib.t option Lib_mode.By_mode.t Source.t
 val implements : _ t -> (Loc.t * Lib_name.t) option
 val requires : _ t -> Lib_dep.t list
 val ppx_runtime_deps : _ t -> (Loc.t * Lib_name.t) list
@@ -181,7 +187,7 @@ val for_dune_package
   -> sub_systems:Sub_system_info.t Sub_system_name.Map.t
   -> melange_runtime_deps:Path.t list
   -> public_headers:Path.t list
-  -> modules:Modules.With_vlib.t
+  -> modules:Modules.With_vlib.t option Lib_mode.By_mode.t
   -> Path.t t
 
 type 'a path =
@@ -218,11 +224,12 @@ val create
   -> virtual_deps:(Loc.t * Lib_name.t) list
   -> dune_version:Dune_lang.Syntax.Version.t option
   -> virtual_:bool
-  -> entry_modules:(Module_name.t list, User_message.t) result Source.t
+  -> entry_modules:
+       (Module_name.t list option Lib_mode.By_mode.t, User_message.t) result Source.t
   -> implements:(Loc.t * Lib_name.t) option
   -> default_implementation:(Loc.t * Lib_name.t) option
   -> modes:Lib_mode.Map.Set.t
-  -> modules:Modules.With_vlib.t option Source.t
+  -> modules:Modules.With_vlib.t option Lib_mode.By_mode.t Source.t
   -> wrapped:Wrapped.t Inherited.t option
   -> special_builtin_support:(Loc.t * Special_builtin_support.t) option
   -> exit_module:Module_name.t option
