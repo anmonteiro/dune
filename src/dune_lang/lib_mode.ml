@@ -109,6 +109,29 @@ module By_mode = struct
       | Ocaml _ -> { acc with ocaml = Some item }
       | Melange -> { acc with melange = Some item })
   ;;
+
+  let map t ~f =
+    { ocaml = Option.map t.ocaml ~f:(fun ocaml -> f ~for_:(Ocaml Byte) ocaml)
+    ; melange = Option.map t.melange ~f:(fun melange -> f ~for_:Melange melange)
+    }
+  ;;
+
+  let get t ~for_ =
+    match for_ with
+    | Ocaml _ -> t.ocaml
+    | Melange -> t.melange
+  ;;
+
+  let set t ~for_ x =
+    match for_ with
+    | Ocaml _ -> { t with ocaml = x }
+    | Melange -> { t with melange = x }
+  ;;
+
+  let to_dyn f t =
+    let open Dyn in
+    record [ "ocaml", f t.ocaml; "melange", f t.melange ]
+  ;;
 end
 
 module Map = struct
@@ -151,6 +174,14 @@ module Map = struct
       let l = if t.ocaml.byte then Ocaml Byte :: l else l in
       let l = if t.melange then Melange :: l else l in
       l
+    ;;
+
+    let to_list_unique (t : t) =
+      match t.ocaml.byte || t.ocaml.native, t.melange with
+      | true, true -> [ Ocaml (if t.ocaml.byte then Byte else Native); Melange ]
+      | true, false -> [ Ocaml (if t.ocaml.byte then Byte else Native) ]
+      | false, true -> [ Melange ]
+      | false, false -> []
     ;;
 
     let encode t = List.map ~f:encode (to_list t)

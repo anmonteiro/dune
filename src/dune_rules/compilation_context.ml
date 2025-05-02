@@ -93,7 +93,7 @@ type t =
   ; js_of_ocaml : Js_of_ocaml.In_context.t option Js_of_ocaml.Mode.Pair.t
   ; sandbox : Sandbox_config.t
   ; package : Package.t option
-  ; vimpl : Vimpl.t option
+  ; vimpl : Vimpl.t option Lib_mode.By_mode.t option
   ; bin_annot : bool
   ; loc : Loc.t option
   ; ocaml : Ocaml_toolchain.t
@@ -106,12 +106,10 @@ let dir t = Obj_dir.dir t.obj_dir
 let obj_dir t = t.obj_dir
 
 let modules t ~for_ =
-  let modules =
-    match for_ with
-    | Lib_mode.Ocaml _ -> t.modules.ocaml
-    | Melange -> t.modules.melange
+  let { modules; dep_graphs = _ } =
+    Lib_mode.By_mode.get t.modules ~for_ |> Option.value_exn
   in
-  (Option.value_exn modules).modules
+  modules
 ;;
 
 let modes t =
@@ -133,17 +131,15 @@ let sandbox t = t.sandbox
 let set_sandbox t sandbox = { t with sandbox }
 let package t = t.package
 let melange_package_name t = t.melange_package_name
-let vimpl t = t.vimpl
+let vimpl t ~for_ = Option.bind t.vimpl ~f:(Lib_mode.By_mode.get ~for_)
 let bin_annot t = t.bin_annot
 let context t = Super_context.context t.super_context
 
 let dep_graphs t ~for_ =
-  let modules =
-    match for_ with
-    | Lib_mode.Ocaml _ -> t.modules.ocaml
-    | Melange -> t.modules.melange
+  let { dep_graphs; modules = _ } =
+    Lib_mode.By_mode.get t.modules ~for_ |> Option.value_exn
   in
-  (Option.value_exn modules).dep_graphs
+  dep_graphs
 ;;
 
 let ocaml t = t.ocaml
@@ -194,6 +190,9 @@ let create
     match modules.ocaml with
     | Some modules ->
       let+ dep_graphs =
+        let vimpl =
+          Option.bind vimpl ~f:(fun (vimpl : _ Lib_mode.By_mode.t) -> vimpl.ocaml)
+        in
         Dep_rules.rules
           ~dir:(Obj_dir.dir obj_dir)
           ~sandbox
@@ -209,6 +208,9 @@ let create
     match modules.melange with
     | Some modules ->
       let+ dep_graphs =
+        let vimpl =
+          Option.bind vimpl ~f:(fun (vimpl : _ Lib_mode.By_mode.t) -> vimpl.melange)
+        in
         Dep_rules.rules
           ~for_:Melange
           ~dir:(Obj_dir.dir obj_dir)
@@ -284,21 +286,14 @@ let for_alias_module t alias_module ~for_ =
          produced by Dune: it contains code and depends on a few other
          [CamlinnternalXXX] modules from the stdlib, so we need the full set of
          modules to compile it. *)
-      ( (match for_ with
-         | Ocaml _ -> t.modules.ocaml
-         | Melange -> t.modules.melange)
-        |> Option.value_exn
-      , t.includes )
+      Lib_mode.By_mode.get t.modules ~for_ |> Option.value_exn, t.includes
   in
   { t with
     flags = alias_and_root_module_flags flags
   ; includes
   ; stdlib = None
   ; sandbox
-  ; modules =
-      (match for_ with
-       | Ocaml _ -> { t.modules with ocaml = Some modules }
-       | Melange -> { t.modules with melange = Some modules })
+  ; modules = Lib_mode.By_mode.set t.modules ~for_ (Some modules)
   }
 ;;
 
@@ -314,9 +309,7 @@ let for_root_module t root_module ~for_ =
   ; stdlib = None
   ; modules =
       (let new_modules = singleton_modules root_module in
-       match for_ with
-       | Lib_mode.Melange -> { t.modules with melange = Some new_modules }
-       | Ocaml _ -> { t.modules with ocaml = Some new_modules })
+       Lib_mode.By_mode.set t.modules ~for_ (Some new_modules))
   }
 ;;
 
@@ -330,9 +323,7 @@ let for_module_generated_at_link_time t ~requires ~module_ ~for_ =
   let hidden_requires = Resolve.Memo.return [] in
   let modules =
     let modules = Some (singleton_modules module_) in
-    match for_ with
-    | Lib_mode.Ocaml _ -> { t.modules with ocaml = modules }
-    | Melange -> { t.modules with melange = modules }
+    Lib_mode.By_mode.set t.modules ~for_ modules
   in
   let includes =
     Includes.make
@@ -369,20 +360,23 @@ let for_plugin_executable t ~embed_in_plugin_libraries =
 
 let without_bin_annot t = { t with bin_annot = false }
 
-let entry_module_names sctx t =
-  match Lib_info.entry_modules (Lib.info t) with
+let entry_module_names sctx t ~for_ =
+  match Lib_info.entry_modules ~for_ (Lib.info t) with
   | External d -> Resolve.Memo.of_result d
   | Local ->
-    let+ modules = Dir_contents.modules_of_local_lib sctx (Lib.Local.of_lib_exn t) in
+    let+ modules =
+      Dir_contents.modules_of_local_lib sctx ~for_ (Lib.Local.of_lib_exn t)
+    in
     modules |> Modules.entry_modules |> List.map ~f:Module.name |> Resolve.return
 ;;
 
-let root_module_entries t =
+let root_module_entries t ~for_ =
   let open Action_builder.O in
   let* requires = Resolve.Memo.read t.requires_compile in
   let* l =
     Action_builder.List.map requires ~f:(fun lib ->
-      Action_builder.of_memo (entry_module_names t.super_context lib) >>= Resolve.read)
+      Action_builder.of_memo (entry_module_names t.super_context lib ~for_)
+      >>= Resolve.read)
   in
   Action_builder.return (List.concat l)
 ;;

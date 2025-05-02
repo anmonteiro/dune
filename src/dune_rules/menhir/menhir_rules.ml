@@ -277,8 +277,8 @@ module Run (P : PARAMS) = struct
       let for_ = Lib_mode.Ocaml Byte in
       let obj_dir = Compilation_context.obj_dir cctx in
       (* TODO(anmonteiro): support melange *)
-      let modules = Compilation_context.modules cctx ~for_:(Ocaml Byte) in
-      let vimpl = Compilation_context.vimpl cctx in
+      let modules = Compilation_context.modules cctx ~for_ in
+      let vimpl = Compilation_context.vimpl cctx ~for_ in
       let dir = Obj_dir.dir obj_dir in
       Dep_rules.for_module ~obj_dir ~modules ~sandbox ~vimpl ~dir ~sctx ~for_ mock_module
     in

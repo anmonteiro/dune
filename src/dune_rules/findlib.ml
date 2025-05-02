@@ -205,7 +205,11 @@ let to_dune_library (t : Findlib.Package.t) ~dir_contents ~ext_lib ~external_loc
     let entry_modules =
       Lib_info.Source.External
         (match Vars.get_words t.vars "main_modules" Ps.empty with
-         | _ :: _ as modules -> Ok (List.map ~f:Module_name.of_string modules)
+         | _ :: _ as modules ->
+           Ok
+             { Lib_mode.By_mode.ocaml = Some (List.map ~f:Module_name.of_string modules)
+             ; melange = None
+             }
          | [] ->
            (match dir_contents with
             | Error (e, _, _) ->
@@ -234,9 +238,13 @@ let to_dune_library (t : Findlib.Package.t) ~dir_contents ~ext_lib ~external_loc
                       Module_name.of_string_user_error (Loc.in_dir src_dir, name)
                     with
                     | Ok s -> Ok (Some s)
-                    | Error e -> Error e))))
+                    | Error e -> Error e))
+              |> Result.map ~f:(fun r ->
+                { Lib_mode.By_mode.ocaml = Some r; melange = None })))
     in
-    let modules = Lib_info.Source.External None in
+    let modules =
+      Lib_info.Source.External { Lib_mode.By_mode.ocaml = None; melange = None }
+    in
     let name = t.name in
     let lib_id = Lib_id.External (loc, name) in
     Lib_info.create

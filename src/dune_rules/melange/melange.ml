@@ -13,10 +13,10 @@ end
 
 module Cm_kind = Dune_lang.Melange.Cm_kind
 
-module Install = struct
-  let dir = "melange"
-end
-
 module Source = struct
   let dir = ".melange_src"
+end
+
+module Install = struct
+  let dir = "melange"
 end
