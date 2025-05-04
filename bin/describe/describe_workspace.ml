@@ -420,7 +420,7 @@ module Crawl = struct
         Staged.unstage
         @@ Pp_spec.pped_modules_map
              (Dune_lang.Preprocess.Per_module.without_instrumentation
-                exes.buildable.preprocess)
+                exes.buildable.preprocess.config)
              version
       in
       let deps_of module_ =
@@ -467,6 +467,10 @@ module Crawl = struct
         match Lib.is_local lib with
         | false -> Memo.return []
         | true ->
+          let mode =
+            let modes = Lib_info.modes info in
+            Lib_mode.Map.Set.for_merlin modes
+          in
           (* XXX why do we have a second object directory? *)
           let* modules_, obj_dir_ =
             let* libs =
@@ -474,7 +478,7 @@ module Crawl = struct
             in
             let+ modules_, obj_dir_ =
               Dir_contents.get sctx ~dir:(Path.as_in_build_dir_exn src_dir)
-              >>= Dir_contents.for_ ~mode:(Ocaml Byte)
+              >>= Dir_contents.for_ ~mode
               >>= Ml_sources.modules_and_obj_dir
                     ~libs
                     ~for_:(Library (Lib_info.lib_id info |> Lib_id.to_local_exn))
@@ -489,7 +493,7 @@ module Crawl = struct
             Staged.unstage
             @@ Pp_spec.pped_modules_map
                  (Dune_lang.Preprocess.Per_module.without_instrumentation
-                    (Lib_info.preprocess info))
+                    (Lib_info.preprocess info ~for_:mode))
                  version
           in
           let deps_of module_ =

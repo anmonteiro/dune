@@ -167,7 +167,10 @@ let to_dune_library (t : Findlib.Package.t) ~dir_contents ~ext_lib ~external_loc
     let jsoo_runtime = Findlib.Package.jsoo_runtime t in
     let wasmoo_runtime = Findlib.Package.wasmoo_runtime t in
     let melange_runtime_deps = Lib_info.File_deps.External [] in
-    let preprocess = Preprocess.Per_module.no_preprocessing () in
+    let preprocess =
+      let no_preprocessing = Preprocess.Per_module.no_preprocessing () in
+      { Lib_mode.By_mode.ocaml = no_preprocessing; melange = no_preprocessing }
+    in
     let virtual_ = false in
     let default_implementation = None in
     let wrapped = None in

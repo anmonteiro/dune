@@ -14,8 +14,8 @@ type t =
   ; foreign_archives : (Loc.t * Foreign.Archive.t) list
   ; extra_objects : Foreign.Objects.t
   ; foreign_stubs : Foreign.Stubs.t list
-  ; preprocess : Preprocess.With_instrumentation.t Preprocess.Per_module.t
-  ; preprocessor_deps : Dep_conf.t list
+  ; preprocess : Preprocess.preprocess
+  ; melange_preprocess : Preprocess.preprocess
   ; lint : Preprocess.Without_instrumentation.t Preprocess.Per_module.t
   ; flags : Ocaml_flags.Spec.t
   ; js_of_ocaml : Js_of_ocaml.In_buildable.t Js_of_ocaml.Mode.Pair.t
@@ -45,7 +45,10 @@ let decode (for_ : for_) =
       Foreign.Stubs.make ~loc ~language ~names ~flags :: foreign_stubs
   in
   let+ loc = loc
-  and+ preprocess, preprocessor_deps = Preprocess.preprocess_fields
+  and+ preprocess, preprocessor_deps =
+    Preprocess.preprocess_fields ~prefix:None ~optional:false
+  and+ melange_preprocess, melange_preprocessor_deps =
+    Preprocess.preprocess_fields ~prefix:(Some "melange") ~optional:true
   and+ lint = field "lint" Lint.decode ~default:Lint.default
   and+ foreign_stubs =
     multi_field
@@ -112,11 +115,17 @@ let decode (for_ : for_) =
       ~check:(Dune_lang.Syntax.since Stanza.syntax (3, 0))
   in
   let preprocess =
-    let init =
-      let f libname = Preprocess.With_instrumentation.Ordinary libname in
-      Module_name.Per_item.map preprocess ~f:(Preprocess.map ~f)
-    in
-    List.fold_left instrumentation ~init ~f:Preprocess.Per_module.add_instrumentation
+    let preprocess = Option.value_exn preprocess in
+    Preprocess.preprocess_config ~preprocess ~instrumentation ~preprocessor_deps
+  in
+  let melange_preprocess =
+    match melange_preprocess with
+    | Some preprocess ->
+      Preprocess.preprocess_config
+        ~preprocess
+        ~instrumentation
+        ~preprocessor_deps:melange_preprocessor_deps
+    | None -> preprocess
   in
   let foreign_stubs =
     foreign_stubs
@@ -160,7 +169,7 @@ let decode (for_ : for_) =
   in
   { loc
   ; preprocess
-  ; preprocessor_deps
+  ; melange_preprocess
   ; lint
   ; modules
   ; empty_module_interface_if_absent

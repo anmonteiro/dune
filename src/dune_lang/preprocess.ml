@@ -314,20 +314,32 @@ module Per_module = struct
   ;;
 end
 
-let preprocess_fields =
+let preprocess_fields ~prefix ~optional =
   let open Decoder in
-  let+ preprocess = field "preprocess" Per_module.decode ~default:(Per_module.default ())
+  let prefix =
+    match prefix with
+    | Some prefix -> prefix ^ "."
+    | None -> ""
+  in
+  let+ preprocess =
+    match optional with
+    | false ->
+      let+ v =
+        field (prefix ^ "preprocess") Per_module.decode ~default:(Per_module.default ())
+      in
+      Some v
+    | true -> field_o (prefix ^ "preprocess") Per_module.decode
   and+ preprocessor_deps =
     field_o
-      "preprocessor_deps"
+      (prefix ^ "preprocessor_deps")
       (let+ loc = loc
        and+ l = repeat Dep_conf.decode in
        loc, l)
   and+ syntax = Syntax.get_exn Stanza.syntax in
   let preprocessor_deps =
-    match preprocessor_deps with
-    | None -> []
-    | Some (loc, deps) ->
+    match preprocessor_deps, preprocess with
+    | Some _, None | None, _ -> []
+    | Some (loc, deps), Some preprocess ->
       let deps_might_be_used =
         Module_name.Per_item.exists preprocess ~f:(fun p ->
           match p with
@@ -339,11 +351,28 @@ let preprocess_fields =
         User_warning.emit
           ~loc
           ~is_error:(syntax >= (2, 0))
-          [ Pp.text
-              "This preprocessor_deps field will be ignored because no preprocessor that \
-               might use them is configured."
+          [ Pp.textf
+              "This %spreprocessor_deps field will be ignored because no preprocessor \
+               that might use them is configured."
+              prefix
           ];
       deps
   in
   preprocess, preprocessor_deps
+;;
+
+type preprocess =
+  { config : With_instrumentation.t Per_module.t
+  ; preprocessor_deps : Dep_conf.t list
+  }
+
+let preprocess_config ~preprocess ~instrumentation ~preprocessor_deps =
+  let config =
+    let init =
+      let f libname = With_instrumentation.Ordinary libname in
+      Module_name.Per_item.map preprocess ~f:(map ~f)
+    in
+    List.fold_left instrumentation ~init ~f:Per_module.add_instrumentation
+  in
+  { config; preprocessor_deps }
 ;;

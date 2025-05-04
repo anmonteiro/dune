@@ -45,7 +45,9 @@ val make
   -> requires_hidden:Lib.t list Resolve.t
   -> stdlib_dir:Path.t
   -> flags:Ocaml_flags.t
-  -> preprocess:Preprocess.Without_instrumentation.t Preprocess.t Module_name.Per_item.t
+  -> preprocess:
+       Preprocess.Without_instrumentation.t Preprocess.t Module_name.Per_item.t
+         Lib_mode.By_mode.t
   -> libname:Lib_name.Local.t option
   -> modules:Modules.With_vlib.t
   -> obj_dir:Path.Build.t Obj_dir.t

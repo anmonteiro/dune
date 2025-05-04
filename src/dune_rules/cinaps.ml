@@ -38,7 +38,8 @@ let decode =
   fields
     (let+ loc = loc
      and+ files = field "files" Predicate_lang.Glob.decode ~default:Predicate_lang.true_
-     and+ preprocess, preprocessor_deps = Preprocess.preprocess_fields
+     and+ preprocess, preprocessor_deps =
+       Preprocess.preprocess_fields ~prefix:None ~optional:false
      and+ libraries =
        field "libraries" (Lib_dep.L.decode ~allow_re_export:false) ~default:[]
      and+ runtime_deps =
@@ -53,6 +54,7 @@ let decode =
          ~check:(Some (Dune_lang.Syntax.since syntax (1, 3)))
      (* TODO use this field? *)
      and+ _flags = Dune_lang.Ocaml_flags.Spec.decode in
+     let preprocess = Option.value_exn preprocess in
      { loc
      ; files
      ; libraries

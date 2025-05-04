@@ -24,8 +24,7 @@ type kind =
   | Executables of Buildable.t * (Loc.t * string) list
   | Library of Buildable.t * Lib_name.Local.t
   | Melange of
-      { preprocess : Preprocess.With_instrumentation.t Preprocess.Per_module.t
-      ; preprocessor_deps : Dep_conf.t list
+      { preprocess : Preprocess.preprocess
       ; lint : Preprocess.Without_instrumentation.t Preprocess.Per_module.t
       ; empty_module_interface_if_absent : bool
       }
@@ -37,6 +36,7 @@ val modules_rules
   -> dir:Path.Build.t
   -> Scope.t
   -> Modules.t
+  -> for_:Lib_mode.t
   -> (Modules.t * Pp_spec.t) Memo.t
 
 (** Compute the ocaml flags based on the directory environment and a buildable
