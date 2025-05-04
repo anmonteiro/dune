@@ -275,9 +275,7 @@ let build_cm
       Action_builder.with_no_targets (Action_builder.paths extra_deps)
       >>> Action_builder.with_no_targets other_cm_files
       >>> Command.run
-            ~dir:
-              (* TODO(anmonteiro): .melange_src dir here? *)
-              (Path.build (Context.build_dir ctx))
+            ~dir:(Path.build (Context.build_dir ctx))
             compiler
             [ flags
             ; cmt_args

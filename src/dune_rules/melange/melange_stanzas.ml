@@ -11,9 +11,8 @@ module Emit = struct
     ; emit_stdlib : bool
     ; libraries : Lib_dep.t list
     ; package : Package.t option
-    ; preprocess : Preprocess.With_instrumentation.t Preprocess.Per_module.t
+    ; preprocess : Preprocess.preprocess
     ; runtime_deps : Loc.t * Dep_conf.t list
-    ; preprocessor_deps : Dep_conf.t list
     ; lint : Preprocess.Without_instrumentation.t Preprocess.Per_module.t
     ; promote : Rule.Promote.t option
     ; compile_flags : Ordered_set_lang.Unexpanded.t
@@ -107,7 +106,8 @@ module Emit = struct
            "runtime_deps"
            (located (repeat Dep_conf.decode_no_files))
            ~default:(loc, [])
-       and+ preprocess, preprocessor_deps = Preprocess.preprocess_fields
+       and+ preprocess, preprocessor_deps =
+         Preprocess.preprocess_fields ~prefix:None ~optional:false
        and+ lint = field "lint" Lint.decode ~default:Lint.default
        and+ promote = field_o "promote" Rule_mode_decoder.Promote.decode
        and+ instrumentation = Preprocess.Instrumentation.instrumentation
@@ -121,11 +121,8 @@ module Emit = struct
          decode ~allowed_vars ~since:None ()
        in
        let preprocess =
-         let init =
-           let f libname = Preprocess.With_instrumentation.Ordinary libname in
-           Module_name.Per_item.map preprocess ~f:(Preprocess.map ~f)
-         in
-         List.fold_left instrumentation ~init ~f:Preprocess.Per_module.add_instrumentation
+         let preprocess = Option.value_exn preprocess in
+         Preprocess.preprocess_config ~preprocess ~instrumentation ~preprocessor_deps
        in
        { loc
        ; target
@@ -137,7 +134,6 @@ module Emit = struct
        ; package
        ; preprocess
        ; runtime_deps
-       ; preprocessor_deps
        ; lint
        ; promote
        ; compile_flags

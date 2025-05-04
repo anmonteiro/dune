@@ -72,7 +72,7 @@ let add_stanza db ~dir (acc, pps) stanza =
         let+ pps =
           Resolve.Memo.read_memo
             (Preprocess.Per_module.with_instrumentation
-               exes.buildable.preprocess
+               exes.buildable.preprocess.config
                ~instrumentation_backend:
                  (Lib.DB.instrumentation_backend (Scope.libs scope)))
           >>| Preprocess.Per_module.pps

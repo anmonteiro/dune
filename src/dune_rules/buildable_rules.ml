@@ -56,15 +56,13 @@ type kind =
   | Executables of Buildable.t * (Loc.t * string) list
   | Library of Buildable.t * Lib_name.Local.t
   | Melange of
-      { preprocess : Preprocess.With_instrumentation.t Preprocess.Per_module.t
-      ; preprocessor_deps : Dep_conf.t list
+      { preprocess : Preprocess.preprocess
       ; lint : Preprocess.Without_instrumentation.t Preprocess.Per_module.t
       ; empty_module_interface_if_absent : bool
       }
 
 let modules_rules
       ~preprocess
-      ~preprocessor_deps
       ~lint
       ~empty_module_interface_if_absent
       sctx
@@ -75,6 +73,7 @@ let modules_rules
       ~lib_name
       ~empty_intf_modules
   =
+  let { Preprocess.config = preprocess; preprocessor_deps } = preprocess in
   let* pp =
     let instrumentation_backend = Lib.DB.instrumentation_backend (Scope.libs scope) in
     let* preprocess_with_instrumentation =
@@ -119,16 +118,20 @@ let modules_rules
   modules, pp
 ;;
 
-let modules_rules sctx kind expander ~dir scope modules =
-  let preprocess, preprocessor_deps, lint, empty_module_interface_if_absent =
+let modules_rules sctx kind expander ~dir scope modules ~for_ =
+  let preprocess, lint, empty_module_interface_if_absent =
     match kind with
-    | Executables (buildable, _) | Library (buildable, _) ->
-      ( buildable.preprocess
-      , buildable.preprocessor_deps
-      , buildable.lint
-      , buildable.empty_module_interface_if_absent )
-    | Melange { preprocess; preprocessor_deps; lint; empty_module_interface_if_absent } ->
-      preprocess, preprocessor_deps, lint, empty_module_interface_if_absent
+    | Executables (buildable, _) ->
+      buildable.preprocess, buildable.lint, buildable.empty_module_interface_if_absent
+    | Library (buildable, _) ->
+      let preprocess =
+        match for_ with
+        | Lib_mode.Ocaml _ -> buildable.preprocess
+        | Melange -> buildable.melange_preprocess
+      in
+      preprocess, buildable.lint, buildable.empty_module_interface_if_absent
+    | Melange { preprocess; lint; empty_module_interface_if_absent } ->
+      preprocess, lint, empty_module_interface_if_absent
   in
   let lib_name =
     match kind with
@@ -142,7 +145,6 @@ let modules_rules sctx kind expander ~dir scope modules =
   in
   modules_rules
     ~preprocess
-    ~preprocessor_deps
     ~lint
     ~empty_module_interface_if_absent
     sctx
