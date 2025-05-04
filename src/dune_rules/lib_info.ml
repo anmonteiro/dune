@@ -319,7 +319,8 @@ type 'path t =
   ; wasmoo_runtime : 'path list
   ; requires : Lib_dep.t list
   ; ppx_runtime_deps : (Loc.t * Lib_name.t) list
-  ; preprocess : Preprocess.With_instrumentation.t Preprocess.Per_module.t
+  ; preprocess :
+      Preprocess.With_instrumentation.t Preprocess.Per_module.t Lib_mode.By_mode.t
   ; enabled : Enabled_status.t Memo.t
   ; virtual_deps : (Loc.t * Lib_name.t) list
   ; dune_version : Dune_lang.Syntax.Version.t option
@@ -346,7 +347,7 @@ let version t = t.version
 let dune_version t = t.dune_version
 let loc t = t.loc
 let requires t = t.requires
-let preprocess t = t.preprocess
+let preprocess t ~for_ = Lib_mode.By_mode.get t.preprocess ~for_
 let ppx_runtime_deps t = t.ppx_runtime_deps
 let sub_systems t = t.sub_systems
 let modes t = t.modes

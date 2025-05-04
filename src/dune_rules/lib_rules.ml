@@ -530,6 +530,7 @@ let cctx
         ~dir
         scope
         source_modules
+        ~for_
     and+ vimpl = Virtual_rules.impl sctx ~lib ~scope ~for_ in
     let modules = Vimpl.impl_modules vimpl modules in
     modules, vimpl, pp
@@ -711,13 +712,21 @@ let library_rules
   and+ merlin =
     let+ requires_hidden = Compilation_context.requires_hidden cctx in
     let flags = Compilation_context.flags cctx in
+    let preprocess =
+      { Lib_mode.By_mode.ocaml =
+          Preprocess.Per_module.without_instrumentation lib.buildable.preprocess.config
+      ; melange =
+          Preprocess.Per_module.without_instrumentation
+            lib.buildable.melange_preprocess.config
+      }
+    in
     Merlin.make
       ~requires_compile
       ~requires_hidden
       ~stdlib_dir:lib_config.stdlib_dir
       ~flags
       ~modules:(Lib_mode.By_mode.for_merlin (Compilation_context.modes cctx))
-      ~preprocess:(Preprocess.Per_module.without_instrumentation lib.buildable.preprocess)
+      ~preprocess
       ~libname:(Some (snd lib.name))
       ~obj_dir
       ~dialects:(Dune_project.dialects (Scope.project scope))
