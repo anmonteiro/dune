@@ -513,6 +513,7 @@ module Unprocessed = struct
     in
     let flags = Ocaml_flags.get flags mode in
     let { Dialect.DB.extensions; readers } = Dialect.DB.for_merlin dialects in
+    let preprocess = Lib_mode.By_mode.get preprocess ~for_:mode in
     let config =
       { stdlib_dir
       ; mode

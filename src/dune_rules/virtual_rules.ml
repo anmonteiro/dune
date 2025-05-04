@@ -104,7 +104,9 @@ let impl sctx ~(lib : Library.t) ~scope ~for_ =
              let* preprocess =
                (* TODO wrong, this should be delayed *)
                Instrumentation.with_instrumentation
-                 lib.buildable.preprocess
+                 (match for_ with
+                  | Ocaml _ -> lib.buildable.preprocess.config
+                  | Melange -> lib.buildable.melange_preprocess.config)
                  ~instrumentation_backend:(Lib.DB.instrumentation_backend db)
                |> Resolve.Memo.read_memo
              in

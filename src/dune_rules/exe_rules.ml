@@ -177,6 +177,7 @@ let executables_rules
         ~dir
         scope
         modules
+        ~for_:(Ocaml Byte)
     in
     Modules.With_vlib.modules modules, pp
   in
@@ -297,6 +298,12 @@ let executables_rules
   in
   let+ merlin =
     let+ requires_hidden = Compilation_context.requires_hidden cctx in
+    let preprocess =
+      { Lib_mode.By_mode.ocaml =
+          Preprocess.Per_module.without_instrumentation exes.buildable.preprocess.config
+      ; melange = Preprocess.Per_module.no_preprocessing ()
+      }
+    in
     Merlin.make
       ~requires_compile
       ~requires_hidden
@@ -305,8 +312,7 @@ let executables_rules
       ~modules
       ~libname:None
       ~obj_dir
-      ~preprocess:
-        (Preprocess.Per_module.without_instrumentation exes.buildable.preprocess)
+      ~preprocess
       ~dialects:(Dune_project.dialects (Scope.project scope))
       ~ident:(Merlin_ident.for_exes ~names:(Nonempty_list.map ~f:snd exes.names))
       ~modes:`Exe
@@ -319,7 +325,7 @@ let compile_info ~scope (exes : Executables.t) =
   let+ pps =
     (* TODO resolution should be delayed *)
     Instrumentation.with_instrumentation
-      exes.buildable.preprocess
+      exes.buildable.preprocess.config
       ~instrumentation_backend:(Lib.DB.instrumentation_backend (Scope.libs scope))
     |> Resolve.Memo.read_memo
     >>| Preprocess.Per_module.pps

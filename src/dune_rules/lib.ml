@@ -928,9 +928,13 @@ end = struct
         let instrumentation_backend =
           instrumentation_backend db.instrument_with resolve_forbid_ignore
         in
-        Lib_info.preprocess info
-        |> Instrumentation.with_instrumentation ~instrumentation_backend
-        >>| Preprocess.Per_module.pps
+        Lib_mode.Map.Set.to_list_unique (Lib_info.modes info)
+        |> Memo.parallel_map ~f:(fun for_ ->
+          Lib_info.preprocess info ~for_
+          |> Instrumentation.with_instrumentation ~instrumentation_backend
+          >>| Preprocess.Per_module.pps)
+        |> Memo.map ~f:Resolve.all
+        >>| List.concat
       in
       let dune_version = Lib_info.dune_version info in
       Lib_info.requires info

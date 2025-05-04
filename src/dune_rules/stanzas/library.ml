@@ -531,7 +531,11 @@ let to_lib_info
   let synopsis = conf.synopsis in
   let sub_systems = conf.sub_systems in
   let ppx_runtime_deps = conf.ppx_runtime_libraries in
-  let preprocess = conf.buildable.preprocess in
+  let preprocess =
+    { Lib_mode.By_mode.ocaml = conf.buildable.preprocess.config
+    ; melange = conf.buildable.melange_preprocess.config
+    }
+  in
   let virtual_deps = conf.virtual_deps in
   let dune_version = Some conf.dune_version in
   let implements = conf.implements in

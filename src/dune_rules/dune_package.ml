@@ -276,7 +276,10 @@ module Lib = struct
          let main_module_name = Lib_info.Inherited.This main_module_name in
          let foreign_objects = Lib_info.Source.External foreign_objects in
          let public_headers = Lib_info.File_deps.External public_headers in
-         let preprocess = Preprocess.Per_module.no_preprocessing () in
+         let preprocess =
+           let no_preprocessing = Preprocess.Per_module.no_preprocessing () in
+           { Lib_mode.By_mode.ocaml = no_preprocessing; melange = no_preprocessing }
+         in
          let virtual_deps = [] in
          let dune_version = None in
          let modules = { Lib_mode.By_mode.ocaml = modules; melange = melange_modules } in

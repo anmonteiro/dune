@@ -127,7 +127,7 @@ let impl_only_modules_defined_in_this_lib ~sctx ~scope lib =
       let info = Lib.Local.info lib in
       let+ modules =
         let* modules = Dir_contents.modules_of_local_lib sctx lib ~for_ in
-        let preprocess = Lib_info.preprocess info in
+        let preprocess = Lib_info.preprocess info ~for_ in
         modules_in_obj_dir ~sctx ~scope ~preprocess modules >>| Modules.With_vlib.modules
       in
       let () =
@@ -179,7 +179,7 @@ let compile_info ~scope (mel : Melange_stanzas.Emit.t) =
   let dune_version = Scope.project scope |> Dune_project.dune_version in
   let+ pps =
     Instrumentation.with_instrumentation
-      mel.preprocess
+      mel.preprocess.config
       ~instrumentation_backend:(Lib.DB.instrumentation_backend (Scope.libs scope))
     |> Resolve.Memo.read_memo
     >>| Preprocess.Per_module.pps
@@ -341,7 +341,6 @@ let setup_emit_cmj_rules
           sctx
           (Melange
              { preprocess = mel.preprocess
-             ; preprocessor_deps = mel.preprocessor_deps
              ; lint = mel.lint
              ; (* why is this always false? *)
                empty_module_interface_if_absent = false
@@ -350,6 +349,7 @@ let setup_emit_cmj_rules
           ~dir
           scope
           source_modules
+          ~for_:Melange
       in
       Modules.With_vlib.modules modules, pp
     in
@@ -411,6 +411,11 @@ let setup_emit_cmj_rules
       in
       add_deps_to_aliases ?alias:mel.alias emit_and_libs_deps ~dir
     in
+    let preprocess =
+      { Lib_mode.By_mode.ocaml = Preprocess.Per_module.no_preprocessing ()
+      ; melange = Preprocess.Per_module.without_instrumentation mel.preprocess.config
+      }
+    in
     ( cctx
     , Merlin.make
         ~requires_compile
@@ -419,7 +424,7 @@ let setup_emit_cmj_rules
         ~flags
         ~modules
         ~libname:None
-        ~preprocess:(Preprocess.Per_module.without_instrumentation mel.preprocess)
+        ~preprocess
         ~obj_dir
         ~ident:merlin_ident
         ~dialects:(Dune_project.dialects (Scope.project scope))
@@ -513,7 +518,9 @@ let modules_for_js_and_obj_dir ~sctx ~dir_contents ~scope (mel : Melange_stanzas
           ~libs:(Scope.libs scope)
           ~for_:(Melange { target = mel.target })
   in
-  let+ modules = modules_in_obj_dir ~sctx ~scope ~preprocess:mel.preprocess modules in
+  let+ modules =
+    modules_in_obj_dir ~sctx ~scope ~preprocess:mel.preprocess.config modules
+  in
   let modules_for_js =
     Modules.fold modules ~init:[] ~f:(fun x acc ->
       if Module.has x ~ml_kind:Impl then x :: acc else acc)
