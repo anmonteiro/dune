@@ -469,7 +469,7 @@ module Crawl = struct
         | true ->
           let mode =
             let modes = Lib_info.modes info in
-            Lib_mode.Map.Set.for_merlin modes
+            Dune_lang.Lib_mode.Map.Set.for_merlin modes
           in
           (* XXX why do we have a second object directory? *)
           let* modules_, obj_dir_ =
