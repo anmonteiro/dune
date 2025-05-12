@@ -642,7 +642,6 @@ let library_rules
       Melange_rules.setup_melange_sources_copy_rules
         ~sctx
         ~dir
-        ~loc:lib.buildable.loc
         ~expander
         ~modules:source_modules)
   in

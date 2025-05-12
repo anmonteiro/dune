@@ -5,7 +5,6 @@ val maybe_prepend_melange_install_dir : for_:Lib_mode.t -> string option -> stri
 val setup_melange_sources_copy_rules
   :  sctx:Super_context.t
   -> dir:Path.Build.t
-  -> loc:Loc.t
   -> expander:'a
   -> modules:Modules.t
   -> unit Memo.t

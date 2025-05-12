@@ -33,8 +33,9 @@ let maybe_prepend_melange_install_dir ~for_ dir =
     |> Option.some
 ;;
 
-let setup_melange_sources_copy_rules ~sctx ~dir ~loc ~expander:_ ~modules =
+let setup_melange_sources_copy_rules ~sctx ~dir ~expander:_ ~modules =
   let mods = Modules.fold_user_written modules ~init:[] ~f:(fun m acc -> m :: acc) in
+  let context = Super_context.context sctx in
   Memo.parallel_iter mods ~f:(fun m ->
     (* use the original path to set up the correct symlinks *)
     List.combine (Module.sources_without_pp m) (Module.sources m)
@@ -43,7 +44,7 @@ let setup_melange_sources_copy_rules ~sctx ~dir ~loc ~expander:_ ~modules =
         let src_in_lib = Path.drop_prefix_exn dst ~prefix:(Path.build dir) in
         Path.Build.append_local dir src_in_lib
       in
-      Super_context.add_rule sctx ~loc ~dir (Action_builder.symlink ~src ~dst)))
+      Super_context.add_rule sctx ~dir (Copy_line_directive.builder context ~src ~dst)))
 ;;
 
 let output_of_lib =
@@ -375,12 +376,7 @@ let setup_emit_cmj_rules
         ~package:mel.package
     in
     let* () =
-      setup_melange_sources_copy_rules
-        ~sctx
-        ~dir
-        ~loc:mel.loc
-        ~expander
-        ~modules:source_modules
+      setup_melange_sources_copy_rules ~sctx ~dir ~expander ~modules:source_modules
     in
     let* () = Module_compilation.build_all cctx in
     let* requires_compile = Compilation_context.requires_compile cctx in
