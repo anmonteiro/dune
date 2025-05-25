@@ -91,7 +91,7 @@ module Lib = struct
     let archives = Lib_info.archives info in
     let sub_systems = Lib_info.sub_systems info in
     let plugins = Lib_info.plugins info in
-    let requires = Lib_info.requires info in
+    let requires = Lib_info.requires_by_mode info in
     let foreign_objects =
       match Lib_info.foreign_objects info with
       | External e -> e
@@ -139,8 +139,14 @@ module Lib = struct
        ; paths "native_archives" native_archives
        ; paths "jsoo_runtime" jsoo_runtime
        ; paths "wasmoo_runtime" wasmoo_runtime
-       ; Lib_dep.L.field_encode requires ~name:"requires"
-       ; libs "ppx_runtime_deps" ppx_runtime_deps
+       ; Lib_dep.L.field_encode requires.ocaml ~name:"requires"
+       ; (* TODO(anmonteiro): optional *)
+         Lib_dep.L.field_encode
+           (if modes.melange then requires.melange else [])
+           ~name:"melange_requires"
+       ; libs "ppx_runtime_deps" ppx_runtime_deps.ocaml
+       ; (* TODO(anmonteiro): optional *)
+         libs "melange_ppx_runtime_deps" ppx_runtime_deps.melange
        ; field_o "implements" (no_loc Lib_name.encode) implements
        ; field_o "default_implementation" (no_loc Lib_name.encode) default_implementation
        ; field_o "main_module_name" Module_name.encode main_module_name
@@ -248,7 +254,11 @@ module Lib = struct
        and+ wasmoo_runtime = paths "wasmoo_runtime"
        and+ melange_runtime_deps = paths "melange_runtime_deps"
        and+ requires = field_l "requires" (Lib_dep.decode ~allow_re_export:true)
+       and+ melange_requires =
+         field_o "melange_requires" (repeat (Lib_dep.decode ~allow_re_export:true))
        and+ ppx_runtime_deps = libs "ppx_runtime_deps"
+       and+ melange_ppx_runtime_deps =
+         field_o "melange_ppx_runtime_deps" (repeat (located Lib_name.decode))
        and+ virtual_ = field_b "virtual"
        and+ sub_systems = Sub_system_info.record_parser
        and+ orig_src_dir = field_o "orig_src_dir" path
@@ -285,11 +295,12 @@ module Lib = struct
          let modules = { Lib_mode.By_mode.ocaml = modules; melange = melange_modules } in
          let entry_modules =
            Lib_mode.By_mode.map modules ~f:(fun ~for_:_ modules ->
-             Modules.entry_modules modules |> List.map ~f:Module.name)
+             Option.map modules ~f:(fun modules ->
+               Modules.entry_modules modules |> List.map ~f:Module.name))
          in
          let modules =
            Lib_mode.By_mode.map modules ~f:(fun ~for_:_ modules ->
-             Modules.With_vlib.modules modules)
+             Option.map modules ~f:(fun modules -> Modules.With_vlib.modules modules))
          in
          let wrapped =
            let any_modules =
@@ -302,6 +313,25 @@ module Lib = struct
          let entry_modules = Lib_info.Source.External (Ok entry_modules) in
          let modules = Lib_info.Source.External modules in
          let melange_runtime_deps = Lib_info.File_deps.External melange_runtime_deps in
+         let requires =
+           { Lib_mode.By_mode.ocaml = requires
+           ; melange =
+               (match modes.melange, melange_requires with
+                | true, _ -> Option.value melange_requires ~default:requires
+                | false, Some _ -> assert false
+                | false, None -> [])
+           }
+         in
+         let ppx_runtime_deps =
+           { Lib_mode.By_mode.ocaml = ppx_runtime_deps
+           ; melange =
+               (match modes.melange, melange_requires with
+                | true, _ ->
+                  Option.value melange_ppx_runtime_deps ~default:ppx_runtime_deps
+                | false, Some _ -> assert false
+                | false, None -> [])
+           }
+         in
          Lib_info.create
            ~path_kind:External
            ~loc
@@ -354,6 +384,7 @@ module Lib = struct
          Some (External_location.Relative_to_findlib (opam_dir, local))
        in
        { info; main_module_name; external_location })
+  [@@ocaml.warning "-21"]
   ;;
 
   let info dp = dp.info

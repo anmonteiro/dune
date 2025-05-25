@@ -464,12 +464,13 @@ let mdx_prog_gen t ~sctx ~dir ~scope ~mdx_prog =
         ~pps:[]
         ~dune_version
     in
-    let requires_compile = Lib.Compile.direct_requires compile_info
-    and requires_link = Lib.Compile.requires_link compile_info in
+    let for_ = Lib_mode.Ocaml Byte in
+    let requires_compile = Lib.Compile.all_direct_requires compile_info
+    and requires_link = Lib.Compile.all_requires_link compile_info in
     let obj_dir = Obj_dir.make_exe ~dir ~name in
     let modules =
       let modules =
-        Module.generated ~kind:Impl ~for_:(Ocaml Byte) ~src_dir:dir [ main_module_name ]
+        Module.generated ~kind:Impl ~for_ ~src_dir:dir [ main_module_name ]
         |> Modules.With_vlib.singleton_exe
       in
       { Lib_mode.By_mode.ocaml = Some modules; melange = None }

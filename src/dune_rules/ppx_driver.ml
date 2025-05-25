@@ -274,10 +274,11 @@ module Driver = struct
 end
 
 let build_ppx_driver sctx ~scope ~target ~pps ~pp_names =
+  let for_ = Lib_mode.Ocaml Byte in
   let* driver_and_libs =
     let ( let& ) t f = Resolve.Memo.bind t ~f in
     let& pps = Resolve.Memo.lift pps in
-    let& pps = Lib.closure ~linking:true pps in
+    let& pps = Lib.closure ~linking:true pps ~for_ in
     Driver.select pps ~loc:(Dot_ppx (target, pp_names))
     >>| Resolve.map ~f:(fun driver -> driver, pps)
     >>|
@@ -290,9 +291,7 @@ let build_ppx_driver sctx ~scope ~target ~pps ~pp_names =
      at the point where the driver is defined. *)
   let dir = Path.Build.parent_exn target in
   let main_module_name = Module_name.of_string_allow_invalid (Loc.none, "_ppx") in
-  let module_ =
-    Module.generated ~kind:Impl ~for_:(Ocaml Byte) ~src_dir:dir [ main_module_name ]
-  in
+  let module_ = Module.generated ~kind:Impl ~for_ ~src_dir:dir [ main_module_name ] in
   let* () =
     let ml_source =
       Module.file ~ml_kind:Impl module_ |> Option.value_exn |> Path.as_in_build_dir_exn
@@ -312,8 +311,16 @@ let build_ppx_driver sctx ~scope ~target ~pps ~pp_names =
     [ Exe.Linkage.native_or_custom ocaml ]
   and+ cctx =
     let obj_dir = Obj_dir.for_pp ~dir in
-    let requires_compile = Resolve.map driver_and_libs ~f:snd in
-    let requires_link = Memo.lazy_ (fun () -> Memo.return requires_compile) in
+    let requires_compile =
+      { Lib_mode.By_mode.ocaml = Resolve.map driver_and_libs ~f:snd |> Memo.return
+      ; melange = Resolve.Memo.return []
+      }
+    in
+    let requires_link =
+      { Lib_mode.By_mode.ocaml = Memo.lazy_ (fun () -> requires_compile.ocaml)
+      ; melange = Memo.lazy_ (fun () -> Resolve.Memo.return [])
+      }
+    in
     let flags = Ocaml_flags.of_list [ "-g"; "-w"; "-24" ] in
     let opaque = Compilation_context.Explicit false in
     let modules =
@@ -327,7 +334,7 @@ let build_ppx_driver sctx ~scope ~target ~pps ~pp_names =
       ~obj_dir
       ~modules
       ~flags
-      ~requires_compile:(Memo.return requires_compile)
+      ~requires_compile
       ~requires_link
       ~opaque
       ~js_of_ocaml:(Js_of_ocaml.Mode.Pair.make None)
@@ -439,7 +446,7 @@ let ppx_driver_and_flags ctx ~lib_name ~expander ~scope ~loc ~flags pps =
     let dune_version = Scope.project scope |> Dune_project.dune_version in
     ppx_driver_and_flags_internal ctx ~loc ~expander ~dune_version ~lib_name ~flags libs
   and+ driver =
-    let* libs = Resolve.Memo.read (Lib.closure libs ~linking:true) in
+    let* libs = Resolve.Memo.read (Lib.closure libs ~linking:true ~for_:(Ocaml Byte)) in
     Action_builder.of_memo (Driver.select libs ~loc:(User_file (loc, pps)))
     >>= Resolve.read
   in

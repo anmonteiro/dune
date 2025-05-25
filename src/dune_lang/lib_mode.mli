@@ -44,11 +44,15 @@ module By_mode : sig
 
   val for_merlin : 'a option t -> 'a
   val to_list : 'a option t -> (mode * 'a) list
-  val of_list : (mode * 'a) list -> 'a option t
-  val map : 'a option t -> f:(for_:mode -> 'a -> 'b) -> 'b option t
+  val of_list : (mode * 'a) list -> init:'a -> 'a t
+  val map : 'a t -> f:(for_:mode -> 'a -> 'b) -> 'b t
   val to_dyn : 'a Dyn.builder -> 'a t Dyn.builder
   val get : 'a t -> for_:mode -> 'a
   val set : 'a t -> for_:mode -> 'a -> 'a t
+
+  module L : sig
+    val of_list : (mode * 'a list) list -> 'a list t
+  end
 end
 
 module Map : sig

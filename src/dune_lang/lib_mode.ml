@@ -88,6 +88,15 @@ module By_mode = struct
     ; melange : 'a
     }
 
+  module L = struct
+    let of_list xs =
+      List.fold_left xs ~init:{ ocaml = []; melange = [] } ~f:(fun acc (k, item) ->
+        match k with
+        | Ocaml _ -> { acc with ocaml = acc.ocaml @ item }
+        | Melange -> { acc with melange = acc.melange @ item })
+    ;;
+  end
+
   let for_merlin { ocaml; melange } =
     match ocaml, melange with
     | None, Some x -> x
@@ -103,17 +112,15 @@ module By_mode = struct
     | None, None -> []
   ;;
 
-  let of_list xs =
-    List.fold_left xs ~init:{ ocaml = None; melange = None } ~f:(fun acc (k, item) ->
+  let of_list xs ~init =
+    List.fold_left xs ~init:{ ocaml = init; melange = init } ~f:(fun acc (k, item) ->
       match k with
-      | Ocaml _ -> { acc with ocaml = Some item }
-      | Melange -> { acc with melange = Some item })
+      | Ocaml _ -> { acc with ocaml = item }
+      | Melange -> { acc with melange = item })
   ;;
 
   let map t ~f =
-    { ocaml = Option.map t.ocaml ~f:(fun ocaml -> f ~for_:(Ocaml Byte) ocaml)
-    ; melange = Option.map t.melange ~f:(fun melange -> f ~for_:Melange melange)
-    }
+    { ocaml = f ~for_:(Ocaml Byte) t.ocaml; melange = f ~for_:Melange t.melange }
   ;;
 
   let get t ~for_ =

@@ -65,7 +65,8 @@ let term =
         Dune_rules.Utop.libs_under_dir sctx ~db ~dir:(Path.build dir)
       in
       let* requires =
-        Dune_rules.Resolve.Memo.read_memo (Dune_rules.Lib.closure ~linking:true libs)
+        Dune_rules.Resolve.Memo.read_memo
+          (Dune_rules.Lib.closure ~linking:true libs ~for_:(Ocaml Byte))
       in
       let* lib_config =
         let+ ocaml = Context.ocaml context in
@@ -122,7 +123,7 @@ module Module = struct
       let module Obj_dir = Dune_rules.Obj_dir in
       let module Top_module = Dune_rules.Top_module in
       let* requires =
-        let* requires = Compilation_context.requires_link cctx in
+        let* requires = Compilation_context.requires_link cctx ~for_:(Ocaml Byte) in
         Dune_rules.Resolve.read_memo requires
       in
       let private_obj_dir = Top_module.private_obj_dir ctx mod_ in

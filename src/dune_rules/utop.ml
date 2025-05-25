@@ -85,7 +85,7 @@ let add_stanza db ~dir (acc, pps) stanza =
           ~allow_overlaps:exes.buildable.allow_overlapping_dependencies
           ~forbidden_libraries:exes.forbidden_libraries
       in
-      let+ available = Lib.Compile.direct_requires compile_info in
+      let+ available = Lib.Compile.direct_requires compile_info ~for_:(Ocaml Byte) in
       Resolve.peek available
     in
     (match libs with
@@ -136,7 +136,7 @@ let requires ~loc ~db ~libs =
   (loc, Lib_name.of_string "utop")
   |> Lib.DB.resolve db
   >>| (fun utop -> utop :: libs)
-  >>= Lib.closure ~linking:true
+  >>= Lib.closure ~linking:true ~for_:(Ocaml Byte)
 ;;
 
 let utop_dev_tool_lock_dir_exists =
@@ -222,7 +222,16 @@ let setup sctx ~dir =
     Ocaml_flags.append_common (Ocaml_flags.default ~dune_version ~profile) [ "-w"; "-24" ]
   in
   let* cctx =
-    let requires_link = Memo.lazy_ (fun () -> requires) in
+    let requires_link =
+      let init = Memo.lazy_ (fun () -> Resolve.Memo.return []) in
+      let init = { Lib_mode.By_mode.ocaml = init; melange = init } in
+      Lib_mode.By_mode.set init ~for_:(Ocaml Byte) (Memo.lazy_ (fun () -> requires))
+    in
+    let requires =
+      let init = Resolve.Memo.return [] in
+      let init = { Lib_mode.By_mode.ocaml = init; melange = init } in
+      Lib_mode.By_mode.set init ~for_:(Ocaml Byte) requires
+    in
     let modules = { Lib_mode.By_mode.ocaml = Some modules; melange = None } in
     Compilation_context.create
       ()

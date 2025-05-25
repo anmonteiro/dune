@@ -112,7 +112,8 @@ let setup_module_rules t =
   let dir = Compilation_context.dir t.cctx in
   let sctx = Compilation_context.super_context t.cctx in
   let path = Source.source_path t.source in
-  let requires_compile = Compilation_context.requires_compile t.cctx in
+  let for_ = Lib_mode.Ocaml Byte in
+  let requires_compile = Compilation_context.requires_compile t.cctx ~for_ in
   let main_ml =
     let open Action_builder.O in
     Action_builder.write_file_dyn
@@ -120,7 +121,7 @@ let setup_module_rules t =
       (let* libs = Resolve.Memo.read requires_compile in
        let lib_config = (Compilation_context.ocaml t.cctx).lib_config in
        let include_dirs =
-         Path.Set.to_list (Lib_flags.L.include_paths libs (Ocaml Byte) lib_config)
+         Path.Set.to_list (Lib_flags.L.include_paths libs for_ lib_config)
        in
        let* pp_ppx = pp_flags t in
        let pp_dirs = Source.pp_ml t.source ~include_dirs in
@@ -213,8 +214,8 @@ module Stanza = struct
         ~dune_version
         ~allow_overlaps:false
     in
-    let requires_compile = Lib.Compile.direct_requires compile_info in
-    let requires_link = Lib.Compile.requires_link compile_info in
+    let requires_compile = Lib.Compile.all_direct_requires compile_info in
+    let requires_link = Lib.Compile.all_requires_link compile_info in
     let obj_dir = Source.obj_dir source in
     let flags =
       let profile = Super_context.context sctx |> Context.profile in

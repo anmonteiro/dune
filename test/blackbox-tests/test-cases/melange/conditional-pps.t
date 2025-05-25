@@ -28,3 +28,4 @@ form `foo.bar.baz`
   Entering directory 'a'
   Leaving directory 'a'
 
+  $ tree -a ./a/_build/default

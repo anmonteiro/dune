@@ -140,9 +140,10 @@ let executables_rules
   =
   (* Use "eobjs" rather than "objs" to avoid a potential conflict with a library
      of the same name *)
+  let for_ = Lib_mode.Ocaml Byte in
   let* modules, obj_dir =
     let first_exe = first_exe exes in
-    Dir_contents.for_ ~mode:(Ocaml Byte) dir_contents
+    Dir_contents.for_ ~mode:for_ dir_contents
     >>= Ml_sources.modules_and_obj_dir ~libs:(Scope.libs scope) ~for_:(Exe { first_exe })
   in
   let* () = Check_rules.add_obj_dir sctx ~obj_dir (Ocaml Byte) in
@@ -183,8 +184,8 @@ let executables_rules
   in
   let programs = programs ~modules ~exes in
   let* cctx =
-    let requires_compile = Lib.Compile.direct_requires compile_info in
-    let requires_link = Lib.Compile.requires_link compile_info in
+    let requires_compile = Lib.Compile.all_direct_requires compile_info in
+    let requires_link = Lib.Compile.all_requires_link compile_info in
     let js_of_ocaml =
       Js_of_ocaml.Mode.Pair.mapi js_of_ocaml ~f:(fun mode x ->
         Option.some_if
@@ -209,7 +210,7 @@ let executables_rules
       ~package:exes.package
   in
   let lib_config = ocaml.lib_config in
-  let* requires_compile = Compilation_context.requires_compile cctx in
+  let* requires_compile = Compilation_context.requires_compile cctx ~for_:(Ocaml Byte) in
   let* () =
     let* dep_graphs =
       (* Building an archive for foreign stubs, we link the corresponding object
@@ -297,7 +298,7 @@ let executables_rules
     Memo.parallel_iter dep_graphs.for_exes ~f:(Check_rules.add_cycle_check sctx ~dir)
   in
   let+ merlin =
-    let+ requires_hidden = Compilation_context.requires_hidden cctx in
+    let+ requires_hidden = Compilation_context.requires_hidden cctx ~for_:(Ocaml Byte) in
     let preprocess =
       { Lib_mode.By_mode.ocaml =
           Preprocess.Per_module.without_instrumentation exes.buildable.preprocess.config
@@ -354,9 +355,10 @@ let rules ~sctx ~dir_contents ~scope ~expander (exes : Executables.t) =
       ~compile_info
       ~embed_in_plugin_libraries:exes.embed_in_plugin_libraries
   in
-  let* () = Buildable_rules.gen_select_rules sctx compile_info ~dir
+  let for_ = Lib_mode.Ocaml Byte in
+  let* () = Buildable_rules.gen_select_rules sctx compile_info ~dir ~for_
   and* () =
-    let requires_link = Lib.Compile.requires_link compile_info in
+    let requires_link = Lib.Compile.requires_link compile_info ~for_ in
     Bootstrap_info.gen_rules sctx exes ~dir ~requires_link
   in
   let merlin_ident = Merlin_ident.for_exes ~names:(Nonempty_list.map ~f:snd exes.names) in

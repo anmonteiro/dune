@@ -17,4 +17,9 @@ end
 
 module Install : sig
   val dir : string
+
+  val maybe_prepend_melange_install_dir
+    :  for_:Lib_mode.t
+    -> string option
+    -> string option
 end

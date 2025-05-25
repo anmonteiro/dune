@@ -25,8 +25,8 @@ val create
   -> obj_dir:Path.Build.t Obj_dir.t
   -> modules:Modules.With_vlib.t option Lib_mode.By_mode.t
   -> flags:Ocaml_flags.t
-  -> requires_compile:Lib.t list Resolve.Memo.t
-  -> requires_link:Lib.t list Resolve.t Memo.Lazy.t
+  -> requires_compile:Lib.t list Resolve.Memo.t Lib_mode.By_mode.t
+  -> requires_link:Lib.t list Resolve.t Memo.Lazy.t Lib_mode.By_mode.t
   -> ?preprocessing:Pp_spec.t
   -> opaque:opaque
   -> ?stdlib:Ocaml_stdlib.t
@@ -52,11 +52,11 @@ val dir : t -> Path.Build.t
 
 val obj_dir : t -> Path.Build.t Obj_dir.t
 val modules : t -> for_:Lib_mode.t -> Modules.With_vlib.t
-val modes : t -> Modules.With_vlib.t option Lib_mode.By_mode.t
+val all_modules : t -> Modules.With_vlib.t option Lib_mode.By_mode.t
 val flags : t -> Ocaml_flags.t
-val requires_link : t -> Lib.t list Resolve.Memo.t
-val requires_hidden : t -> Lib.t list Resolve.Memo.t
-val requires_compile : t -> Lib.t list Resolve.Memo.t
+val requires_link : t -> for_:Lib_mode.t -> Lib.t list Resolve.Memo.t
+val requires_hidden : t -> for_:Lib_mode.t -> Lib.t list Resolve.Memo.t
+val requires_compile : t -> for_:Lib_mode.t -> Lib.t list Resolve.Memo.t
 val includes : t -> Command.Args.without_targets Command.Args.t Lib_mode.Cm_kind.Map.t
 val preprocessing : t -> Pp_spec.t
 val opaque : t -> bool
@@ -75,7 +75,6 @@ val for_module_generated_at_link_time
   :  t
   -> requires:Lib.t list Resolve.Memo.t
   -> module_:Module.t
-  -> for_:Lib_mode.t
   -> t
 
 val for_plugin_executable : t -> embed_in_plugin_libraries:(Loc.t * Lib_name.t) list -> t

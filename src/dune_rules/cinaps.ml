@@ -108,12 +108,9 @@ let gen_rules sctx t ~dir ~scope =
     Path.Build.relative dir ("." ^ name ^ "." ^ stamp)
   in
   let main_module_name = Module_name.of_string name in
+  let for_ = Lib_mode.Ocaml Byte in
   let module_ =
-    Module.generated
-      ~kind:Impl
-      ~for_:(Ocaml Byte)
-      [ main_module_name ]
-      ~src_dir:cinaps_dir
+    Module.generated ~kind:Impl ~for_ [ main_module_name ] ~src_dir:cinaps_dir
   in
   let cinaps_ml =
     Module.source ~ml_kind:Ml_kind.Impl module_
@@ -177,8 +174,8 @@ let gen_rules sctx t ~dir ~scope =
   in
   let obj_dir = Obj_dir.make_exe ~dir:cinaps_dir ~name in
   let* cctx =
-    let requires_compile = Lib.Compile.direct_requires compile_info in
-    let requires_link = Lib.Compile.requires_link compile_info in
+    let requires_compile = Lib.Compile.all_direct_requires compile_info in
+    let requires_link = Lib.Compile.all_requires_link compile_info in
     let modules = { Lib_mode.By_mode.ocaml = Some modules; melange = None } in
     Compilation_context.create
       ()

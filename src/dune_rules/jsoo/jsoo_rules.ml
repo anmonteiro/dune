@@ -425,7 +425,7 @@ let standalone_runtime_rule ~mode cc ~runtime_files ~target ~flags ~sourcemap =
     |> Action_builder.bind ~f:(fun (x : _ Js_of_ocaml.Flags.t) -> x.compile)
     |> Action_builder.map ~f:Config.of_flags
   in
-  let libs = Compilation_context.requires_link cc in
+  let libs = Compilation_context.requires_link cc ~for_:(Ocaml Byte) in
   let spec =
     Command.Args.S
       [ Resolve.Memo.args
@@ -462,7 +462,7 @@ let exe_rule
   =
   let dir = Compilation_context.dir cc in
   let sctx = Compilation_context.super_context cc in
-  let libs = Compilation_context.requires_link cc in
+  let libs = Compilation_context.requires_link cc ~for_:(Ocaml Byte) in
   let linkall =
     let open Action_builder.O in
     let+ linkall = linkall
@@ -561,7 +561,8 @@ let link_rule
       |> Action_builder.map ~f:Config.of_flags
     and+ cm = cm
     and+ linkall = linkall
-    and+ libs = Resolve.Memo.read (Compilation_context.requires_link cc)
+    and+ libs =
+      Resolve.Memo.read (Compilation_context.requires_link cc ~for_:(Ocaml Byte))
     and+ { Link_time_code_gen_type.to_link; force_linkall } =
       Resolve.read link_time_code_gen
     and+ jsoo_version =

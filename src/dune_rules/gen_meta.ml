@@ -87,10 +87,35 @@ let gen_lib pub_name lib ~version =
     | _ -> name
   in
   let to_names = Lib_name.Set.of_list_map ~f:name in
-  let* lib_deps = Resolve.Memo.read_memo (Lib.requires lib) >>| to_names in
-  let* lib_re_exports = Resolve.Memo.read_memo (Lib.re_exports lib) >>| to_names in
+  let* lib_deps =
+    let* requires = Lib.requires lib in
+    let requires =
+      (* TODO(anmonteiro): a META file probably doesn't even contain melange
+         requires *)
+      let open Resolve.O in
+      let+ ocaml = requires.ocaml
+      and+ melange = requires.melange in
+      ocaml @ melange |> Lib.Set.of_list |> Lib.Set.to_list
+    in
+    Resolve.read_memo requires >>| to_names
+  in
+  let* lib_re_exports =
+    let* re_exports = Lib.re_exports lib in
+    let re_exports =
+      (* TODO(anmonteiro): a META file probably doesn't even contain melange
+         re_exports *)
+      let open Resolve.O in
+      let+ ocaml = re_exports.ocaml
+      and+ melange = re_exports.melange in
+      ocaml @ melange |> Lib.Set.of_list |> Lib.Set.to_list
+    in
+    Resolve.read_memo re_exports >>| to_names
+  in
   let* ppx_rt_deps =
-    Lib.ppx_runtime_deps lib |> Memo.bind ~f:Resolve.read_memo |> Memo.map ~f:to_names
+    Lib.ppx_runtime_deps lib
+    |> Memo.map ~f:(Lib_mode.By_mode.get ~for_:(Ocaml Byte))
+    |> Memo.bind ~f:Resolve.read_memo
+    |> Memo.map ~f:to_names
   in
   let+ ppx_runtime_deps_for_deprecated_method =
     (* For the deprecated method, we need to put all the runtime dependencies of
@@ -103,8 +128,10 @@ let gen_lib pub_name lib ~version =
 
        Sigh... *)
     let open Resolve.Memo.O in
-    Lib.closure [ lib ] ~linking:false
-    >>= Resolve.Memo.List.concat_map ~f:Lib.ppx_runtime_deps
+    (* TODO(anmonteiro): likely ok since META don't support Melange *)
+    Lib.closure [ lib ] ~linking:false ~for_:(Ocaml Byte)
+    >>= Resolve.Memo.List.concat_map ~f:(fun l ->
+      Lib.ppx_runtime_deps l |> Memo.map ~f:(Lib_mode.By_mode.get ~for_:(Ocaml Byte)))
     >>| to_names
     |> Resolve.Memo.read_memo
   in

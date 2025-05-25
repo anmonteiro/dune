@@ -153,8 +153,9 @@ val modes : _ t -> Lib_mode.Map.Set.t
 val modules : _ t -> for_:Lib_mode.t -> Modules.With_vlib.t option Source.t
 val modules_by_mode : _ t -> Modules.With_vlib.t option Lib_mode.By_mode.t Source.t
 val implements : _ t -> (Loc.t * Lib_name.t) option
-val requires : _ t -> Lib_dep.t list
-val ppx_runtime_deps : _ t -> (Loc.t * Lib_name.t) list
+val requires : _ t -> for_:Lib_mode.t -> Lib_dep.t list
+val requires_by_mode : _ t -> Lib_dep.t list Lib_mode.By_mode.t
+val ppx_runtime_deps : _ t -> (Loc.t * Lib_name.t) list Lib_mode.By_mode.t
 
 val preprocess
   :  _ t
@@ -182,8 +183,8 @@ val set_version : 'a t -> Package_version.t option -> 'a t
 val for_dune_package
   :  Path.t t
   -> name:Lib_name.t
-  -> ppx_runtime_deps:(Loc.t * Lib_name.t) list
-  -> requires:Lib_dep.t list
+  -> ppx_runtime_deps:(Loc.t * Lib_name.t) list Lib_mode.By_mode.t
+  -> requires:Lib_dep.t list Lib_mode.By_mode.t
   -> foreign_objects:Path.t list
   -> obj_dir:Path.t Obj_dir.t
   -> implements:(Loc.t * Lib_name.t) option
@@ -212,12 +213,12 @@ val create
   -> synopsis:string option
   -> main_module_name:Main_module_name.t
   -> sub_systems:Sub_system_info.t Sub_system_name.Map.t
-  -> requires:Lib_dep.t list
+  -> requires:Lib_dep.t list Lib_mode.By_mode.t
   -> foreign_objects:'a list Source.t
   -> public_headers:'a File_deps.t
   -> plugins:'a list Mode.Dict.t
   -> archives:'a list Mode.Dict.t
-  -> ppx_runtime_deps:(Loc.t * Lib_name.t) list
+  -> ppx_runtime_deps:(Loc.t * Lib_name.t) list Lib_mode.By_mode.t
   -> foreign_archives:'a Mode.Map.Multi.t
   -> native_archives:'a native_archives
   -> foreign_dll_files:'a list

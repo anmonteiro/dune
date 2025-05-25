@@ -11,6 +11,7 @@
   > (library
   >  (name a)
   >  (package pkg)
+  >  (melange.compile_flags -w +a-70)
   >  (modes melange byte))
   > EOF
 
@@ -19,12 +20,14 @@
   > EOF
   $ cat > a/foo.melange.ml <<EOF
   > let x = "melange"
+  > let compare a b = compare a b
   > EOF
 
   $ dune build a/.melange_src/foo.ml
   $ cat _build/default/a/.melange_src/foo.ml
   let x = "melange"
 
+  $ dune build _build/default/a/.a.objs/melange/a__Foo.cmi
 
 $ dune build _build/default/a/.a.objs/melange/a.cmi
 $ tree -a _build/default/a

@@ -239,7 +239,7 @@ end = struct
                     then None
                     else Some (Path.Local.explode parent |> String.concat ~sep:"/")
                   in
-                  Melange_rules.maybe_prepend_melange_install_dir ~for_ base
+                  Melange.Install.maybe_prepend_melange_install_dir ~for_ base
                 in
                 sub_dir, Some (Path.Local.basename p)
               | None ->
@@ -266,7 +266,7 @@ end = struct
                       |> Path.Local.descendant ~of_
                       |> Option.map ~f:Path.Local.to_string)
                   in
-                  Melange_rules.maybe_prepend_melange_install_dir ~for_ base
+                  Melange.Install.maybe_prepend_melange_install_dir ~for_ base
                 in
                 sub_dir, dst
             in
@@ -441,7 +441,9 @@ end = struct
                  ~dune_version
                  ~allow_overlaps:exes.buildable.allow_overlapping_dependencies
              in
-             let+ requires = Lib.Compile.direct_requires compile_info in
+             let+ requires =
+               Lib.Compile.direct_requires compile_info ~for_:(Ocaml Byte)
+             in
              Resolve.is_ok requires)
       | Coq_stanza.Theory.T d -> Memo.return (Option.is_some d.package)
       | _ -> Memo.return false
@@ -724,9 +726,9 @@ end = struct
                         ~for_:(Library (Lib_info.lib_id info |> Lib_id.to_local_exn))
                   >>| Modules.With_vlib.modules
                 in
-                mode, modules)
+                mode, Some modules)
             in
-            Lib_mode.By_mode.of_list modules
+            Lib_mode.By_mode.of_list modules ~init:None
           and* melange_runtime_deps = file_deps (Lib_info.melange_runtime_deps info)
           and* public_headers = file_deps (Lib_info.public_headers info) in
           let+ dune_lib =

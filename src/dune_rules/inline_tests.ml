@@ -186,6 +186,7 @@ include Sub_system.Register_end_point (struct
           ; scope
           ; source_modules
           ; compile_info = _
+          ; for_
           }
           ~expander
           ~(info : Info.t)
@@ -199,7 +200,7 @@ include Sub_system.Register_end_point (struct
       let runner_name = Inline_tests_info.inline_test_runner in
       let main_module =
         let name = Module_name.of_string "main" in
-        Module.generated ~kind:Impl ~for_:(Ocaml Byte) ~src_dir:inline_test_dir [ name ]
+        Module.generated ~kind:Impl ~for_ ~src_dir:inline_test_dir [ name ]
       in
       (* Generate the runner file *)
       let js_of_ocaml =
@@ -268,9 +269,17 @@ include Sub_system.Register_end_point (struct
           let* more_libs =
             Resolve.Memo.List.map info.libraries ~f:(Lib.DB.resolve lib_db)
           in
-          Lib.closure ~linking:true ((lib :: libs) @ more_libs)
+          Lib.closure ~linking:true ((lib :: libs) @ more_libs) ~for_
         in
         let modules = { Lib_mode.By_mode.ocaml = Some modules; melange = None } in
+        let requires_compile =
+          { Lib_mode.By_mode.ocaml = runner_libs; melange = Resolve.Memo.return [] }
+        in
+        let requires_link =
+          { Lib_mode.By_mode.ocaml = Memo.lazy_ (fun () -> runner_libs)
+          ; melange = Memo.lazy_ (fun () -> Resolve.Memo.return [])
+          }
+        in
         Compilation_context.create
           ()
           ~super_context:sctx
@@ -278,8 +287,8 @@ include Sub_system.Register_end_point (struct
           ~obj_dir
           ~modules
           ~opaque:(Explicit false)
-          ~requires_compile:runner_libs
-          ~requires_link:(Memo.lazy_ (fun () -> runner_libs))
+          ~requires_compile
+          ~requires_link
           ~flags
           ~js_of_ocaml:(Js_of_ocaml.Mode.Pair.map ~f:Option.some js_of_ocaml)
           ~melange_package_name:None

@@ -36,9 +36,8 @@ let generate_and_compile_module cctx ~precompiled_cmi ~obj_name ~name ~lib ~code
        Action_builder.write_file_dyn ml code)
   in
   let+ () =
-    let for_ = Lib_mode.Ocaml Byte in
     let cctx =
-      Compilation_context.for_module_generated_at_link_time cctx ~requires ~module_ ~for_
+      Compilation_context.for_module_generated_at_link_time cctx ~requires ~module_
     in
     Module_compilation.build_module ~precompiled_cmi cctx module_ ~for_
   in
@@ -229,7 +228,7 @@ let findlib_predicates_set_by_dune pred =
 
 let findlib_dynload cctx lib loc =
   let open Resolve.Memo.O in
-  let* all_libs = Compilation_context.requires_link cctx in
+  let* all_libs = Compilation_context.requires_link cctx ~for_:(Ocaml Byte) in
   (* If findlib.dynload is linked, we stores in the binary the packages
      linked by linking just after findlib.dynload a module containing
      the info *)
@@ -261,7 +260,7 @@ let findlib_dynload cctx lib loc =
 
 let handle_special_libs cctx =
   let ( let& ) m f = Resolve.Memo.bind m ~f in
-  let& all_libs = Compilation_context.requires_link cctx in
+  let& all_libs = Compilation_context.requires_link cctx ~for_:(Ocaml Byte) in
   let obj_dir = Compilation_context.obj_dir cctx |> Obj_dir.of_local in
   let open Memo.O in
   let dune_site_plugin_code =

@@ -85,6 +85,7 @@ module Library_compilation_context = struct
     ; stanza : Library.t
     ; scope : Scope.t
     ; source_modules : Module.t list
+    ; for_ : Lib_mode.t
     ; compile_info : Lib.Compile.t
     }
 end

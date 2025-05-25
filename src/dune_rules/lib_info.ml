@@ -317,8 +317,8 @@ type 'path t =
   ; foreign_dll_files : 'path list
   ; jsoo_runtime : 'path list
   ; wasmoo_runtime : 'path list
-  ; requires : Lib_dep.t list
-  ; ppx_runtime_deps : (Loc.t * Lib_name.t) list
+  ; requires : Lib_dep.t list Lib_mode.By_mode.t
+  ; ppx_runtime_deps : (Loc.t * Lib_name.t) list Lib_mode.By_mode.t
   ; preprocess :
       Preprocess.With_instrumentation.t Preprocess.Per_module.t Lib_mode.By_mode.t
   ; enabled : Enabled_status.t Memo.t
@@ -346,7 +346,8 @@ let lib_id t = t.lib_id
 let version t = t.version
 let dune_version t = t.dune_version
 let loc t = t.loc
-let requires t = t.requires
+let requires t ~for_ = Lib_mode.By_mode.get t.requires ~for_
+let requires_by_mode t = t.requires
 let preprocess t ~for_ = Lib_mode.By_mode.get t.preprocess ~for_
 let ppx_runtime_deps t = t.ppx_runtime_deps
 let sub_systems t = t.sub_systems
@@ -596,8 +597,9 @@ let to_dyn
     ; "foreign_dll_files", list path foreign_dll_files
     ; "jsoo_runtime", list path jsoo_runtime
     ; "wasmoo_runtime", list path wasmoo_runtime
-    ; "requires", list Lib_dep.to_dyn requires
-    ; "ppx_runtime_deps", list (snd Lib_name.to_dyn) ppx_runtime_deps
+    ; "requires", Lib_mode.By_mode.to_dyn (list Lib_dep.to_dyn) requires
+    ; ( "ppx_runtime_deps"
+      , Lib_mode.By_mode.to_dyn (list (snd Lib_name.to_dyn)) ppx_runtime_deps )
     ; "virtual_deps", list (snd Lib_name.to_dyn) virtual_deps
     ; "dune_version", option Dune_lang.Syntax.Version.to_dyn dune_version
     ; "sub_systems", Sub_system_name.Map.to_dyn Dyn.opaque sub_systems

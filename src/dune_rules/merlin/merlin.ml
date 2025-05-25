@@ -695,7 +695,7 @@ module Unprocessed = struct
                         (Scope.project scope)
                         ocaml.version)
                  in
-                 Lib.closure [ lib ] ~linking
+                 Lib.closure [ lib ] ~linking ~for_:t.config.mode
                  |> Resolve.Memo.peek
                  >>| function
                  | Ok libs -> libs

@@ -36,8 +36,8 @@ let cctx_rules cctx ~for_ =
       else
         let open Resolve.Memo.O in
         let+ non_compile_libs =
-          let* req_compile = Compilation_context.requires_compile cctx in
-          Compilation_context.requires_link cctx
+          let* req_compile = Compilation_context.requires_compile cctx ~for_ in
+          Compilation_context.requires_link cctx ~for_
           >>| List.filter ~f:(fun l -> not (List.exists req_compile ~f:(Lib.equal l)))
         in
         Lib_flags.L.include_flags
@@ -52,7 +52,7 @@ let cctx_rules cctx ~for_ =
     let other_indexes_deps =
       let open Resolve.Memo.O in
       let+ deps =
-        Compilation_context.requires_compile cctx
+        Compilation_context.requires_compile cctx ~for_
         >>| List.filter_map ~f:(fun lib ->
           Lib.Local.of_lib lib
           |> Option.map ~f:(fun lib ->

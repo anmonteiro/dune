@@ -21,11 +21,11 @@ val main_module_name : t -> Module_name.t option Resolve.Memo.t
 val wrapped : t -> Wrapped.t option Resolve.Memo.t
 
 (** Direct library dependencies of this library *)
-val requires : t -> t list Resolve.Memo.t
+val requires : t -> t list Resolve.t Lib_mode.By_mode.t Memo.t
 
-val re_exports : t -> t list Resolve.Memo.t
-val ppx_runtime_deps : t -> t list Resolve.Memo.t
-val pps : t -> t list Resolve.Memo.t
+val re_exports : t -> t list Resolve.t Lib_mode.By_mode.t Memo.t
+val ppx_runtime_deps : t -> t list Resolve.t Lib_mode.By_mode.t Memo.t
+val pps : t -> t list Resolve.t Lib_mode.By_mode.t Memo.t
 
 include Comparable_intf.S with type key := t
 
@@ -58,10 +58,13 @@ module Compile : sig
   val for_lib : allow_overlaps:bool -> db -> lib -> t
 
   (** Return the list of dependencies needed for linking this library/exe *)
-  val requires_link : t -> lib list Resolve.t Memo.Lazy.t
+  val requires_link : t -> for_:Lib_mode.t -> lib list Resolve.t Memo.Lazy.t
 
   (** Dependencies listed by the user + runtime dependencies from ppx *)
-  val direct_requires : t -> lib list Resolve.Memo.t
+  val direct_requires : t -> for_:Lib_mode.t -> lib list Resolve.Memo.t
+
+  val all_direct_requires : t -> lib list Resolve.Memo.t Lib_mode.By_mode.t
+  val all_requires_link : t -> lib list Resolve.t Memo.Lazy.t Lib_mode.By_mode.t
 
   module Resolved_select : sig
     type t =
@@ -71,10 +74,10 @@ module Compile : sig
   end
 
   (** Resolved select forms *)
-  val resolved_selects : t -> Resolved_select.t list Resolve.Memo.t
+  val resolved_selects : t -> for_:Lib_mode.t -> Resolved_select.t list Resolve.Memo.t
 
   (** Transitive closure of all used ppx rewriters *)
-  val pps : t -> lib list Resolve.Memo.t
+  val pps : t -> for_:Lib_mode.t -> lib list Resolve.Memo.t
 
   (** Sub-systems used in this compilation context *)
   val sub_systems : t -> sub_system list Memo.t
@@ -172,7 +175,7 @@ end
 
 (** {1 Transitive closure} *)
 
-val closure : t list -> linking:bool -> t list Resolve.Memo.t
+val closure : t list -> linking:bool -> for_:Lib_mode.t -> t list Resolve.Memo.t
 
 (** [descriptive_closure ~with_pps libs] computes the smallest set of libraries
     that contains the libraries in the list [libs], and that is transitively
@@ -183,7 +186,7 @@ val closure : t list -> linking:bool -> t list Resolve.Memo.t
     sorted. The difference with [closure libs] is that the latter may raise an
     error when overlapping implementations of virtual libraries are detected.
     [descriptive_closure libs] makes no such check. *)
-val descriptive_closure : t list -> with_pps:bool -> t list Memo.t
+val descriptive_closure : t list -> with_pps:bool -> for_:Lib_mode.t -> t list Memo.t
 
 (** {1 Sub-systems} *)
 

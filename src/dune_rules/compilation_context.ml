@@ -15,8 +15,8 @@ module Includes = struct
     let make_includes_args ~mode groups =
       Command.Args.memo
         (Resolve.Memo.args
-           (let+ direct_libs = direct_requires
-            and+ hidden_libs = hidden_requires in
+           (let+ direct_libs = Lib_mode.By_mode.get direct_requires ~for_:mode
+            and+ hidden_libs = Lib_mode.By_mode.get hidden_requires ~for_:mode in
             Command.Args.S
               [ iflags direct_libs hidden_libs mode
               ; Hidden_deps (Lib_file_deps.deps (direct_libs @ hidden_libs) ~groups)
@@ -26,8 +26,8 @@ module Includes = struct
     let cmx_includes =
       Command.Args.memo
         (Resolve.Memo.args
-           (let+ direct_libs = direct_requires
-            and+ hidden_libs = hidden_requires in
+           (let+ direct_libs = Lib_mode.By_mode.get direct_requires ~for_:(Ocaml Byte)
+            and+ hidden_libs = Lib_mode.By_mode.get hidden_requires ~for_:(Ocaml Byte) in
             Command.Args.S
               [ iflags direct_libs hidden_libs (Ocaml Native)
               ; Hidden_deps
@@ -83,9 +83,9 @@ type t =
   ; modules : modules option Lib_mode.By_mode.t
   ; melange_package_name : Lib_name.t option
   ; flags : Ocaml_flags.t
-  ; requires_compile : Lib.t list Resolve.Memo.t
-  ; requires_hidden : Lib.t list Resolve.Memo.t
-  ; requires_link : Lib.t list Resolve.t Memo.Lazy.t
+  ; requires_compile : Lib.t list Resolve.Memo.t Lib_mode.By_mode.t
+  ; requires_hidden : Lib.t list Resolve.Memo.t Lib_mode.By_mode.t
+  ; requires_link : Lib.t list Resolve.t Memo.Lazy.t Lib_mode.By_mode.t
   ; includes : Includes.t
   ; preprocessing : Pp_spec.t
   ; opaque : bool
@@ -112,16 +112,16 @@ let modules t ~for_ =
   modules
 ;;
 
-let modes t =
+let all_modules t =
   { Lib_mode.By_mode.ocaml = Option.map t.modules.ocaml ~f:(fun t -> t.modules)
   ; Lib_mode.By_mode.melange = Option.map t.modules.melange ~f:(fun t -> t.modules)
   }
 ;;
 
 let flags t = t.flags
-let requires_compile t = t.requires_compile
-let requires_hidden t = t.requires_hidden
-let requires_link t = Memo.Lazy.force t.requires_link
+let requires_compile t ~for_ = Lib_mode.By_mode.get t.requires_compile ~for_
+let requires_hidden t ~for_ = Lib_mode.By_mode.get t.requires_hidden ~for_
+let requires_link t ~for_ = Memo.Lazy.force (Lib_mode.By_mode.get t.requires_link ~for_)
 let includes t = t.includes
 let preprocessing t = t.preprocessing
 let opaque t = t.opaque
@@ -168,16 +168,26 @@ let create
   let* ocaml = Context.ocaml context in
   let direct_requires, hidden_requires =
     match Dune_project.implicit_transitive_deps project ocaml.version with
-    | Enabled -> Memo.Lazy.force requires_link, Resolve.Memo.return []
-    | Disabled -> requires_compile, Resolve.Memo.return []
+    | Enabled ->
+      ( Lib_mode.By_mode.map requires_link ~f:(fun ~for_:_ requires_link ->
+          Memo.Lazy.force requires_link)
+      , let init = Resolve.Memo.return [] in
+        { Lib_mode.By_mode.ocaml = init; melange = init } )
+    | Disabled ->
+      ( requires_compile
+      , let init = Resolve.Memo.return [] in
+        { Lib_mode.By_mode.ocaml = init; melange = init } )
     | Disabled_with_hidden_includes ->
       let requires_hidden =
-        let open Resolve.Memo.O in
-        let+ requires_compile = requires_compile
-        and+ requires_link = Memo.Lazy.force requires_link in
-        let requires_table = Table.create (module Lib) 5 in
-        List.iter ~f:(fun lib -> Table.set requires_table lib ()) requires_compile;
-        List.filter requires_link ~f:(fun l -> not (Table.mem requires_table l))
+        Lib_mode.By_mode.map requires_compile ~f:(fun ~for_ requires_compile ->
+          let open Resolve.Memo.O in
+          let+ requires_compile = requires_compile
+          and+ requires_link =
+            Memo.Lazy.force (Lib_mode.By_mode.get requires_link ~for_)
+          in
+          let requires_table = Table.create (module Lib) 5 in
+          List.iter ~f:(fun lib -> Table.set requires_table lib ()) requires_compile;
+          List.filter requires_link ~f:(fun l -> not (Table.mem requires_table l)))
       in
       requires_compile, requires_hidden
   in
@@ -313,16 +323,18 @@ let for_root_module t root_module ~for_ =
   }
 ;;
 
-let for_module_generated_at_link_time t ~requires ~module_ ~for_ =
+let for_module_generated_at_link_time t ~requires ~module_ =
   let opaque =
     (* Cmi's of link time generated modules are compiled with -opaque, hence
        their implementation must also be compiled with -opaque *)
     Ocaml.Version.supports_opaque_for_mli t.ocaml.version
   in
-  let direct_requires = requires in
-  let hidden_requires = Resolve.Memo.return [] in
+  let init = Resolve.Memo.return [] in
+  let direct_requires = { Lib_mode.By_mode.ocaml = requires; melange = init } in
+  let hidden_requires = { Lib_mode.By_mode.ocaml = init; melange = init } in
   let modules =
     let modules = Some (singleton_modules module_) in
+    let for_ = Lib_mode.Ocaml Byte in
     Lib_mode.By_mode.set t.modules ~for_ modules
   in
   let includes =
@@ -336,8 +348,10 @@ let for_module_generated_at_link_time t ~requires ~module_ ~for_ =
   { t with
     opaque
   ; flags = Ocaml_flags.empty
-  ; requires_link = Memo.lazy_ (fun () -> requires)
-  ; requires_compile = requires
+  ; requires_link =
+      Lib_mode.By_mode.map direct_requires ~f:(fun ~for_:_ requires ->
+        Memo.lazy_ (fun () -> requires))
+  ; requires_compile = direct_requires
   ; includes
   ; modules
   }
@@ -352,8 +366,11 @@ let for_wrapped_compat t =
 let for_plugin_executable t ~embed_in_plugin_libraries =
   let libs = Scope.libs t.scope in
   let requires_link =
-    Memo.lazy_ (fun () ->
-      Resolve.Memo.List.map ~f:(Lib.DB.resolve libs) embed_in_plugin_libraries)
+    { Lib_mode.By_mode.ocaml =
+        Memo.lazy_ (fun () ->
+          Resolve.Memo.List.map ~f:(Lib.DB.resolve libs) embed_in_plugin_libraries)
+    ; melange = Memo.lazy_ (fun () -> Resolve.Memo.return [])
+    }
   in
   { t with requires_link }
 ;;
@@ -372,7 +389,7 @@ let entry_module_names sctx t ~for_ =
 
 let root_module_entries t ~for_ =
   let open Action_builder.O in
-  let* requires = Resolve.Memo.read t.requires_compile in
+  let* requires = Resolve.Memo.read (Lib_mode.By_mode.get t.requires_compile ~for_) in
   let* l =
     Action_builder.List.map requires ~f:(fun lib ->
       Action_builder.of_memo (entry_module_names t.super_context lib ~for_)

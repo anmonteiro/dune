@@ -531,8 +531,8 @@ let build_root_module cctx root_module ~for_ =
 
 let build_all cctx =
   let for_wrapped_compat = lazy (Compilation_context.for_wrapped_compat cctx) in
-  let modes = Lib_mode.By_mode.to_list (Compilation_context.modes cctx) in
-  Memo.parallel_iter modes ~f:(fun (for_, modules) ->
+  let all_modules = Lib_mode.By_mode.to_list (Compilation_context.all_modules cctx) in
+  Memo.parallel_iter all_modules ~f:(fun (for_, modules) ->
     Memo.parallel_iter
       (Modules.With_vlib.fold_no_vlib_with_aliases
          modules

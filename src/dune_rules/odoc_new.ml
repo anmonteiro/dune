@@ -447,9 +447,13 @@ module Valid = struct
             let* stdlib = stdlib_lib (Context.name ctx) in
             Memo.parallel_map libs ~f:(fun (_, _lib_db, libs) ->
               Lib.Set.fold ~init:(Memo.return []) libs ~f:(fun lib acc ->
+                let modes = Lib_info.modes (Lib.info lib) in
+                let mode = Lib_mode.Map.Set.for_merlin modes in
                 let* acc = acc in
                 let+ libs =
-                  let* libs = Lib.closure (lib :: Option.to_list stdlib) ~linking:false in
+                  let* libs =
+                    Lib.closure (lib :: Option.to_list stdlib) ~linking:false ~for_:mode
+                  in
                   Resolve.read_memo libs
                 in
                 libs :: acc))
@@ -907,7 +911,14 @@ let compile_module
    require all of the odoc files for all dependency libraries to be
    created rather than doing any fine-grained dependency management. *)
 let compile_requires stdlib_opt libs =
-  Memo.List.map ~f:(fun l -> Lib.closure ~linking:false [ l ]) libs
+  Memo.List.map
+    ~f:(fun l ->
+      let for_ =
+        let modes = Lib_info.modes (Lib.info l) in
+        Lib_mode.Map.Set.for_merlin modes
+      in
+      Lib.closure ~linking:false [ l ] ~for_)
+    libs
   >>| Resolve.all
   >>| Resolve.map ~f:(fun requires ->
     let requires = List.flatten requires in
@@ -919,8 +930,8 @@ let compile_requires stdlib_opt libs =
     List.filter requires ~f:(fun l -> not (List.mem libs l ~equal:lib_equal)))
 ;;
 
-let link_requires stdlib_opt libs =
-  Lib.closure libs ~linking:false
+let link_requires stdlib_opt libs ~for_ =
+  Lib.closure libs ~linking:false ~for_
   |> Resolve.Memo.map ~f:(fun libs ->
     match stdlib_opt with
     | None -> libs
@@ -974,7 +985,8 @@ let link_odoc_rules sctx ~all (artifacts : Artifact.t list) ~quiet ~package ~lib
   let* maps = Valid.libs_maps ctx ~all in
   let* requires =
     let* stdlib_opt = stdlib_lib (Context.name ctx) in
-    link_requires stdlib_opt libs
+    (* TODO(anmonteiro): find a way to support melange here? *)
+    link_requires stdlib_opt libs ~for_:(Ocaml Byte)
   in
   let* deps =
     let+ valid_libs, _ = Valid.get ctx ~all in
