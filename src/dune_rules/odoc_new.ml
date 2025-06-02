@@ -930,12 +930,14 @@ let compile_requires stdlib_opt libs =
     List.filter requires ~f:(fun l -> not (List.mem libs l ~equal:lib_equal)))
 ;;
 
-let link_requires stdlib_opt libs ~for_ =
-  Lib.closure libs ~linking:false ~for_
-  |> Resolve.Memo.map ~f:(fun libs ->
-    match stdlib_opt with
-    | None -> libs
-    | Some stdlib -> stdlib :: libs)
+let link_requires stdlib_opt libs =
+  let open Resolve.Memo.O in
+  let+ ocaml = Lib.closure libs ~linking:false ~for_:(Ocaml Byte)
+  and+ melange = Lib.closure libs ~linking:false ~for_:Melange in
+  let libs = ocaml @ melange in
+  match stdlib_opt with
+  | None -> libs
+  | Some stdlib -> stdlib :: libs
 ;;
 
 let compile_mld sctx a ~parent_opt ~quiet ~is_index ~children =
@@ -985,8 +987,7 @@ let link_odoc_rules sctx ~all (artifacts : Artifact.t list) ~quiet ~package ~lib
   let* maps = Valid.libs_maps ctx ~all in
   let* requires =
     let* stdlib_opt = stdlib_lib (Context.name ctx) in
-    (* TODO(anmonteiro): find a way to support melange here? *)
-    link_requires stdlib_opt libs ~for_:(Ocaml Byte)
+    link_requires stdlib_opt libs
   in
   let* deps =
     let+ valid_libs, _ = Valid.get ctx ~all in
@@ -1493,7 +1494,11 @@ let index_info_of_lib_def =
       | None -> Index.of_external_lib maps lib
     in
     let+ artifacts =
-      let+ modules = Dir_contents.modules_of_lib sctx (lib :> Lib.t) ~for_:(Ocaml Byte) in
+      let+ modules =
+        let modes = Lib_info.modes (Lib.info lib) in
+        let mode = Lib_mode.Map.Set.for_merlin modes in
+        Dir_contents.modules_of_lib sctx (lib :> Lib.t) ~for_:mode
+      in
       match modules with
       | Some m -> lib_artifacts ctx all index (lib :> Lib.t) m
       | None ->
