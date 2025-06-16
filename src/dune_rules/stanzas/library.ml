@@ -561,12 +561,10 @@ let to_lib_info
   let synopsis = conf.synopsis in
   let sub_systems = conf.sub_systems in
   let ppx_runtime_deps =
-    library_deps
-      ~loc
-      ~field:"melange.ppx_runtime_libraries"
-      ~modes
-      ~libs:conf.ppx_runtime_libraries
-      ~melange_libs:conf.melange_ppx_runtime_libraries
+    let melange =
+      Option.value conf.melange_ppx_runtime_libraries ~default:conf.ppx_runtime_libraries
+    in
+    { Lib_mode.By_mode.ocaml = conf.ppx_runtime_libraries; melange }
   in
   let preprocess =
     { Lib_mode.By_mode.ocaml = conf.buildable.preprocess.config
