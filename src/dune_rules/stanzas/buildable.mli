@@ -8,6 +8,7 @@ type for_ =
 type t =
   { loc : Loc.t
   ; modules : Stanza_common.Modules_settings.t
+  ; melange_modules : Ordered_set_lang.Unexpanded.t option
   ; empty_module_interface_if_absent : bool
   ; libraries : Lib_dep.t list
   ; melange_libraries : Lib_dep.t list option

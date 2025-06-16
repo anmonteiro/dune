@@ -489,7 +489,15 @@ let make_lib_modules
   in
   let open Memo.O in
   let* sources, modules =
-    let { Buildable.loc = stanza_loc; modules = modules_settings; _ } = lib.buildable in
+    let { Buildable.loc = stanza_loc; modules = modules_settings; melange_modules; _ } =
+      lib.buildable
+    in
+    let modules_settings =
+      match mode, melange_modules with
+      | Lib_mode.Melange, Some melange_modules ->
+        { modules_settings with modules = melange_modules }
+      | _ -> modules_settings
+    in
     Modules_field_evaluator.eval
       ~expander
       ~modules
