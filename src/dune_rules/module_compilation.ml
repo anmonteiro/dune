@@ -334,7 +334,9 @@ let build_module ?(force_write_cmi = false) ?(precompiled_cmi = false) cctx m ~f
      | None -> Memo.return ()
      | Some src ->
        let ml_kind = Ml_kind.Impl in
-       let dep_graph = Ml_kind.Dict.get (Compilation_context.dep_graphs cctx) ml_kind in
+       let dep_graph =
+         Ml_kind.Dict.get (Compilation_context.dep_graphs ~for_ cctx) ml_kind
+       in
        let module_deps = Dep_graph.deps_of dep_graph m in
        Memo.parallel_iter Js_of_ocaml.Mode.all ~f:(fun mode ->
          Compilation_context.js_of_ocaml cctx

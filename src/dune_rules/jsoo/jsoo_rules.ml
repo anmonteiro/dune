@@ -658,7 +658,8 @@ let build_cm cctx ~dir ~in_context ~mode ~src ~obj_dir ~deps ~config:config_opt 
   let ctx = Super_context.context sctx |> Context.build_context in
   let shapes =
     let open Action_builder.O in
-    let+ libs = Resolve.Memo.read (Compilation_context.requires_link cctx)
+    let+ libs =
+      Resolve.Memo.read (Compilation_context.requires_link ~for_:(Ocaml Byte) cctx)
     and+ deps = deps
     and+ config =
       match config_opt with
@@ -700,9 +701,9 @@ let setup_separate_compilation_rules sctx components =
      | Some pkg ->
        let info = Lib.info pkg in
        let requires =
-         let open Resolve.Memo.O in
          let* reqs = Lib.requires pkg in
-         Lib.closure ~linking:false reqs
+         let* reqs = Resolve.read_memo reqs.ocaml in
+         Lib.closure ~linking:false ~for_:(Ocaml Byte) reqs
        in
        let lib_name = Lib_name.to_string (Lib.name pkg) in
        let* archives =
