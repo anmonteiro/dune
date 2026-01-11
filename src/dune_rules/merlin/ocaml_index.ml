@@ -40,6 +40,11 @@ let index_path_in_obj_dir obj_dir ~for_ =
 
 let cctx_rules cctx =
   let for_ = Compilation_context.for_ cctx in
+  let mode =
+    match for_ with
+    | Ocaml -> Lib_mode.Ocaml Byte
+    | Melange -> Melange
+  in
   (* Indexing is performed by the external binary [ocaml-index] which performs
      full shape reduction to compute the actual definition of all the elements in
      the typedtree. This step is therefore dependent on all the cmts of those
@@ -136,11 +141,19 @@ let cctx_rules cctx =
 ;;
 
 let context_indexes =
+  let module CFInput : Memo.Input with type t = Context.t * Compilation_mode.t = struct
+    type t = Context.t * Compilation_mode.t
+
+    let hash = Tuple.T2.hash Context.hash Poly.hash
+    let equal = Tuple.T2.equal Context.equal Compilation_mode.equal
+    let to_dyn = Tuple.T2.to_dyn Context.to_dyn Compilation_mode.to_dyn
+  end
+  in
   let memo =
     Action_builder.create_memo
       "indixes"
-      ~input:(module Context)
-      (fun ctx ->
+      ~input:(module CFInput)
+      (fun (ctx, for_) ->
          Context.name ctx
          |> Dune_load.dune_files
          >>| Dune_file.fold_static_stanzas ~init:[] ~f:(fun dune_file stanza acc ->
@@ -159,12 +172,13 @@ let context_indexes =
            in
            match obj with
            | None -> acc
-           | Some obj_dir ->
+           (* | Some obj_dir ->
              List.fold_left
                [ Compilation_mode.Ocaml; Melange ]
                ~init:acc
                ~f:(fun acc for_ ->
-                 Path.build (index_path_in_obj_dir obj_dir ~for_) :: acc))
+                 Path.build (index_path_in_obj_dir obj_dir ~for_) :: acc)) *)
+           | Some obj_dir -> Path.build (index_path_in_obj_dir ~for_ obj_dir) :: acc)
          |> Action_builder.of_memo)
   in
   Action_builder.exec_memo memo
@@ -182,5 +196,6 @@ let project_rule sctx project =
     Rules.Produce.Alias.add_deps
       ocaml_index_alias
       (let open Action_builder.O in
-       context_indexes ctx >>= Action_builder.paths_existing))
+       context_indexes (Super_context.context sctx, Ocaml)
+       >>= Action_builder.paths_existing))
 ;;

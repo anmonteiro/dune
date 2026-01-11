@@ -91,7 +91,7 @@ module Lib = struct
     let archives = Lib_info.archives info in
     let sub_systems = Lib_info.sub_systems info in
     let plugins = Lib_info.plugins info in
-    let requires = Lib_info.requires info ~for_:Ocaml in
+    let requires = Lib_info.requires_by_mode info in
     let parameters = Lib_info.parameters info in
     let foreign_objects =
       match Lib_info.foreign_objects info with
@@ -100,30 +100,7 @@ module Lib = struct
     in
     let modules =
       match Lib_info.modules_by_mode info with
-      | External modules ->
-        (match modules.ocaml, modules.melange with
-         | None, None -> assert false
-         | Some m, _ -> Some m
-         | _, Some modules ->
-           let src_dir = Lib_info.src_dir info in
-           Modules.With_vlib.map modules ~f:(fun m ->
-             List.fold_left Ml_kind.all ~init:m ~f:(fun m ml_kind ->
-               match Module.source m ~ml_kind with
-               | None -> m
-               | Some msrc ->
-                 (match
-                    Path.descendant
-                      (Module.File.path msrc)
-                      ~of_:(Path.relative src_dir Melange.Source.dir)
-                  with
-                  | None -> m
-                  | Some segment ->
-                    let m' =
-                      let path' = Path.append_local src_dir (Path.local_part segment) in
-                      Module.File.set_path msrc path'
-                    in
-                    Module.set_source m ~ml_kind (Some m'))))
-           |> Option.some)
+      | External ms -> Some ms
       | Local -> None
     in
     let melange_runtime_deps = additional_paths (Lib_info.melange_runtime_deps info) in
@@ -161,15 +138,51 @@ module Lib = struct
        ; paths "native_archives" native_archives
        ; paths "jsoo_runtime" jsoo_runtime
        ; paths "wasmoo_runtime" wasmoo_runtime
-       ; Lib_dep.L.field_encode requires ~name:"requires"
        ; field_l "parameters" (no_loc Lib_name.encode) parameters
+       ; Lib_dep.L.field_encode requires.ocaml ~name:"requires"
+       ; (* TODO(anmonteiro): optional *)
+         Lib_dep.L.field_encode
+           (if modes.melange then requires.melange else [])
+           ~name:"melange_requires"
        ; libs "ppx_runtime_deps" ppx_runtime_deps.ocaml
+       ; (* TODO(anmonteiro): optional *)
+         libs "melange_ppx_runtime_deps" ppx_runtime_deps.melange
        ; field_o "implements" (no_loc Lib_name.encode) implements
        ; field_o "default_implementation" (no_loc Lib_name.encode) default_implementation
        ; field_o "main_module_name" Module_name.encode main_module_name
        ; field_l "modes" sexp (Lib_mode.Map.Set.encode modes)
        ; field_l "obj_dir" sexp (Obj_dir.encode obj_dir)
-       ; field_o "modules" (Modules.With_vlib.encode ~src_dir:package_root) modules
+       ; field_o
+           "modules"
+           (Modules.With_vlib.encode ~src_dir:package_root)
+           (Option.bind modules ~f:(fun modules ->
+              Compilation_mode.By_mode.get modules ~for_:Ocaml))
+       ; field_o
+           "melange_modules"
+           (Modules.With_vlib.encode ~src_dir:package_root)
+           (Option.bind modules ~f:(fun modules ->
+              let modules = Compilation_mode.By_mode.get modules ~for_:Melange in
+              Option.map modules ~f:(fun modules ->
+                let src_dir = Lib_info.src_dir info in
+                Modules.With_vlib.map modules ~f:(fun m ->
+                  List.fold_left Ml_kind.all ~init:m ~f:(fun m ml_kind ->
+                    match Module.source m ~ml_kind with
+                    | None -> m
+                    | Some msrc ->
+                      (match
+                         Path.descendant
+                           (Module.File.path msrc)
+                           ~of_:(Path.relative src_dir Melange.Source.dir)
+                       with
+                       | None -> m
+                       | Some segment ->
+                         let m' =
+                           let path' =
+                             Path.append_local src_dir (Path.local_part segment)
+                           in
+                           Module.File.set_path msrc path'
+                         in
+                         Module.set_source m ~ml_kind (Some m')))))))
        ; paths "melange_runtime_deps" melange_runtime_deps
        ; field_o
            "special_builtin_support"
@@ -252,12 +265,17 @@ module Lib = struct
        and+ jsoo_runtime = paths "jsoo_runtime"
        and+ wasmoo_runtime = paths "wasmoo_runtime"
        and+ melange_runtime_deps = paths "melange_runtime_deps"
-       and+ requires = field_l "requires" (Lib_dep.decode ~allow_re_export:true)
        and+ parameters = field "parameters" ~default:[] (repeat (located Lib_name.decode))
+       and+ requires = field_l "requires" (Lib_dep.decode ~allow_re_export:true)
+       and+ melange_requires =
+         field_o "melange_requires" (repeat (Lib_dep.decode ~allow_re_export:true))
        and+ ppx_runtime_deps = libs "ppx_runtime_deps"
+       and+ melange_ppx_runtime_deps =
+         field_o "melange_ppx_runtime_deps" (repeat (located Lib_name.decode))
        and+ sub_systems = Sub_system_info.record_parser
        and+ orig_src_dir = field_o "orig_src_dir" path
-       and+ modules = field "modules" (Modules.decode ~src_dir:base)
+       and+ modules = field_o "modules" (Modules.decode ~src_dir:base)
+       and+ melange_modules = field_o "melange_modules" (Modules.decode ~src_dir:base)
        and+ special_builtin_support =
          field_o
            "special_builtin_support"
@@ -287,7 +305,7 @@ module Lib = struct
          let virtual_deps = [] in
          let dune_version = None in
          let modules =
-           { Compilation_mode.By_mode.ocaml = Some modules; melange = Some modules }
+           { Compilation_mode.By_mode.ocaml = modules; melange = melange_modules }
          in
          let entry_modules =
            Compilation_mode.By_mode.map modules ~f:(fun ~for_:_ modules ->
@@ -296,17 +314,38 @@ module Lib = struct
          in
          let modules =
            Compilation_mode.By_mode.map modules ~f:(fun ~for_:_ modules ->
-             Option.map modules ~f:(fun modules -> Modules.With_vlib.modules modules))
+             Option.map modules ~f:Modules.With_vlib.modules)
          in
          let wrapped =
-           let any_modules = modules.ocaml |> Option.value_exn in
+           let any_modules =
+             match modules.ocaml with
+             | Some modules -> modules
+             | None -> Option.value_exn modules.melange
+           in
            Some (Lib_info.Inherited.This (Modules.With_vlib.wrapped any_modules))
          in
          let entry_modules = Lib_info.Source.External (Ok entry_modules) in
          let modules = Lib_info.Source.External modules in
          let melange_runtime_deps = Lib_info.File_deps.External melange_runtime_deps in
-         let requires = Compilation_mode.By_mode.both requires in
-         let ppx_runtime_deps = Compilation_mode.By_mode.both ppx_runtime_deps in
+         let requires =
+           { Compilation_mode.By_mode.ocaml = requires
+           ; melange =
+               (match modes.melange, melange_requires with
+                | true, _ -> Option.value melange_requires ~default:requires
+                | false, Some _ -> assert false
+                | false, None -> [])
+           }
+         in
+         let ppx_runtime_deps =
+           { Compilation_mode.By_mode.ocaml = ppx_runtime_deps
+           ; melange =
+               (match modes.melange, melange_requires with
+                | true, _ ->
+                  Option.value melange_ppx_runtime_deps ~default:ppx_runtime_deps
+                | false, Some _ -> assert false
+                | false, None -> [])
+           }
+         in
          Lib_info.create
            ~path_kind:External
            ~loc

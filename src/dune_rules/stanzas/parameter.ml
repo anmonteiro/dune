@@ -45,6 +45,7 @@ let to_library t =
   ; enabled_if = t.enabled_if
   ; instrumentation_backend = None
   ; melange_runtime_deps = loc, []
+  ; melange_ppx_runtime_libraries = None
   ; optional = t.optional
   }
 ;;
@@ -58,7 +59,7 @@ let decode =
      let+ buildable : Buildable.t =
        let+ loc = loc
        and+ libraries = Buildable.decode_libraries ~allow_re_export:true
-       and+ preprocess, preprocessor_deps = Buildable.decode_preprocess
+       and+ preprocess = Buildable.decode_preprocess
        and+ lint = Buildable.decode_lint
        and+ flags = Buildable.decode_ocaml_flags
        and+ allow_overlapping_dependencies = Buildable.decode_allow_overlapping
@@ -67,12 +68,13 @@ let decode =
        ; modules
        ; empty_module_interface_if_absent = false
        ; libraries
+       ; melange_libraries = None
        ; melange_modules = None
        ; foreign_archives = []
        ; extra_objects = Foreign.Objects.empty
        ; foreign_stubs = []
        ; preprocess
-       ; preprocessor_deps
+       ; melange_preprocess = preprocess
        ; lint
        ; flags
        ; js_of_ocaml =

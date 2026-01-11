@@ -503,6 +503,7 @@
           slim-melange = makeDuneDevShell {
             extraBuildInputs = pkgs: [
               pkgs.ocamlPackages.melange
+              pkgs.tree
             ];
             meta.description = ''
               Provides a minimal shell environment built purely from nixpkgs
@@ -655,6 +656,10 @@
 
           scope = makeDuneDevShell {
             duneFromScope = true;
+            extraBuildInputs = pkgs: [
+              pkgs.ocamlPackages.melange
+              pkgs.tree
+            ];
             meta.description = ''
               Provides a minimal shell environment built purely from nixpkgs
               that replaces the Dune executable in the `ocamlPackages` scope by

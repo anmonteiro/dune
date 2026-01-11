@@ -3,6 +3,7 @@ open Memo.O
 module Gen_rules = Build_config.Gen_rules
 
 let ( ++ ) = Path.Build.relative
+let odoc_ext = ".odoc"
 
 module Ext_loc_map = Map.Make (Dune_package.External_location)
 
@@ -741,7 +742,7 @@ end = struct
     let basename =
       Path.basename source |> Filename.remove_extension |> Stdune.String.uncapitalize
     in
-    let odoc = Index.odoc_dir ctx ~all index ++ (basename ^ ".odoc") in
+    let odoc = Index.odoc_dir ctx ~all index ++ (basename ^ odoc_ext) in
     let html_dir = Index.html_dir ctx ~all index ++ Stdune.String.capitalize basename in
     let html = html_dir ++ "index.html" in
     (* Note: odoc will not create any output for modules that it believes are

@@ -304,6 +304,8 @@ include Sub_system.Register_end_point (struct
           in
           Lib.closure ~linking:true ((lib :: libs) @ more_libs) ~for_
         in
+        let requires_compile = runner_libs in
+        let requires_link = Memo.lazy_ (fun () -> runner_libs) in
         Compilation_context.create
           for_
           ~super_context:sctx
@@ -311,8 +313,8 @@ include Sub_system.Register_end_point (struct
           ~obj_dir
           ~modules
           ~opaque:(Explicit false)
-          ~requires_compile:runner_libs
-          ~requires_link:(Memo.lazy_ (fun () -> runner_libs))
+          ~requires_compile
+          ~requires_link
           ~flags
           ~js_of_ocaml:(Js_of_ocaml.Mode.Pair.map ~f:Option.some js_of_ocaml)
           ~melange_package_name:None

@@ -19,6 +19,7 @@ let man =
 ;;
 
 let info = Cmd.info "top" ~doc ~man
+let for_ = Dune_rules.Compilation_mode.Ocaml
 
 let link_deps sctx link =
   let open Memo.O in
@@ -72,7 +73,7 @@ let term =
       in
       let* requires =
         Dune_rules.Resolve.Memo.read_memo
-          (Dune_rules.Lib.closure ~linking:true libs ~for_:Ocaml)
+          (Dune_rules.Lib.closure ~linking:true libs ~for_)
       in
       let* lib_config =
         let+ ocaml = Context.ocaml context in

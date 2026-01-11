@@ -11,11 +11,12 @@ type t =
   ; melange_modules : Ordered_set_lang.Unexpanded.t option
   ; empty_module_interface_if_absent : bool
   ; libraries : Lib_dep.t list
+  ; melange_libraries : Lib_dep.t list option
   ; foreign_archives : (Loc.t * Foreign.Archive.t) list
   ; extra_objects : Foreign.Objects.t
   ; foreign_stubs : Foreign.Stubs.t list
-  ; preprocess : Preprocess.With_instrumentation.t Preprocess.Per_module.t
-  ; preprocessor_deps : Dep_conf.t list
+  ; preprocess : Preprocess.preprocess
+  ; melange_preprocess : Preprocess.preprocess
   ; lint : Lint.t
   ; flags : Ocaml_flags.Spec.t
   ; js_of_ocaml : Js_of_ocaml.In_buildable.t Js_of_ocaml.Mode.Pair.t
@@ -39,9 +40,7 @@ val decode_libraries : allow_re_export:bool -> Lib_dep.L.t Dune_lang.Decoder.fie
 
 (** Parser for the preprocesss *)
 val decode_preprocess
-  : ( Preprocess.With_instrumentation.t Preprocess.Per_module.t * Dep_conf.t list
-      , Dune_lang.Decoder.fields )
-      Dune_lang.Decoder.parser
+  : (Preprocess.preprocess, Dune_lang.Decoder.fields) Dune_lang.Decoder.parser
 
 (** Parser for the ocaml flags *)
 val decode_ocaml_flags : Ocaml_flags.Spec.t Dune_lang.Decoder.fields_parser
