@@ -16,10 +16,10 @@ module Origin = struct
   ;;
 
   let preprocess = function
-    | Library l -> l.buildable.preprocess
-    | Executables e -> e.buildable.preprocess
-    | Tests t -> t.exes.buildable.preprocess
-    | Melange mel -> mel.preprocess
+    | Library l -> l.buildable.preprocess.config
+    | Executables e -> e.buildable.preprocess.config
+    | Tests t -> t.exes.buildable.preprocess.config
+    | Melange mel -> mel.preprocess.config
   ;;
 
   let to_dyn = function
@@ -84,6 +84,13 @@ module Per_stanza = struct
     ; ocamlyaccs : Parser_generators.t parser_gen_group list
     ; menhirs : Menhir_stanza.t parser_gen_group list
     }
+
+  let _melange_file_processor ~dir file =
+    let original_path = Module.File.path file in
+    let src_in_lib = Path.drop_prefix_exn original_path ~prefix:(Path.build dir) in
+    let path = Path.Build.append_local dir src_in_lib in
+    Module.File.set_path file (Path.build path)
+  ;;
 
   let make
         { libraries = libs
@@ -760,12 +767,12 @@ let make_lib_modules
       ~modules
       ~stanza_loc
       ~kind
+      ~for_
       ~private_modules:
         (Option.value ~default:Ordered_set_lang.Unexpanded.standard lib.private_modules)
       ~src_dir:dir
       modules_settings
       ~version
-      ~for_
   in
   let () =
     match lib.stdlib, include_subdirs with
@@ -1103,10 +1110,10 @@ let modules_of_stanzas =
         ~stanza_loc
         ~src_dir:dir
         ~kind:Modules_field_evaluator.Exe_or_normal_lib
+        ~for_:Ocaml
         ~private_modules:Ordered_set_lang.Unexpanded.standard
         ~version:exes.dune_version
         modules_settings
-        ~for_:Ocaml
     in
     let has_instances = has_instances exes.buildable in
     let modules =

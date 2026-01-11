@@ -89,7 +89,8 @@ end = struct
 
   let lib_files ~scope ~dir_contents ~dir ~lib_config lib =
     let+ modules =
-      let* ml_sources = Dir_contents.ocaml dir_contents in
+      (* TODO(anmonteiro): check this *)
+      let* ml_sources = Dir_contents.ml dir_contents ~for_:Ocaml in
       Ml_sources.modules
         ml_sources
         ~libs:(Scope.libs scope)
@@ -465,7 +466,7 @@ end = struct
                     we shouldn't install the binary rather than failing outright
                  *)
                  Instrumentation.with_instrumentation
-                   exes.buildable.preprocess
+                   exes.buildable.preprocess.config
                    ~instrumentation_backend:
                      (Lib.DB.instrumentation_backend (Scope.libs scope))
                  |> Resolve.Memo.read_memo

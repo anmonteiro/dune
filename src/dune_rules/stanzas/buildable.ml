@@ -12,11 +12,12 @@ type t =
   ; melange_modules : Ordered_set_lang.Unexpanded.t option
   ; empty_module_interface_if_absent : bool
   ; libraries : Lib_dep.t list
+  ; melange_libraries : Lib_dep.t list option
   ; foreign_archives : (Loc.t * Foreign.Archive.t) list
   ; extra_objects : Foreign.Objects.t
   ; foreign_stubs : Foreign.Stubs.t list
-  ; preprocess : Preprocess.With_instrumentation.t Preprocess.Per_module.t
-  ; preprocessor_deps : Dep_conf.t list
+  ; preprocess : Preprocess.preprocess
+  ; melange_preprocess : Preprocess.preprocess
   ; lint : Preprocess.Without_instrumentation.t Preprocess.Per_module.t
   ; flags : Ocaml_flags.Spec.t
   ; js_of_ocaml : Js_of_ocaml.In_buildable.t Js_of_ocaml.Mode.Pair.t
@@ -32,12 +33,7 @@ let decode_libraries ~allow_re_export =
 let decode_preprocess =
   let+ preprocess, preprocessor_deps = Preprocess.preprocess_fields
   and+ instrumentation = Preprocess.Instrumentation.instrumentation in
-  let init =
-    let f libname = Preprocess.With_instrumentation.Ordinary libname in
-    Module_name.Per_item.map preprocess ~f:(Preprocess.map ~f)
-  in
-  ( List.fold_left instrumentation ~init ~f:Preprocess.Per_module.add_instrumentation
-  , preprocessor_deps )
+  Preprocess.preprocess_config ~preprocess ~instrumentation ~preprocessor_deps
 ;;
 
 let decode_ocaml_flags = Ocaml_flags.Spec.decode
@@ -75,7 +71,10 @@ let decode (for_ : for_) =
       Foreign.Stubs.make ~loc ~language ~names ~flags :: foreign_stubs
   in
   let+ loc = loc
-  and+ preprocess, preprocessor_deps = decode_preprocess
+  and+ instrumentation = Preprocess.Instrumentation.instrumentation
+  and+ preprocess, preprocessor_deps = Preprocess.preprocess_fields
+  and+ melange_preprocess, melange_preprocessor_deps =
+    Preprocess.preprocess_fields_with_prefix ~prefix:(Some "melange")
   and+ lint = decode_lint
   and+ foreign_stubs =
     multi_field
@@ -104,6 +103,10 @@ let decode (for_ : for_) =
     located
       (only_in_library (field_o "cxx_names" (use_foreign >>> Ordered_set_lang.decode)))
   and+ modules = decode_modules
+  and+ melange_modules =
+    Ordered_set_lang.Unexpanded.field_o
+      ~since_expanded:Modules_settings.since_expanded
+      "melange.modules"
   and+ self_build_stubs_archive_loc, self_build_stubs_archive =
     located
       (only_in_library
@@ -117,6 +120,8 @@ let decode (for_ : for_) =
              >>> enter (maybe string))))
   and+ libraries =
     field "libraries" (Lib_dep.L.decode ~allow_re_export:in_library) ~default:[]
+  and+ melange_libraries =
+    field_o "melange.libraries" (Lib_dep.L.decode ~allow_re_export:in_library)
   and+ flags = decode_ocaml_flags
   and+ js_of_ocaml =
     field
@@ -140,6 +145,18 @@ let decode (for_ : for_) =
     field_b
       "empty_module_interface_if_absent"
       ~check:(Dune_lang.Syntax.since Stanza.syntax (3, 0))
+  in
+  let preprocess =
+    Preprocess.preprocess_config ~preprocess ~instrumentation ~preprocessor_deps
+  in
+  let melange_preprocess =
+    match melange_preprocess with
+    | None -> preprocess
+    | Some preprocess ->
+      Preprocess.preprocess_config
+        ~preprocess
+        ~instrumentation
+        ~preprocessor_deps:melange_preprocessor_deps
   in
   let foreign_stubs =
     foreign_stubs
@@ -183,15 +200,16 @@ let decode (for_ : for_) =
   in
   { loc
   ; preprocess
-  ; preprocessor_deps
+  ; melange_preprocess
   ; lint
   ; modules
-  ; melange_modules = Some modules.modules
+  ; melange_modules
   ; empty_module_interface_if_absent
   ; foreign_stubs
   ; foreign_archives
   ; extra_objects
   ; libraries
+  ; melange_libraries
   ; flags
   ; js_of_ocaml = { js = js_of_ocaml; wasm = wasm_of_ocaml }
   ; allow_overlapping_dependencies

@@ -451,6 +451,8 @@ let coqc_native_flags ~sctx ~dir ~theories_deps ~theory_dirs ~(mode : Coq_mode.t
     Command.Args.Dyn args
 ;;
 
+let for_ = Compilation_mode.Ocaml
+
 (* closure of all the ML libs a theory depends on *)
 let libs_of_theory ~lib_db ~theories_deps plugins : (Lib.t list * _) Resolve.Memo.t =
   let open Resolve.Memo.O in
@@ -471,7 +473,7 @@ let libs_of_theory ~lib_db ~theories_deps plugins : (Lib.t list * _) Resolve.Mem
     Resolve.List.concat_map ~f:Coq_lib.Dune.libraries dune_theories |> Resolve.Memo.lift
   in
   let libs = libs @ dlibs in
-  let+ findlib_libs = Lib.closure ~linking:false (List.map ~f:snd libs) ~for_:Ocaml in
+  let+ findlib_libs = Lib.closure ~linking:false (List.map ~f:snd libs) ~for_ in
   findlib_libs, legacy_theories
 ;;
 

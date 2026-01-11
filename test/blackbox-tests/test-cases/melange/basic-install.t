@@ -43,7 +43,7 @@ Test that we can install melange mode libraries
    (kind normal)
    (main_module_name Foo)
    (modes melange)
-   (modules
+   (melange_modules
     (singleton
      (obj_name foo)
      (visibility public)

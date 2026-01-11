@@ -735,7 +735,7 @@ module Unprocessed = struct
                List.concat [ requires_compile; libs ])
       in
       let+ flags = flags
-      and+ indexes = Ocaml_index.context_indexes context
+      and+ indexes = Ocaml_index.context_indexes (context, t.config.for_)
       and+ deps_src_dirs, deps_obj_dirs = add_lib_dirs sctx ~for_ requires_compile
       and+ hidden_src_dirs, hidden_obj_dirs =
         let requires_hidden = Resolve.peek requires_hidden |> Result.value ~default:[] in

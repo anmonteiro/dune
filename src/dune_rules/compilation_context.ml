@@ -23,7 +23,8 @@ module Includes = struct
       |> Command.Args.memo
     in
     { ocaml =
-        (let cmi_includes = make_includes_args ~mode:(Ocaml Byte) [ Ocaml Cmi ] in
+        (let for_ = Lib_mode.Ocaml Byte in
+         let cmi_includes = make_includes_args ~mode:for_ [ Ocaml Cmi ] in
          { cmi = cmi_includes
          ; cmo = cmi_includes
          ; cmx =
