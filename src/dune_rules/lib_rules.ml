@@ -498,6 +498,7 @@ let cctx
       ~dir
       scope
       source_modules
+      ~for_
   in
   let modules = Virtual_rules.impl_modules implements modules in
   let requires_compile = Lib.Compile.direct_requires compile_info ~for_ in
@@ -561,7 +562,6 @@ let library_rules
   let scope = Compilation_context.scope cctx in
   let* requires_compile = Compilation_context.requires_compile cctx in
   let lib_config = (Compilation_context.ocaml cctx).lib_config in
-  let for_ = Compilation_context.for_ cctx in
   let top_sorted_modules =
     let impl_only = Modules.With_vlib.impl_only modules in
     Dep_graph.top_closed_implementations
@@ -569,13 +569,7 @@ let library_rules
       impl_only
   in
   let* expander = Super_context.expander sctx ~dir in
-  let lib_info =
-    Library.to_lib_info
-      lib
-      ~expander:(Memo.return (Expander.to_expander0 expander))
-      ~dir
-      ~lib_config
-  in
+  let for_ = Compilation_context.for_ cctx in
   let* () = Virtual_rules.setup_copy_rules_for_impl ~sctx ~dir implements in
   let* () = Check_rules.add_cycle_check sctx ~dir top_sorted_modules in
   let* () = gen_wrapped_compat_modules lib cctx
@@ -587,6 +581,13 @@ let library_rules
   and* () =
     Memo.when_ (Compilation_context.bin_annot cctx) (fun () ->
       Ocaml_index.cctx_rules cctx)
+  in
+  let lib_info =
+    Library.to_lib_info
+      lib
+      ~expander:(Memo.return (Expander.to_expander0 expander))
+      ~dir
+      ~lib_config
   in
   let+ () =
     Memo.when_
@@ -608,6 +609,7 @@ let library_rules
   and+ () = Odoc.setup_private_library_doc_alias sctx ~scope ~dir:ctx_dir lib
   and+ () = Memo.when_ for_merlin (fun () -> Odoc.setup_library_odoc_rules cctx local_lib)
   and+ () =
+    let for_ = Compilation_context.for_ cctx in
     let source_modules =
       Modules.fold_user_written source_modules ~init:[] ~f:(fun m acc -> m :: acc)
     in
@@ -621,6 +623,7 @@ let library_rules
       ; for_
       }
   and+ () =
+    let for_ = Compilation_context.for_ cctx in
     let toolchain = Compilation_context.ocaml cctx in
     let user_written_requires = Lib.Compile.user_written_requires compile_info ~for_ in
     let allow_unused_libraries = Lib.Compile.allow_unused_libraries compile_info in

@@ -40,6 +40,7 @@ module Source : sig
   val path : t -> Module_name.Path.t
   val to_dyn : t -> Dyn.t
   val src_dir : t -> Path.t
+  val map_files : t -> f:(Ml_kind.t -> File.t option -> File.t option) -> t
 end
 
 type t
