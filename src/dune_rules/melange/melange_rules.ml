@@ -26,6 +26,25 @@ module Output_kind = struct
   ;;
 end
 
+let for_ = Compilation_mode.Melange
+
+let setup_melange_sources_copy_rules ~sctx ~dir ~expander:_ ~modules =
+  let mods = Modules.fold_user_written modules ~init:[] ~f:List.cons in
+  let context = Super_context.context sctx in
+  Memo.parallel_iter mods ~f:(fun m ->
+    (* use the original path to set up the correct symlinks *)
+    List.combine (Module.sources_without_pp m) (Module.sources m)
+    |> Memo.parallel_iter ~f:(fun (src, dst) ->
+      let dst =
+        let src_in_lib = Path.drop_prefix_exn dst ~prefix:(Path.build dir) in
+        Path.Build.append_local dir src_in_lib
+      in
+      if Path.equal src (Path.build dst)
+      then Memo.return ()
+      else
+        Super_context.add_rule sctx ~dir (Copy_line_directive.builder context ~src ~dst)))
+;;
+
 let output_of_lib =
   let public_lib ~info ~target_dir lib_name =
     Output_kind.Public_library
@@ -60,7 +79,12 @@ let lib_output_path ~output_dir ~lib_dir src =
 
 let make_js_name ~js_ext ~output m =
   let dst_dir =
-    let src_dir = Module.file m ~ml_kind:Impl |> Option.value_exn |> Path.parent_exn in
+    let src_dir =
+      Module.source m ~ml_kind:Impl
+      |> Option.value_exn
+      |> Module.File.original_path
+      |> Path.parent_exn
+    in
     match output with
     | Output_kind.Public_library { lib_dir; target_dir; output_dir } ->
       let output_dir = Path.Build.append_local target_dir output_dir in
@@ -290,7 +314,9 @@ let build_js
   Memo.parallel_iter module_systems ~f:(fun (module_system, js_ext) ->
     let js_output = make_js_name ~output ~js_ext m in
     let mode =
-      let src = Module.file m ~ml_kind:Impl |> Option.value_exn in
+      let src =
+        Module.source m ~ml_kind:Impl |> Option.value_exn |> Module.File.original_path
+      in
       compute_promote_in_source
         ~promote_in_source
         ~project
@@ -378,13 +404,13 @@ let setup_emit_cmj_rules
   let merlin_ident = Merlin_ident.for_melange ~target:mel.target in
   let dir = Dir_contents.dir dir_contents in
   let f () =
-    let* modules, obj_dir =
+    let* source_modules, obj_dir =
       Dir_contents.melange dir_contents
       >>= Ml_sources.modules_and_obj_dir
             ~libs:(Scope.libs scope)
             ~for_:(Melange { target = mel.target })
     in
-    let* () = Check_rules.add_obj_dir sctx ~obj_dir Melange in
+    let* () = Check_rules.add_obj_dir sctx ~obj_dir for_ in
     let* modules, pp =
       let+ modules, pp =
         Buildable_rules.modules_rules
@@ -399,7 +425,7 @@ let setup_emit_cmj_rules
           expander
           ~dir
           scope
-          modules
+          source_modules
       in
       Modules.With_vlib.modules modules, pp
     in
@@ -423,6 +449,9 @@ let setup_emit_cmj_rules
         ~melange_package_name:None
         ~package:mel.package
         ~modes:{ ocaml = Mode.Dict.make_both false; melange = true }
+    in
+    let* () =
+      setup_melange_sources_copy_rules ~sctx ~dir ~expander ~modules:source_modules
     in
     let* () = Module_compilation.build_all cctx in
     let* () =

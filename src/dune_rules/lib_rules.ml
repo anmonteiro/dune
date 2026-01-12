@@ -578,6 +578,14 @@ let library_rules
   let* expander = Super_context.expander sctx ~dir in
   let* () = Check_rules.add_cycle_check sctx ~dir top_sorted_modules in
   let* () = gen_wrapped_compat_modules lib cctx
+  and* () =
+    let for_ = Compilation_context.for_ cctx in
+    Memo.when_ (for_ = Compilation_mode.Melange) (fun () ->
+      Melange_rules.setup_melange_sources_copy_rules
+        ~sctx
+        ~dir
+        ~expander
+        ~modules:source_modules)
   and* () = Module_compilation.build_all cctx
   and* lib_info =
     let info =
@@ -587,8 +595,8 @@ let library_rules
         ~dir
         ~lib_config
     in
-    let mode = Lib_mode.Map.Set.for_merlin (Lib_info.modes info) in
-    let+ () = Check_rules.add_obj_dir sctx ~obj_dir mode in
+    let { Compilation_mode.merlin; _ } = Compilation_mode.modes (Lib_info.modes info) in
+    let+ () = Check_rules.add_obj_dir sctx ~obj_dir merlin in
     info
   in
   let+ () =

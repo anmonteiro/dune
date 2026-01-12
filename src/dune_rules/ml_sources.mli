@@ -36,6 +36,8 @@ val modules_and_obj_dir
 (** Modules attached to a library, executable, or melange.emit stanza. *)
 val modules : t -> libs:Lib.DB.t -> for_:for_ -> Modules.t Memo.t
 
+val source : dir:Path.Build.t -> for_:Compilation_mode.t -> Path.Local.t -> Path.Build.t
+
 module Parser_generators : sig
   type for_ =
     | Ocamllex of Loc.t
@@ -67,6 +69,7 @@ val include_subdirs : t -> Include_subdirs.t
 val make
   :  expander:Expander.t
   -> libs:Lib.DB.t Memo.t
+  -> mode:Compilation_mode.t
   -> project:Dune_project.t
   -> lib_config:Lib_config.t Memo.t
   -> loc:Loc.t
