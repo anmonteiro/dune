@@ -26,6 +26,23 @@ module Output_kind = struct
   ;;
 end
 
+let setup_melange_sources_copy_rules ~sctx ~dir modules =
+  let mods = Modules.fold_user_written modules ~init:[] ~f:List.cons in
+  let context = Super_context.context sctx in
+  Memo.parallel_iter mods ~f:(fun m ->
+    (* use the original path to set up the correct symlinks *)
+    List.combine (Module.sources_without_pp m) (Module.sources m)
+    |> Memo.parallel_iter ~f:(fun (src, dst) ->
+      let dst =
+        let src_in_lib = Path.drop_prefix_exn dst ~prefix:(Path.build dir) in
+        Path.Build.append_local dir src_in_lib
+      in
+      match Path.equal src (Path.build dst) with
+      | true -> Memo.return ()
+      | false ->
+        Super_context.add_rule sctx ~dir (Copy_line_directive.builder context ~src ~dst)))
+;;
+
 let output_of_lib =
   let public_lib ~info ~target_dir lib_name =
     Output_kind.Public_library
@@ -375,8 +392,6 @@ let melange_compile_flags ~sctx ~dir (mel : Melange_stanzas.Emit.t) =
   >>| Ocaml_flags.allow_only_melange
 ;;
 
-let for_ = Compilation_mode.Melange
-
 let setup_emit_cmj_rules
       ~sctx
       ~scope
@@ -389,7 +404,7 @@ let setup_emit_cmj_rules
   let merlin_ident = Merlin_ident.for_melange ~target:mel.target in
   let dir = Dir_contents.dir dir_contents in
   let f () =
-    let* modules, obj_dir =
+    let* source_modules, obj_dir =
       Dir_contents.melange dir_contents
       >>= Ml_sources.modules_and_obj_dir
             ~libs:(Scope.libs scope)
@@ -410,7 +425,7 @@ let setup_emit_cmj_rules
           expander
           ~dir
           scope
-          modules
+          source_modules
       in
       Modules.With_vlib.modules modules, pp
     in
@@ -433,8 +448,8 @@ let setup_emit_cmj_rules
         ~opaque:Inherit_from_settings
         ~melange_package_name:None
         ~package:mel.package
-        ~modes:{ ocaml = Mode.Dict.make_both false; melange = true }
     in
+    let* () = setup_melange_sources_copy_rules ~sctx ~dir source_modules in
     let* () = Module_compilation.build_all cctx in
     let* () =
       Memo.when_ (Compilation_context.bin_annot cctx) (fun () ->
