@@ -33,6 +33,7 @@ Build a regular library and an executable
 
 Now let's make the library compatible with melange
 
+  $ rm ./dune
   $ cat > lib/dune <<EOF
   > (library
   >  (name mylib)
@@ -44,21 +45,12 @@ Now let's make the library compatible with melange
   >   print_endline Mylib.some_binding
   > EOF
 
-  $ cat > dune <<EOF
-  > (executable
-  >  (name main)
-  >  (modes byte exe)
-  >  (modules main)
-  >  (libraries mylib))
-  > (melange.emit
-  >  (alias dist)
-  >  (modules main_melange)
-  >  (emit_stdlib false)
-  >  (target dist)
-  >  (libraries mylib))
-  > EOF
-
-  $ dune build @dist
-
-  $ dune build main.bc
+  $ dune clean
+  $ dune build @all --display=short
+          melc lib/.mylib.objs/melange/mylib.{cmi,cmj,cmt}
+        ocamlc lib/.mylib.objs/byte/mylib.{cmi,cmo,cmt}
+      ocamlopt lib/.mylib.objs/native/mylib.{cmx,o}
+        ocamlc lib/mylib.cma
+      ocamlopt lib/mylib.{a,cmxa}
+      ocamlopt lib/mylib.cmxs
 

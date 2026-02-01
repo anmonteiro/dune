@@ -5,7 +5,7 @@
 
 (cram
  (applies_to :whole_subtree)
- (deps %{bin:node} %{bin:melc})
+ (deps %{bin:node})
  (alias runtest-melange))
 
 (cram

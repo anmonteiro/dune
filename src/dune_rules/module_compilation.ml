@@ -165,7 +165,9 @@ let build_cm
     | Melange ->
       let loc = Compilation_context.loc cctx in
       let+ melc = Melange_binary.melc sctx ~loc ~dir in
-      Some melc
+      (match melc with
+       | Error _ -> None
+       | (Ok _ : Action.Prog.t) -> Some melc)
     | Ocaml mode ->
       Memo.return
         (let compiler = Ocaml_toolchain.compiler ocaml mode in
@@ -174,6 +176,7 @@ let build_cm
          | Ok _ as s -> Some s
          | Error _ -> None)
   in
+  (* Format.eprintf "wow %s@." (Dyn.option Action.Prog.to_dyn compiler |> Dyn.to_string); *)
   (let open Option.O in
    let* compiler = compiler in
    let ml_kind = Lib_mode.Cm_kind.source cm_kind in
