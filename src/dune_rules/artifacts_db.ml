@@ -80,7 +80,8 @@ let get_installed_binaries ~(context : Context.t) stanzas =
         y)
       >>| Filename.Map.map ~f:Appendable_list.singleton
     in
-    Dune_file.static_stanzas d
+    let* stanzas = Dune_file.stanzas d in
+    stanzas
     |> Memo.List.map ~f:(fun stanza ->
       match Stanza.repr stanza with
       | Install_conf.T { section = _loc, Section Bin; files; enabled_if; _ } ->

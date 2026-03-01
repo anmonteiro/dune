@@ -40,6 +40,52 @@ module Dynamic_include = struct
     end)
 end
 
+module Enabled_if_stanza = struct
+  module Include_context = struct
+    type t =
+      | Source of Path.Source.t
+      | Build of Path.Build.t
+
+    let key : t Univ_map.Key.t =
+      Univ_map.Key.create ~name:"enabled-if-stanza-include-context" Dyn.opaque
+    ;;
+
+    let decode =
+      let+ t = get key in
+      match t with
+      | Some t -> t
+      | None ->
+        Code_error.raise
+          "enabled_if stanza decoded without include context"
+          [ ( "hint"
+            , Dyn.string "set Enabled_if_stanza.Include_context.key in decoder context" )
+          ]
+    ;;
+  end
+
+  type t =
+    { loc : Loc.t
+    ; enabled_if : Blang.t
+    ; current_file : Include_context.t
+    ; stanzas : Dune_lang.Ast.t list
+    }
+
+  include Stanza.Make (struct
+      type nonrec t = t
+
+      include Poly
+    end)
+
+  let decode =
+    let* () = Dune_lang.Syntax.since Stanza.syntax (3, 22) in
+    let* current_file = Include_context.decode in
+    let+ loc = loc
+    and+ enabled_if = Enabled_if.decode_value ~allowed_vars:Any ()
+    and+ stanzas = repeat raw in
+    { loc; enabled_if; current_file; stanzas }
+  ;;
+end
+
 let with_redirect decode =
   let+ (x : Library.t) = decode in
   let base =
@@ -84,6 +130,7 @@ let stanzas : Stanza.Parser.t list =
           (let+ x = Copy_files.decode in
            { x with add_line_directive = true }) )
     ; ("include", Include.(decode_stanza decode))
+    ; ("enabled_if", Enabled_if_stanza.(decode_stanza decode))
     ; ("documentation", Documentation.(decode_stanza Documentation.decode))
     ; ( "jbuild_version"
       , let+ () = Dune_lang.Syntax.deleted_in Stanza.syntax (1, 0)

@@ -640,15 +640,16 @@ end = struct
             else acc))
     and+ entries =
       let* package_db = Package_db.create ctx.name in
-      Dune_file.fold_static_stanzas stanzas ~init:[] ~f:(fun dune_file stanza acc ->
-        let dir = Path.Build.append_source ctx.build_dir (Dune_file.dir dune_file) in
-        let named_entries =
+      let* entries =
+        Memo.parallel_map stanzas ~f:(fun dune_file ->
+          let dir = Path.Build.append_source ctx.build_dir (Dune_file.dir dune_file) in
           let* expander = Super_context.expander sctx ~dir
-          and* scope = Scope.DB.find_by_dir dir in
-          stanza_to_entries ~package_db ~sctx ~dir ~scope ~expander stanza
-        in
-        named_entries :: acc)
-      |> Memo.all_concurrently
+          and* scope = Scope.DB.find_by_dir dir
+          and* stanzas = Dune_file.stanzas dune_file in
+          Memo.parallel_map stanzas ~f:(fun stanza ->
+            stanza_to_entries ~package_db ~sctx ~dir ~scope ~expander stanza))
+      in
+      Memo.return (List.concat entries)
     in
     List.fold_left entries ~init ~f:(fun acc named_entries ->
       match named_entries with

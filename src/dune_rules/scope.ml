@@ -381,29 +381,85 @@ module DB = struct
   ;;
 
   let create_from_stanzas ~projects_by_root ~(context : Context_name.t) stanzas =
+    let combine_enabled_if guard enabled_if =
+      match guard with
+      | None -> enabled_if
+      | Some guard -> Blang.And [ guard; enabled_if ]
+    in
+    let rec statically_true = function
+      | Blang.Const true -> true
+      | Expr sw -> Option.equal String.equal (String_with_vars.text_only sw) (Some "true")
+      | Not t -> statically_false t
+      | And ts -> List.for_all ts ~f:statically_true
+      | Or ts -> List.exists ts ~f:statically_true
+      | Compare _ | Const false -> false
+    and statically_false = function
+      | Blang.Const false -> true
+      | Expr sw ->
+        Option.equal String.equal (String_with_vars.text_only sw) (Some "false")
+      | Not t -> statically_true t
+      | And ts -> List.exists ts ~f:statically_false
+      | Or ts -> List.for_all ts ~f:statically_false
+      | Compare _ | Const true -> false
+    in
+    let rec collect_stanza ~build_dir ~dune_file ~guard stanza (acc, coq_acc, rocq_acc) =
+      let recurse sexps ~current_file guard acc =
+        let stanza_parser =
+          Dune_project.stanza_parser
+            ~dir:(Dune_file.dir dune_file)
+            (Dune_file.project dune_file)
+        in
+        let parser_context =
+          Univ_map.singleton Stanzas.Enabled_if_stanza.Include_context.key current_file
+        in
+        List.concat_map sexps ~f:(Dune_lang.Decoder.parse stanza_parser parser_context)
+        |> List.fold_left ~init:acc ~f:(fun acc stanza ->
+          collect_stanza ~build_dir ~dune_file ~guard stanza acc)
+      in
+      match Stanza.repr stanza with
+      | Library.T lib ->
+        let lib = { lib with enabled_if = combine_enabled_if guard lib.enabled_if } in
+        let ctx_dir = Path.Build.append_source build_dir (Dune_file.dir dune_file) in
+        (ctx_dir, Library_related_stanza.Library lib) :: acc, coq_acc, rocq_acc
+      | Deprecated_library_name.T d ->
+        let ctx_dir = Path.Build.append_source build_dir (Dune_file.dir dune_file) in
+        (ctx_dir, Deprecated_library_name d) :: acc, coq_acc, rocq_acc
+      | Library_redirect.Local.T d ->
+        let d =
+          { d with
+            old_name =
+              { d.old_name with enabled = combine_enabled_if guard d.old_name.enabled }
+          }
+        in
+        let ctx_dir = Path.Build.append_source build_dir (Dune_file.dir dune_file) in
+        (ctx_dir, Library_redirect d) :: acc, coq_acc, rocq_acc
+      | Coq_stanza.Theory.T coq_lib ->
+        let coq_lib =
+          { coq_lib with enabled_if = combine_enabled_if guard coq_lib.enabled_if }
+        in
+        let ctx_dir = Path.Build.append_source build_dir (Dune_file.dir dune_file) in
+        acc, (ctx_dir, coq_lib) :: coq_acc, rocq_acc
+      | Rocq_stanza.Theory.T rocq_lib ->
+        let rocq_lib =
+          { rocq_lib with enabled_if = combine_enabled_if guard rocq_lib.enabled_if }
+        in
+        let ctx_dir = Path.Build.append_source build_dir (Dune_file.dir dune_file) in
+        acc, coq_acc, (ctx_dir, rocq_lib) :: rocq_acc
+      | Stanzas.Enabled_if_stanza.T { enabled_if; stanzas; current_file; _ } ->
+        let enabled_if = combine_enabled_if guard enabled_if in
+        (match statically_false enabled_if, statically_true enabled_if with
+         | true, _ -> acc, coq_acc, rocq_acc
+         | _, true -> recurse stanzas ~current_file None (acc, coq_acc, rocq_acc)
+         | _ -> recurse stanzas ~current_file (Some enabled_if) (acc, coq_acc, rocq_acc))
+      | _ -> acc, coq_acc, rocq_acc
+    in
     let stanzas, coq_stanzas, rocq_stanzas =
       let build_dir = Context_name.build_dir context in
       Dune_file.fold_static_stanzas
         stanzas
         ~init:([], [], [])
-        ~f:(fun dune_file stanza (acc, coq_acc, rocq_acc) ->
-          match Stanza.repr stanza with
-          | Library.T lib ->
-            let ctx_dir = Path.Build.append_source build_dir (Dune_file.dir dune_file) in
-            (ctx_dir, Library_related_stanza.Library lib) :: acc, coq_acc, rocq_acc
-          | Deprecated_library_name.T d ->
-            let ctx_dir = Path.Build.append_source build_dir (Dune_file.dir dune_file) in
-            (ctx_dir, Deprecated_library_name d) :: acc, coq_acc, rocq_acc
-          | Library_redirect.Local.T d ->
-            let ctx_dir = Path.Build.append_source build_dir (Dune_file.dir dune_file) in
-            (ctx_dir, Library_redirect d) :: acc, coq_acc, rocq_acc
-          | Coq_stanza.Theory.T coq_lib ->
-            let ctx_dir = Path.Build.append_source build_dir (Dune_file.dir dune_file) in
-            acc, (ctx_dir, coq_lib) :: coq_acc, rocq_acc
-          | Rocq_stanza.Theory.T rocq_lib ->
-            let ctx_dir = Path.Build.append_source build_dir (Dune_file.dir dune_file) in
-            acc, coq_acc, (ctx_dir, rocq_lib) :: rocq_acc
-          | _ -> acc, coq_acc, rocq_acc)
+        ~f:(fun dune_file stanza acc ->
+          collect_stanza ~build_dir ~dune_file ~guard:None stanza acc)
     in
     create ~projects_by_root ~context stanzas coq_stanzas rocq_stanzas
   ;;
@@ -511,42 +567,41 @@ module DB = struct
   let lib_entries_of_package =
     let make_map build_dir public_libs stanzas =
       let+ libs =
-        Dune_file.Memo_fold.fold_static_stanzas stanzas ~init:[] ~f:(fun d stanza acc ->
-          match Stanza.repr stanza with
-          | Library.T ({ enabled_if; _ } as lib) ->
-            let* enabled =
-              let* expander = Expander0.get ~dir:build_dir in
-              Expander0.eval_blang expander enabled_if
-            in
-            if not enabled
-            then Memo.return acc
-            else (
-              match lib.visibility with
-              | Private None -> Memo.return acc
-              | Private (Some pkg) ->
-                let src_dir = Dune_file.dir d in
-                let* scope = find_by_dir (Path.Build.append_source build_dir src_dir) in
-                Lib.DB.find_lib_id (libs scope) (Local (Library.to_lib_id ~src_dir lib))
-                >>| (function
-                 | None -> acc
-                 | Some lib ->
-                   let name = Package.name pkg in
-                   (name, Lib_entry.Library (Lib.Local.of_lib_exn lib)) :: acc)
-              | Public pub ->
-                let src_dir = Dune_file.dir d in
-                Lib.DB.find_lib_id public_libs (Local (Library.to_lib_id ~src_dir lib))
-                >>| (function
-                 | None -> acc
-                 | Some lib ->
-                   let package = Public_lib.package pub in
-                   let name = Package.name package in
-                   let local_lib = Lib.Local.of_lib_exn lib in
-                   (name, Lib_entry.Library local_lib) :: acc))
-          | Deprecated_library_name.T ({ old_name = old_public_name, _; _ } as d) ->
-            let package = Public_lib.package old_public_name in
-            let name = Package.name package in
-            Memo.return ((name, Lib_entry.Deprecated_library_name d) :: acc)
-          | _ -> Memo.return acc)
+        Memo.parallel_map stanzas ~f:(fun d ->
+          let* stanzas = Dune_file.stanzas d in
+          Memo.List.filter_map stanzas ~f:(fun stanza ->
+            match Stanza.repr stanza with
+            | Library.T ({ enabled_if; _ } as lib) ->
+              let* enabled =
+                let* expander = Expander0.get ~dir:build_dir in
+                Expander0.eval_blang expander enabled_if
+              in
+              if not enabled
+              then Memo.return None
+              else (
+                match lib.visibility with
+                | Private None -> Memo.return None
+                | Private (Some pkg) ->
+                  let src_dir = Dune_file.dir d in
+                  let* scope = find_by_dir (Path.Build.append_source build_dir src_dir) in
+                  Lib.DB.find_lib_id (libs scope) (Local (Library.to_lib_id ~src_dir lib))
+                  >>| Option.map ~f:(fun lib ->
+                    let name = Package.name pkg in
+                    name, Lib_entry.Library (Lib.Local.of_lib_exn lib))
+                | Public pub ->
+                  let src_dir = Dune_file.dir d in
+                  Lib.DB.find_lib_id public_libs (Local (Library.to_lib_id ~src_dir lib))
+                  >>| Option.map ~f:(fun lib ->
+                    let package = Public_lib.package pub in
+                    let name = Package.name package in
+                    let local_lib = Lib.Local.of_lib_exn lib in
+                    name, Lib_entry.Library local_lib))
+            | Deprecated_library_name.T ({ old_name = old_public_name, _; _ } as d) ->
+              let package = Public_lib.package old_public_name in
+              let name = Package.name package in
+              Memo.return (Some (name, Lib_entry.Deprecated_library_name d))
+            | _ -> Memo.return None))
+        >>| List.concat
       in
       Package.Name.Map.of_list_multi libs |> Package.Name.Map.map ~f:Lib_entry.Set.of_list
     in

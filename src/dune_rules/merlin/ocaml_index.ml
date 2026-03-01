@@ -134,23 +134,23 @@ let context_indexes =
       (fun ctx ->
          Context.name ctx
          |> Dune_load.dune_files
-         >>| Dune_file.fold_static_stanzas ~init:[] ~f:(fun dune_file stanza acc ->
-           let obj =
-             let dir =
-               let build_dir = Context.build_dir ctx in
-               Path.Build.append_source build_dir (Dune_file.dir dune_file)
-             in
-             match Stanza.repr stanza with
-             | Executables.T exes | Tests.T { exes; _ } ->
-               Some (Executables.obj_dir ~dir exes)
-             | Library.T lib -> Some (Library.obj_dir ~dir lib)
-             | Melange_stanzas.Emit.T { target; _ } ->
-               Some (Obj_dir.make_melange_emit ~dir ~name:target)
-             | _ -> None
+         >>= Memo.List.fold_left ~init:[] ~f:(fun acc dune_file ->
+           let* stanzas = Dune_file.stanzas dune_file in
+           let build_dir = Context.build_dir ctx in
+           let dir = Path.Build.append_source build_dir (Dune_file.dir dune_file) in
+           let paths =
+             List.filter_map stanzas ~f:(fun stanza ->
+               match Stanza.repr stanza with
+               | Executables.T exes | Tests.T { exes; _ } ->
+                 Some (Executables.obj_dir ~dir exes)
+               | Library.T lib -> Some (Library.obj_dir ~dir lib)
+               | Melange_stanzas.Emit.T { target; _ } ->
+                 Some (Obj_dir.make_melange_emit ~dir ~name:target)
+               | _ -> None)
+             |> List.rev_map ~f:(fun obj_dir ->
+               Path.build (index_path_in_obj_dir obj_dir))
            in
-           match obj with
-           | None -> acc
-           | Some obj_dir -> Path.build (index_path_in_obj_dir obj_dir) :: acc)
+           Memo.return (List.rev_append paths acc))
          |> Action_builder.of_memo)
   in
   Action_builder.exec_memo memo

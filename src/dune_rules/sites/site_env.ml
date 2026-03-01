@@ -47,10 +47,9 @@ let add_packages_env context ~base stanzas packages =
       in
       let+ package_sections =
         let* package_db = Package_db.create context in
-        Dune_file.Memo_fold.fold_static_stanzas
-          stanzas
-          ~init:Package.Name.Map.empty
-          ~f:(fun _ stanza acc ->
+        Memo.List.fold_left stanzas ~init:Package.Name.Map.empty ~f:(fun acc dune_file ->
+          let* stanzas = Dune_file.stanzas dune_file in
+          Memo.List.fold_left stanzas ~init:acc ~f:(fun acc stanza ->
             let add_in_package_sites pkg_name site loc =
               Package_db.find_package package_db pkg_name
               >>| function
@@ -69,7 +68,7 @@ let add_packages_env context ~base stanzas packages =
             | Install_conf.T { section = _loc, Site { pkg; site; loc }; _ } ->
               add_in_package_sites pkg site loc
             | Plugin.T { site = loc, (pkg, site); _ } -> add_in_package_sites pkg site loc
-            | _ -> Memo.return acc)
+            | _ -> Memo.return acc))
       in
       (* Add the site of the local package: it should only useful for making
          sure that at least one location is given to the site of local package
