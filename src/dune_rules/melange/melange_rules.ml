@@ -244,29 +244,19 @@ let make_same_lib_emission_deps =
 let make_external_lib_emission_deps =
   let cmj_glob = Glob.of_string_exn Loc.none "*.cmj" in
   let cmi_glob = Glob.of_string_exn Loc.none "*.cmi" in
-  fun ~(compile_flags : Ocaml_flags.t) ~obj_dir ->
-    let xopt_enabled =
-      Ocaml_flags.get compile_flags Melange
-      |> Action_builder.map ~f:melange_cross_module_opt_enabled
-    in
-    let cmj_deps =
-      Dep.Set.singleton
-        (Dep.file_selector
-           (File_selector.of_glob ~dir:(Obj_dir.melange_dir obj_dir) cmj_glob))
-    in
-    let cmi_deps =
-      Dep.Set.singleton
-        (Dep.file_selector
-           (File_selector.of_glob
-              ~dir:(Obj_dir.public_cmi_melange_dir obj_dir)
-              cmi_glob))
+  let deps_of_glob ~dirs glob =
+    List.map dirs ~f:(fun dir -> Dep.file_selector (File_selector.of_glob ~dir glob))
+    |> Dep.Set.of_list
+  in
+  fun ~obj_dir ->
+    let melange_obj_dirs = Obj_dir.all_obj_dirs obj_dir ~mode:Melange in
+    let deps =
+      Dep.Set.union
+        (deps_of_glob ~dirs:melange_obj_dirs cmj_glob)
+        (deps_of_glob ~dirs:melange_obj_dirs cmi_glob)
     in
     fun _module_ ->
-      let open Action_builder.O in
-      xopt_enabled
-      >>= function
-      | true -> Action_builder.return (Dep.Set.union cmj_deps cmi_deps)
-      | false -> Action_builder.return cmj_deps
+      Action_builder.return deps
 ;;
 
 let compile_info ~scope (mel : Melange_stanzas.Emit.t) =
@@ -815,11 +805,10 @@ let setup_js_rules_libraries =
         | None ->
           (* Installed libraries may have private helper modules that are not
              exposed through their installed module metadata. Conservatively
-             depend on the whole Melange object dir so sandboxed emission can
-             still resolve same-library private `.cmj`s. *)
-          make_external_lib_emission_deps
-            ~compile_flags
-            ~obj_dir:(Lib_info.obj_dir (Lib.info lib))
+             depend on all Melange object dirs so sandboxed emission can still
+             resolve same-library private modules and future cross-module
+             optimization has the interface metadata it needs. *)
+          make_external_lib_emission_deps ~obj_dir:(Lib_info.obj_dir (Lib.info lib))
         | Some lib ->
           make_same_lib_emission_deps
             ~compile_flags
