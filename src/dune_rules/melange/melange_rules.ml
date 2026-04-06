@@ -179,15 +179,16 @@ let cmj_includes =
       ]
 ;;
 
+let melange_cross_module_opt_enabled flags =
+  (* TODO(anmonteiro): cross-module-optimization could be a stanza field, eventually enabled by default *)
+  List.fold_left flags ~init:false ~f:(fun enabled flag ->
+    match flag with
+    | "--mel-cross-module-opt" | "-mel-cross-module-opt" -> true
+    | "--mel-no-cross-module-opt" | "-mel-no-cross-module-opt" -> false
+    | _ -> enabled)
+;;
+
 let make_same_lib_emission_deps =
-  let melange_cross_module_opt_enabled flags =
-    (* TODO(anmonteiro): cross-module-optimization could be a stanza field, eventually enabled by default *)
-    List.fold_left flags ~init:false ~f:(fun enabled flag ->
-      match flag with
-      | "--mel-cross-module-opt" | "-mel-cross-module-opt" -> true
-      | "--mel-no-cross-module-opt" | "-mel-no-cross-module-opt" -> false
-      | _ -> enabled)
-  in
   let impl_dep_graph ~obj_dir ~modules =
     let per_module =
       Modules.With_vlib.obj_map modules
@@ -231,8 +232,41 @@ let make_same_lib_emission_deps =
         Dep_graph.top_closed_implementations dep_graph (module_ :: intf_deps)
         |> Action_builder.map ~f:(deps_of_xopt_closure ~obj_dir)
       | false ->
-        Dep_rules.read_deps_of ~obj_dir ~modules ~ml_kind:Impl module_ ~for_
+        (* Emission reads same-library implementation artifacts recursively.
+           The generic [.impl.all-deps] files collapse transitive edges through
+           interfaces when a dependency has an [.mli], which is fine for
+           compilation but insufficient for JS emission. Follow the
+           implementation dependency graph directly instead. *)
+        Dep_graph.top_closed_implementations dep_graph [ module_ ]
         |> Action_builder.map ~f:(deps_of_impl_closure ~obj_dir)
+;;
+
+let make_external_lib_emission_deps =
+  let cmj_glob = Glob.of_string_exn Loc.none "*.cmj" in
+  let cmi_glob = Glob.of_string_exn Loc.none "*.cmi" in
+  fun ~(compile_flags : Ocaml_flags.t) ~obj_dir ->
+    let xopt_enabled =
+      Ocaml_flags.get compile_flags Melange
+      |> Action_builder.map ~f:melange_cross_module_opt_enabled
+    in
+    let cmj_deps =
+      Dep.Set.singleton
+        (Dep.file_selector
+           (File_selector.of_glob ~dir:(Obj_dir.melange_dir obj_dir) cmj_glob))
+    in
+    let cmi_deps =
+      Dep.Set.singleton
+        (Dep.file_selector
+           (File_selector.of_glob
+              ~dir:(Obj_dir.public_cmi_melange_dir obj_dir)
+              cmi_glob))
+    in
+    fun _module_ ->
+      let open Action_builder.O in
+      xopt_enabled
+      >>= function
+      | true -> Action_builder.return (Dep.Set.union cmj_deps cmi_deps)
+      | false -> Action_builder.return cmj_deps
 ;;
 
 let compile_info ~scope (mel : Melange_stanzas.Emit.t) =
@@ -778,7 +812,14 @@ let setup_js_rules_libraries =
       in
       let same_lib_emission_deps =
         match Lib.Local.of_lib lib with
-        | None -> fun _ -> Action_builder.return Dep.Set.empty
+        | None ->
+          (* Installed libraries may have private helper modules that are not
+             exposed through their installed module metadata. Conservatively
+             depend on the whole Melange object dir so sandboxed emission can
+             still resolve same-library private `.cmj`s. *)
+          make_external_lib_emission_deps
+            ~compile_flags
+            ~obj_dir:(Lib_info.obj_dir (Lib.info lib))
         | Some lib ->
           make_same_lib_emission_deps
             ~compile_flags

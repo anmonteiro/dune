@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 When emitting JS for a same-workspace Melange library, Dune must stage the
 transitive implementation closure, even across `.mli` boundaries.
 
@@ -73,3 +74,58 @@ transitive implementation closure, even across `.mli` boundaries.
   lib/.foo.objs/melange/foo__.cmj
   lib/.foo.objs/melange/foo__Foo_map.cmj
   lib/.foo.objs/melange/foo__Foo_mapInt.cmj
+=======
+Test emitting a local Melange library with transitive private implementation deps
+
+  $ mkdir -p lib app
+
+  $ cat > dune-project <<EOF
+  > (lang dune 3.8)
+  > (package (name repro))
+  > (using melange 0.1)
+  > EOF
+
+  $ cat > lib/dune <<EOF
+  > (library
+  >  (name foo)
+  >  (modes melange)
+  >  (private_modules helper))
+  > EOF
+
+  $ cat > app/dune <<EOF
+  > (melange.emit
+  >  (target dist)
+  >  (alias dist)
+  >  (emit_stdlib false)
+  >  (libraries foo))
+  > EOF
+
+  $ cat > lib/foo.ml <<EOF
+  > let message = Foo_map.message
+  > EOF
+
+  $ cat > lib/foo_map.mli <<EOF
+  > val message : string
+  > EOF
+
+  $ cat > lib/foo_map.ml <<EOF
+  > let message = Helper.message
+  > EOF
+
+  $ cat > lib/helper.ml <<EOF
+  > let message = "local private helper"
+  > EOF
+
+  $ cat > app/main.ml <<EOF
+  > let () = Js.log Foo.message
+  > EOF
+
+  $ dune build @dist --display short 2>&1 | grep 'melc app/dist'
+          melc app/dist/lib/helper.js
+          melc app/dist/lib/foo_map.js
+          melc app/dist/lib/foo.js
+          melc app/dist/app/main.js
+
+  $ node _build/default/app/dist/app/main.js
+  local private helper
+>>>>>>> 2cfbebe8f (Fix Melange emit deps for private modules)
