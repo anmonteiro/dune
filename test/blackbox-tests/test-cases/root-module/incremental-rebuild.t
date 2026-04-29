@@ -52,5 +52,5 @@ untouched, so [consumer_lib] is not rebuilt:
   > let greeting = "hello-" ^ string_of_int extra
   > EOF
   $ dune build @check
-  $ dune trace cat | jq -s 'include "dune"; [.[] | targetsMatchingFilter(test("\\.consumer_lib\\.objs/"))] | length'
-  0
+  $ dune trace cat | jq -s 'include "dune"; [.[] | targetsMatchingFilter(test("\\.consumer_lib\\.objs/"))]'
+  []
