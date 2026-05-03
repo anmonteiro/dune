@@ -29,8 +29,12 @@ let ocaml_index sctx ~dir =
 
 let index_file_name = "cctx.ocaml-index"
 
-let index_path_in_obj_dir obj_dir =
-  let dir = Obj_dir.obj_dir obj_dir in
+let index_path_in_obj_dir obj_dir ~for_ =
+  let dir =
+    match for_ with
+    | Compilation_mode.Ocaml -> Obj_dir.obj_dir obj_dir
+    | Melange -> Obj_dir.melange_dir obj_dir
+  in
   Path.Build.relative dir index_file_name
 ;;
 
@@ -44,7 +48,7 @@ let cctx_rules cctx =
   let dir = Compilation_context.dir cctx in
   let aggregate =
     let obj_dir = Compilation_context.obj_dir cctx in
-    let target = index_path_in_obj_dir obj_dir in
+    let target = index_path_in_obj_dir obj_dir ~for_ in
     let additional_libs =
       let* () = Memo.return () in
       let scope = Compilation_context.scope cctx in
@@ -54,6 +58,11 @@ let cctx_rules cctx =
         Resolve.Memo.return Command.Args.empty
       else
         let open Resolve.Memo.O in
+        let mode =
+          match for_ with
+          | Ocaml -> Lib_mode.Ocaml Byte
+          | Melange -> Melange
+        in
         let+ non_compile_libs =
           let* req_compile = Compilation_context.requires_compile cctx in
           Compilation_context.requires_link cctx
@@ -62,7 +71,7 @@ let cctx_rules cctx =
         Lib_flags.L.include_flags
           ~direct_libs:non_compile_libs
           ~hidden_libs:[]
-          (Lib_mode.Ocaml Byte)
+          mode
           (Compilation_context.ocaml cctx).lib_config
     in
     (* Indexing depends (recursively) on [required_compile] libs:
@@ -75,7 +84,7 @@ let cctx_rules cctx =
         >>| List.filter_map ~f:(fun lib ->
           Lib.Local.of_lib lib
           |> Option.map ~f:(fun lib ->
-            Lib.Local.obj_dir lib |> index_path_in_obj_dir |> Path.build))
+            Lib.Local.obj_dir lib |> index_path_in_obj_dir ~for_ |> Path.build))
         >>| Dep.Set.of_files
       in
       Command.Args.Hidden_deps deps
@@ -150,7 +159,12 @@ let context_indexes =
            in
            match obj with
            | None -> acc
-           | Some obj_dir -> Path.build (index_path_in_obj_dir obj_dir) :: acc)
+           | Some obj_dir ->
+             List.fold_left
+               [ Compilation_mode.Ocaml; Melange ]
+               ~init:acc
+               ~f:(fun acc for_ ->
+                 Path.build (index_path_in_obj_dir obj_dir ~for_) :: acc))
          |> Action_builder.of_memo)
   in
   Action_builder.exec_memo memo
