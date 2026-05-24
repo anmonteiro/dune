@@ -6,6 +6,9 @@ module File = struct
     ; original_path : Path.t
       (* while path can be changed for a module (when it is being pp'ed), the
            original_path stays the same and points to an original source file *)
+    ; preprocessed_from : Path.t option
+      (* When [path] points to a preprocessed source, this is the source used to
+         produce it. *)
     ; dialect : Dialect.t
     }
 
@@ -14,10 +17,10 @@ module File = struct
     fields
     @@ let+ path = field "path" (Dune_lang.Path.Local.decode ~dir) in
        (* TODO do not just assume the dialect is OCaml *)
-       { path; original_path = path; dialect = Dialect.ocaml }
+       { path; original_path = path; preprocessed_from = None; dialect = Dialect.ocaml }
   ;;
 
-  let encode { path; original_path = _; dialect = _ } ~dir =
+  let encode { path; original_path = _; preprocessed_from = _; dialect = _ } ~dir =
     let open Dune_lang.Encoder in
     record_fields [ field "path" (Dune_lang.Path.Local.encode ~dir) path ]
   ;;
@@ -25,6 +28,7 @@ module File = struct
   let dialect t = t.dialect
   let path t = t.path
   let original_path t = t.original_path
+  let preprocessed_from t = t.preprocessed_from
   let set_path t path = { t with path }
 
   let version_installed t ~src_root ~install_dir =
@@ -39,14 +43,15 @@ module File = struct
 
   let make ?original_path dialect path =
     let original_path = Option.value original_path ~default:path in
-    { dialect; path; original_path }
+    { dialect; path; original_path; preprocessed_from = None }
   ;;
 
-  let to_dyn { path; original_path; dialect } =
+  let to_dyn { path; original_path; preprocessed_from; dialect } =
     let open Dyn in
     record
       [ "path", Path.to_dyn path
       ; "original_path", Path.to_dyn original_path
+      ; "preprocessed_from", Dyn.option Path.to_dyn preprocessed_from
       ; "dialect", Dyn.string @@ Dialect.name dialect
       ]
   ;;
@@ -322,7 +327,12 @@ let wrapped_compat t =
              ^ Filename.Extension.(to_string ml_gen))
           ]
       in
-      Some { File.dialect = Dialect.ocaml; path; original_path = path }
+      Some
+        { File.dialect = Dialect.ocaml
+        ; path
+        ; original_path = path
+        ; preprocessed_from = None
+        }
     in
     { t.source with files = { intf = None; impl } }
   in
@@ -411,7 +421,7 @@ let pped =
         Filename.Extension.Or_empty.of_string_exn
           (".pp" ^ Filename.Extension.Or_empty.to_string ext))
     in
-    { file with path = pp_path })
+    { file with path = pp_path; preprocessed_from = Some file.path })
 ;;
 
 let ml_source =

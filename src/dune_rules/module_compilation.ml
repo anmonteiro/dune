@@ -231,6 +231,12 @@ let build_cm
    let ml_kind = Lib_mode.Cm_kind.source cm_kind in
    let+ src = Module.file m ~ml_kind in
    let original = Module.source_without_pp m ~ml_kind in
+   let preprocessed_from =
+     match cm_kind with
+     | Melange _ ->
+       Module.source m ~ml_kind |> Option.bind ~f:Module.File.preprocessed_from
+     | Ocaml _ -> None
+   in
    let dst = Obj_dir.Module.cm_file_exn obj_dir m ~kind:cm_kind in
    let obj =
      Obj_dir.Module.obj_file obj_dir m ~kind:(Ocaml Cmx) ~ext:ocaml.lib_config.ext_obj
@@ -424,10 +430,14 @@ let build_cm
             ; A "-c"
             ; Command.Ml_kind.flag ml_kind
             ; Dep src
-            ; (* We add a hidden dependency on the original, pre-PPX source
-                 file, which the compiler wants to find to display error
-                 location snippets. *)
-              Hidden_deps (Dep.Set.of_files (Option.to_list original))
+            ; (* We add hidden dependencies on the pre-PPX source files, which
+                 the compiler wants to find to display error location snippets.
+                 For Melange sources this may be either the original file or the
+                 copy in [.melange_src], depending on the locations emitted by
+                 the preprocessor and compiler version. *)
+              Hidden_deps
+                (Dep.Set.of_files
+                   (Option.to_list original @ Option.to_list preprocessed_from))
             ; other_targets
             ]))
   |> Memo.Option.iter ~f:Fun.id
