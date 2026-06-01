@@ -494,7 +494,7 @@ User ppx flags should appear in merlin config
     ]
   }
 
-Mixed OCaml/Melange libraries generate separate Merlin configuration files.
+Mixed OCaml/Melange libraries store both configurations in one stanza file.
 
   $ mkdir mixed
   $ cat > mixed/dune-project <<EOF
@@ -521,13 +521,20 @@ Mixed OCaml/Melange libraries generate separate Merlin configuration files.
   >  (melange.preprocess
   >   (action
   >    (run sh %{dep:pp_melange.sh} %{input-file}))))
+  > (library
+  >  (name aaa)
+  >  (modules aaa))
   > EOF
   $ cat > mixed/foo.ml <<EOF
   > let x = "foo"
   > EOF
+  $ cat > mixed/aaa.ml <<EOF
+  > let x = "aaa"
+  > EOF
 
   $ dune build --root mixed @check
   $ find mixed/_build/default/.merlin-conf -type f | sort
+  mixed/_build/default/.merlin-conf/lib-aaa
   mixed/_build/default/.merlin-conf/lib-mixed
 
 The old `File` query still returns the default OCaml Merlin configuration.
@@ -560,5 +567,10 @@ Both generated configurations remain available to debug tooling.
       "mode": "ocaml",
       "obj_dir": "_build/default/.mixed.objs/byte",
       "preprocess": "ocaml"
+    },
+    {
+      "mode": "melange",
+      "obj_dir": "_build/default/.mixed.objs/melange",
+      "preprocess": "melange"
     }
   ]
