@@ -60,7 +60,8 @@ module Processed = struct
 
   (* Most of the configuration is shared across a same lib/exe... *)
   type config =
-    { stdlib_dir : Path.t option
+    { for_ : Compilation_mode.t
+    ; stdlib_dir : Path.t option
     ; source_root : Path.t
     ; obj_dirs : Path.Set.t
     ; src_dirs : Path.Set.t
@@ -74,6 +75,18 @@ module Processed = struct
 
   let path_set_repr = Repr.abstract Path.Set.to_dyn
 
+  let compilation_mode_repr =
+    Repr.variant
+      "compilation-mode"
+      [ Repr.case0 "Ocaml" ~test:(function
+          | Compilation_mode.Ocaml -> true
+          | Compilation_mode.Melange -> false)
+      ; Repr.case0 "Melange" ~test:(function
+          | Compilation_mode.Melange -> true
+          | Compilation_mode.Ocaml -> false)
+      ]
+  ;;
+
   let ml_kind_dict_repr value_repr =
     Repr.record
       "ml-kind-dict"
@@ -85,7 +98,8 @@ module Processed = struct
   let config_repr =
     Repr.record
       "merlin-config"
-      [ Repr.field "stdlib_dir" (Repr.option Path.repr) ~get:(fun t -> t.stdlib_dir)
+      [ Repr.field "for_" compilation_mode_repr ~get:(fun t -> t.for_)
+      ; Repr.field "stdlib_dir" (Repr.option Path.repr) ~get:(fun t -> t.stdlib_dir)
       ; Repr.field "source_root" Path.repr ~get:(fun t -> t.source_root)
       ; Repr.field "obj_dirs" path_set_repr ~get:(fun t -> t.obj_dirs)
       ; Repr.field "src_dirs" path_set_repr ~get:(fun t -> t.src_dirs)
@@ -176,7 +190,7 @@ module Processed = struct
 
     let name = "merlin-conf"
     let sharing = false
-    let version = 8
+    let version = 9
 
     let repr =
       Repr.view Repr.string ~to_:(fun _ -> "Use [dune ocaml dump-dot-merlin] instead")
@@ -198,6 +212,7 @@ module Processed = struct
          the one running the 'ocaml-merlin' server.)"
   ;;
 
+  let for_ t = t.config.for_
   let serialize_path = Path.to_absolute_filename
 
   let get_ext { Ml_kind.Dict.impl; intf } =
@@ -213,7 +228,8 @@ module Processed = struct
         ~opens
         ~pp
         ~reader
-        { stdlib_dir
+        { for_ = _
+        ; stdlib_dir
         ; source_root
         ; obj_dirs
         ; src_dirs
@@ -488,7 +504,8 @@ module Processed = struct
               { per_file_config = _
               ; pp_config
               ; config =
-                  { stdlib_dir = _
+                  { for_ = _
+                  ; stdlib_dir = _
                   ; source_root = _
                   ; obj_dirs
                   ; src_dirs
@@ -796,7 +813,8 @@ module Unprocessed = struct
       in
       let obj_dirs = Path.Set.union deps_obj_dirs objs_dirs in
       let source_root = Path.Source.root |> Path.source in
-      { Processed.stdlib_dir
+      { Processed.for_ = t.config.for_
+      ; stdlib_dir
       ; source_root
       ; src_dirs
       ; obj_dirs
