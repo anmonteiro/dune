@@ -32,6 +32,7 @@ module Processed : sig
 
   val pp_kind : pp_flag -> Pp_kind.t
   val pp_args : pp_flag -> string
+  val for_ : t -> Compilation_mode.t
   val load_file : Path.t -> (t, string) result
 
   (** [print_file path] reads the configuration at path [path] and print it as a

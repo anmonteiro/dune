@@ -524,13 +524,20 @@ Mixed OCaml/Melange libraries generate separate Merlin configuration files.
   >  (melange.preprocess
   >   (action
   >    (run sh %{dep:pp_melange.sh} %{input-file}))))
+  > (library
+  >  (name aaa)
+  >  (modules aaa))
   > EOF
   $ cat > mixed/foo.ml <<EOF
   > let x = "foo"
   > EOF
+  $ cat > mixed/aaa.ml <<EOF
+  > let x = "aaa"
+  > EOF
 
   $ dune build --root mixed @check
   $ find mixed/_build/default/.merlin-conf -type f | sort
+  mixed/_build/default/.merlin-conf/lib-aaa
   mixed/_build/default/.merlin-conf/lib-mixed
   mixed/_build/default/.merlin-conf/lib-mixed-melange
 
@@ -541,6 +548,20 @@ The old `File` query still returns the default OCaml Merlin configuration.
    (B $TESTCASE_ROOT/mixed/_build/default/.mixed.objs/byte)
   $ query_ocaml_merlin_pp "$PWD/mixed/foo.ml" --root mixed | grep -E 'MELC_STDLIB|\.objs/melange|pp_melange'
   [1]
+
+The new `File-Configurations` query exposes every matching configuration.
+
+  $ query_ocaml_merlin_configurations_pp "$PWD/mixed/foo.ml" --root mixed | grep -E 'ID|MODE|DEFAULT|\(B .*\.mixed\.objs|pp_(ocaml|melange)'
+    (ID lib-mixed)
+    (DEFAULT true)
+      (B $TESTCASE_ROOT/mixed/_build/default/.mixed.objs/byte)
+       (-pp "/bin/sh pp_ocaml.sh"))
+    (MODE ocaml))
+    (ID lib-mixed-melange)
+    (DEFAULT false)
+      (B $TESTCASE_ROOT/mixed/_build/default/.mixed.objs/melange)
+       (-pp "/bin/sh pp_melange.sh"))
+    (MODE melange)))
 
 Both generated configurations remain available to debug tooling.
 
