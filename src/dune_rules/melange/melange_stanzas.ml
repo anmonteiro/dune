@@ -162,6 +162,12 @@ module Emit = struct
   ;;
 
   let target_dir (emit : t) ~dir = Path.Build.relative dir emit.target
+
+  let output_dir emit ~dir =
+    Path.Build.append_source
+      (target_dir emit ~dir)
+      (Path.Build.drop_build_context_exn dir)
+  ;;
 end
 
 let () =

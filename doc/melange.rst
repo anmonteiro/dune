@@ -146,6 +146,22 @@ The resulting layout in ``_build/default/output`` will be as follows:
         ├── lib.js
         └── helper.js
 
+.. versionadded:: 3.25
+
+The output directory for a ``melange.emit`` stanza can be referenced with
+``%{melange.emit:<target-dir>}``, where ``<target-dir>`` is the stanza's target
+directory relative to the current ``dune`` file. This is useful when another
+rule needs to consume the JavaScript files produced by a specific
+``melange.emit`` stanza.
+
+For example, if ``lib/dune`` contains ``(melange.emit (target output) ...)``,
+then ``%{melange.emit:output}`` in the same file expands to ``output/lib``.
+From the workspace root, the same output directory can be referenced as
+``%{melange.emit:lib/output}``, which expands to ``lib/output/lib``.
+
+When a directory contains multiple ``melange.emit`` stanzas, use each stanza's
+target directory to select the desired output directory.
+
 ``<optional-fields>`` are:
 
 - ``(alias <alias-name>)`` specifies an alias to which to attach the targets of

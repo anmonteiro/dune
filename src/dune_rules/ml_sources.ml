@@ -1387,7 +1387,12 @@ let make
         ~expander:(Expander.to_expander0 expander)
         ~lib_config
         ~libs
-        ~exes)
+        ~exes
+        ~melange_emits:
+          (List.map
+             modules_of_stanzas.melange_emits
+             ~f:(fun (part : Melange_stanzas.Emit.t Per_stanza.group_part) ->
+               part.stanza, part.dir)))
   in
   { modules; artifacts; include_subdirs }
 ;;
