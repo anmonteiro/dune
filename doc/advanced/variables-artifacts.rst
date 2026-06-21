@@ -36,5 +36,13 @@ interpreted relative to the current directory:
 
   .. versionadded:: 3.21
 
+- ``melange.emit:<path>`` expands to the output directory for the
+  ``melange.emit`` stanza whose target directory is specified by ``<path>``.
+  For example, if ``lib/dune`` contains ``(melange.emit (target out) ...)``,
+  then ``%{melange.emit:lib/out}`` expands to the directory where modules from
+  ``lib`` are emitted inside the ``out`` target.
+
+  .. versionadded:: 3.25
+
 In each case, the expansion of the variable is a path pointing inside the build
 context (i.e., ``_build/<context>``).

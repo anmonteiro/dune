@@ -301,6 +301,7 @@ module Macro = struct
     | Ocaml_config
     | Rocq_config
     | Env
+    | Melange_emit
     | Artifact of Artifact.t
     | Pkg
     | Pkg_self
@@ -356,6 +357,9 @@ module Macro = struct
     | Env, Env -> Eq
     | Env, _ -> Lt
     | _, Env -> Gt
+    | Melange_emit, Melange_emit -> Eq
+    | Melange_emit, _ -> Lt
+    | _, Melange_emit -> Gt
     | Pkg, Pkg -> Eq
     | Pkg, _ -> Lt
     | _, Pkg -> Gt
@@ -389,6 +393,7 @@ module Macro = struct
     | Ocaml_config -> string "Ocaml_config"
     | Rocq_config -> string "Rocq_config"
     | Env -> string "Env"
+    | Melange_emit -> string "Melange_emit"
     | Artifact ext -> variant "Artifact" [ Artifact.to_dyn ext ]
     | Pkg -> variant "Pkg" []
     | Pkg_self -> variant "Pkg_self" []
@@ -414,6 +419,7 @@ module Macro = struct
     | Ocaml_config -> Ok "ocaml-config"
     | Rocq_config -> Ok "rocq"
     | Env -> Ok "env"
+    | Melange_emit -> Ok "melange.emit"
     | Pkg -> Ok "pkg"
     | Pkg_self -> Ok "pkg-self"
     | Ppx -> Ok "ppx"
@@ -688,6 +694,7 @@ module Env = struct
          ; "path-no-dep", deleted_in ~version:(1, 0) Macro.Path_no_dep
          ; "ocaml-config", macro Ocaml_config
          ; "env", since ~version:(1, 4) Macro.Env
+         ; "melange.emit", since ~version:(3, 25) Macro.Melange_emit
          ; "ppx", since ~version:(3, 21) Macro.Ppx
          ; "pkg", since ~version:(3, 24) Macro.Pkg
          ; "rocq", macro Rocq_config
@@ -809,7 +816,6 @@ module Env = struct
     | Some version -> version
     | None ->
       let extension = Syntax.name extension |> Syntax.Name.to_string in
-      let name = Syntax.Name.to_string name in
       User_error.raise
         ~loc
         [ Pp.textf "Can't parse the variable %s without the %s extension" name extension ]
@@ -825,17 +831,18 @@ module Env = struct
         ~loc:pform.loc
         [ Pp.textf "Unknown %s %s" (P.describe_kind pform) (P.describe pform) ]
     | Some v ->
-      let name = Syntax.Name.parse pform.name in
       (match v with
        | No_info v -> v
        | Since (v, what, min_version) ->
-         let syntax_version = find_extension ~loc:pform.loc ~name syntax_version what in
+         let syntax_version =
+           find_extension ~loc:pform.loc ~name:pform.name syntax_version what
+         in
          if syntax_version >= min_version
          then v
          else Syntax.Error.since (P.loc pform) what min_version ~what:(P.describe pform)
        | Renamed_in (v, in_version, new_name) ->
          let syntax_version =
-           find_extension ~loc:pform.loc ~name syntax_version Stanza.syntax
+           find_extension ~loc:pform.loc ~name:pform.name syntax_version Stanza.syntax
          in
          if syntax_version < in_version
          then v
@@ -848,7 +855,7 @@ module Env = struct
              ~to_:(P.describe { pform with name = new_name })
        | Deleted_in (v, in_version, repl) ->
          let syntax_version =
-           find_extension ~loc:pform.loc ~name syntax_version Stanza.syntax
+           find_extension ~loc:pform.loc ~name:pform.name syntax_version Stanza.syntax
          in
          if syntax_version < in_version
          then v

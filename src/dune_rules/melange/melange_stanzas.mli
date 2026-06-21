@@ -25,4 +25,5 @@ module Emit : sig
   val implicit_alias : Alias.Name.t
   val decode : t Dune_lang.Decoder.t
   val target_dir : t -> dir:Path.Build.t -> Path.Build.t
+  val output_dir : t -> dir:Path.Build.t -> Path.Build.t
 end
