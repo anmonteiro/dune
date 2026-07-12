@@ -545,6 +545,20 @@ The old `File` query still returns the default OCaml Merlin configuration.
   $ query_ocaml_merlin_pp "$PWD/mixed/foo.ml" --root mixed | grep -E 'MELC_STDLIB|\.objs/melange|pp_melange'
   [1]
 
+The new `File-Configurations` query exposes every matching configuration.
+
+  $ query_ocaml_merlin_configurations_pp "$PWD/mixed/foo.ml" --root mixed | grep -E 'ID|MODE|DEFAULT|\(B .*\.mixed\.objs|pp_(ocaml|melange)' | sed -E 's#\(-pp "[^"]*(pp_(ocaml|melange)\.sh)"\)#(-pp \1)#'
+    (ID lib-mixed:ocaml)
+    (DEFAULT true)
+      (B $TESTCASE_ROOT/mixed/_build/default/.mixed.objs/byte)
+       (-pp pp_ocaml.sh))
+    (MODE ocaml))
+    (ID lib-mixed:melange)
+    (DEFAULT false)
+      (B $TESTCASE_ROOT/mixed/_build/default/.mixed.objs/melange)
+       (-pp pp_melange.sh))
+    (MODE melange)))
+
 Both generated configurations remain available to debug tooling.
 
   $ dune ocaml merlin dump-config --root mixed --format=json "$PWD/mixed" | jq_dune '
