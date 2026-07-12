@@ -396,6 +396,12 @@ module Processed = struct
     Buffer.contents b
   ;;
 
+  type file_configuration =
+    { for_ : Compilation_mode.t
+    ; is_default : bool
+    ; directives : Sexp.t
+    }
+
   let get_configuration { per_file_config; pp_config; config; is_default = _ } ~file =
     let open Option.O in
     let+ { module_; opens; reader } =
@@ -421,18 +427,19 @@ module Processed = struct
     to_sexp ~unit_name ~opens ~pp ~reader config
   ;;
 
-  let get configurations ~file =
-    let rec loop fallback = function
-      | [] -> fallback
-      | configuration :: configurations ->
-        (match get_configuration configuration ~file with
-         | None -> loop fallback configurations
-         | Some directives ->
-           if configuration.is_default
-           then Some directives
-           else loop (Option.first_some fallback (Some directives)) configurations)
-    in
-    loop None configurations
+  let configurations t ~file =
+    List.filter_map t ~f:(fun ({ config; is_default; _ } as configuration) ->
+      Option.map (get_configuration configuration ~file) ~f:(fun directives ->
+        { for_ = config.for_; is_default; directives }))
+  ;;
+
+  let get t ~file =
+    let configurations = configurations t ~file in
+    match List.find configurations ~f:(fun configuration -> configuration.is_default) with
+    | Some configuration -> Some configuration.directives
+    | None ->
+      Option.map (List.hd_opt configurations) ~f:(fun configuration ->
+        configuration.directives)
   ;;
 
   let dump_entries { per_file_config; pp_config; config; is_default = _ }
