@@ -386,15 +386,19 @@ module Processed = struct
     Buffer.contents b
   ;;
 
+  type match_kind =
+    | Exact_or_copy
+    | Extensionless
+
   let get_configuration { per_file_config; pp_config; config } ~file =
     let open Option.O in
-    let+ { module_; opens; reader } =
+    let+ match_kind, { module_; opens; reader } =
       let find file = Path.Build.Map.find per_file_config file in
       match find file with
-      | Some _ as s -> s
+      | Some config -> Some (Exact_or_copy, config)
       | None ->
         (match Copy_line_directive.DB.follow_while file ~f:find with
-         | Some _ as s -> s
+         | Some config -> Some (Exact_or_copy, config)
          | None ->
            (* Fallback to handle preprocessed files (where the preprocessor has
               the file extensison changed).
@@ -404,15 +408,34 @@ module Processed = struct
               This is too rough but, really, preprocessors should emit copy
               line directives instead and then Dune should have the database
               similar to Copy_line_directive to handle this. *)
-           Path.Build.Map.find per_file_config (remove_extension file))
+           Path.Build.Map.find per_file_config (remove_extension file)
+           |> Option.map ~f:(fun config -> Extensionless, config))
     in
     let pp = Module_name.Per_item.get pp_config (Module.name module_) in
     let unit_name = Module_name.Unique.to_string (Module.obj_name module_) in
-    to_sexp ~unit_name ~opens ~pp ~reader config
+    match_kind, to_sexp ~unit_name ~opens ~pp ~reader config
+  ;;
+
+  let matching_configurations configurations ~file =
+    let exact, extensionless =
+      Nonempty_list.to_list configurations
+      |> List.fold_left ~init:([], []) ~f:(fun (exact, extensionless) configuration ->
+        match get_configuration configuration ~file with
+        | None -> exact, extensionless
+        | Some (Exact_or_copy, directives) ->
+          (configuration, directives) :: exact, extensionless
+        | Some (Extensionless, directives) ->
+          exact, (configuration, directives) :: extensionless)
+    in
+    match exact with
+    | _ :: _ -> List.rev exact
+    | [] -> List.rev extensionless
   ;;
 
   let get configurations ~file =
-    Nonempty_list.to_list configurations |> List.find_map ~f:(get_configuration ~file)
+    matching_configurations configurations ~file
+    |> List.hd_opt
+    |> Option.map ~f:snd
   ;;
 
   let dump_entries { per_file_config; pp_config; config } : Dump_entry.t list =
@@ -443,7 +466,9 @@ module Processed = struct
     match load_file path with
     | Error msg -> Printf.eprintf "%s\n" msg
     | Ok configurations ->
-      Nonempty_list.hd configurations |> dump_entries |> List.iter ~f:print_entry
+      Nonempty_list.to_list_map configurations ~f:dump_entries
+      |> List.concat
+      |> List.iter ~f:print_entry
   ;;
 
   let print_files format paths =
@@ -454,7 +479,8 @@ module Processed = struct
          Result.List.map paths ~f:(fun path ->
            match load_file path with
            | Error msg -> Error msg
-           | Ok configurations -> Ok (dump_entries (Nonempty_list.hd configurations)))
+           | Ok configurations ->
+             Ok (Nonempty_list.to_list_map configurations ~f:dump_entries |> List.concat))
        with
        | Error msg -> Printf.eprintf "%s\n" msg
        | Ok entries ->
