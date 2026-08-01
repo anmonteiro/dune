@@ -1,4 +1,5 @@
 open Stdune.Action_types
+module Toggle = Stdune.Toggle
 
 let decode_action_stdout_on_success = Dune_sexp.Decoder.enum Action_output_on_success.all
 
@@ -115,7 +116,7 @@ module Dune_config = struct
       | Loc of Loc.t
 
     type t =
-      | Set of where * Config.Toggle.t
+      | Set of where * Toggle.t
       | Unset
 
     let repr =
@@ -143,7 +144,7 @@ module Dune_config = struct
 
     let decode =
       let open Dune_lang.Decoder in
-      let+ loc, value = located (enum Config.Toggle.all) in
+      let+ loc, value = located (enum Toggle.all) in
       Set (Loc loc, value)
     ;;
 
@@ -745,8 +746,8 @@ module Dune_config = struct
                      | exception End_of_file -> None
                    in
                    close_in ic;
-                   (match n, snd (Unix.waitpid [] (Stdune.Pid.to_int pid)) with
-                    | Some n, WEXITED 0 -> n
+                   (match n, Stdune.Proc.wait (Pid pid) [] with
+                    | Some n, Some { status = WEXITED 0; _ } -> n
                     | _ -> loop rest)))
          in
          loop commands))

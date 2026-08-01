@@ -627,7 +627,6 @@ module Builder = struct
     ; sandbox_actions : bool
     }
 
-  let set_no_build t no_build = { t with no_build }
   let root t = t.root
   let set_root t root = { t with root = Some root }
   let forbid_builds t = { t with allow_builds = false; no_print_directory = true }
@@ -962,7 +961,7 @@ module Builder = struct
             ~doc:
               (Some
                  "Run spawned build processes in an external dune action runner wrapped \
-                  with bubblewrap."))
+                  with bubblewrap on Linux or sandbox-exec on macOS."))
     and+ action_runner =
       Arg.(
         value
@@ -1386,12 +1385,7 @@ let init_with_root_and_rpc ~(root : Workspace_root.t) ~rpc_build (builder : Buil
   let action_runner =
     lazy
       (if action_runner_requested c
-       then
-         Some
-           (Action_runner.create
-              ~where:(Lazy.force where)
-              ~config
-              ~sandbox_actions:c.builder.sandbox_actions)
+       then Some (Action_runner.create ~config ~sandbox_actions:c.builder.sandbox_actions)
        else None)
   in
   let rpc =

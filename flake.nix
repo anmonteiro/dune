@@ -2,12 +2,16 @@
   inputs = {
     nixpkgs.url = "github:nixos/nixpkgs/nixpkgs-unstable";
     melange = {
-      url = "github:melange-re/melange/v7-54";
+      url = "github:melange-re/melange/v7-55";
       inputs.nixpkgs.follows = "nixpkgs";
     };
     ocaml-overlays = {
       url = "github:nix-ocaml/nix-overlays";
       inputs.nixpkgs.follows = "nixpkgs";
+    };
+    ocaml-trunk = {
+      url = "github:ocaml/ocaml/trunk";
+      flake = false;
     };
     revdeps-dune = {
       url = "github:ocaml/dune";
@@ -29,6 +33,7 @@
       nixpkgs,
       melange,
       ocaml-overlays,
+      ocaml-trunk,
       revdeps-dune,
     }:
     let
@@ -37,13 +42,11 @@
         nixpkgs.lib.genAttrs nixpkgs.lib.systems.flakeExposed (
           system:
           let
-            # Vanilla nixpkgs scope used to source packages we want to take
-            # ahead of what `ocaml-overlays` ships (e.g. odoc 3.2.1).
-            nixpkgsOcaml = nixpkgs.legacyPackages.${system}.ocaml-ng.ocamlPackages_5_4;
+            nixpkgsOcaml = nixpkgs.legacyPackages.${system}.ocaml-ng.ocamlPackages_5_5;
             pkgs = nixpkgs.legacyPackages.${system}.appendOverlays [
               ocaml-overlays.overlays.default
               (self: super: {
-                ocamlPackages = super.ocaml-ng.ocamlPackages_5_4.overrideScope (
+                ocamlPackages = super.ocaml-ng.ocamlPackages_5_5.overrideScope (
                   oself: osuper: {
                     ocaml = osuper.ocaml.override {
                       flambdaSupport = false;
@@ -53,13 +56,18 @@
                       dontGzipMan = true;
                     };
                     odoc-parser = osuper.odoc-parser.overrideAttrs (old: {
-                      inherit (nixpkgsOcaml.odoc-parser) version src;
                       doCheck = false;
                     });
                     odoc = osuper.odoc.overrideAttrs (old: {
-                      inherit (nixpkgsOcaml.odoc) version src;
                       doCheck = false;
                     });
+                    # nix-overlays uses a post-0.38.0 ppxlib commit that no
+                    # longer depends on stdlib-shims. Use nixpkgs' 0.38.0
+                    # release source to match opam and keep `dune describe`
+                    # output independent of the package manager.
+                    ppxlib = osuper.ppxlib.overrideAttrs {
+                      inherit (nixpkgsOcaml.ppxlib) version src;
+                    };
                     # Templates the cross-compiled dune binary used by
                     # `windows-static`. Lives at the top-level scope so
                     # `nix-overlays`' cross-overlay sees it during scope
@@ -69,16 +77,16 @@
                     dune_target = oself.callPackage ./nix/dune-target.nix { };
                   }
                 );
-                # Keep `ocaml-ng.ocamlPackages_5_4` in sync with the override
+                # Keep `ocaml-ng.ocamlPackages_5_5` in sync with the override
                 # above. nix-overlays' `cross/ocaml.nix:46` looks up the native
-                # OCaml via `buildPackages.ocaml-ng."ocamlPackages_5_4"`, so
+                # OCaml via `buildPackages.ocaml-ng."ocamlPackages_5_5"`, so
                 # without this the cross-target side uses our overridden ocaml
                 # while the native side (used to build findlib's `nativeBuild-
                 # Inputs` etc.) uses the unoverridden ocaml+flambda — the
                 # mismatch shows up as cross `ocamlopt` rejecting native
                 # `topdirs.cmx` ("not a compilation unit description").
                 ocaml-ng = super.ocaml-ng // {
-                  ocamlPackages_5_4 = self.ocamlPackages;
+                  ocamlPackages_5_5 = self.ocamlPackages;
                 };
               })
               melange.overlays.default
@@ -116,24 +124,66 @@
         }
       );
 
-      packages = forAllSystems (
-        pkgs:
+      packages =
         let
-          dune-package = import ./nix/dune-package.nix {
-            inherit nixpkgs ocaml-overlays pkgs;
-            src = ./.;
-          };
+          # Nixpkgs 26.11 dropped x86_64-darwin. Keep the Intel macOS binary
+          # on the last supported release.
+          nixpkgsDarwin = builtins.getFlake (
+            "github:NixOS/nixpkgs/fca2dbd4c00c3063235e56bb91758e24fc67b7b8"
+            + "?narHash=sha256-uH9LkreZXkpZXD0QOXBkQWnAHhlVuT0wUABFw7AN9BU%3D"
+          );
+          dune =
+            (import ./nix/dune-package.nix {
+              nixpkgs = nixpkgsDarwin;
+              inherit ocaml-overlays;
+              pkgs = nixpkgsDarwin.legacyPackages.x86_64-darwin;
+              src = ./.;
+            }).default;
         in
-        rec {
-          inherit (dune-package)
-            default
-            musl-static
-            windows-static
-            ;
-          dune = default;
-          dune-static = musl-static;
-        }
-      );
+        forAllSystems (
+          pkgs:
+          let
+            ocamlTrunkPackages = pkgs.ocaml-ng.ocamlPackages_trunk.overrideScope (
+              _oself: osuper: {
+                ocaml =
+                  (osuper.ocaml.override {
+                    flambdaSupport = false;
+                  }).overrideAttrs
+                    (_: {
+                      src = ocaml-trunk;
+                    });
+              }
+            );
+            trunkPkgs = pkgs // {
+              ocamlPackages = ocamlTrunkPackages;
+            };
+            dune-package = import ./nix/dune-package.nix {
+              inherit nixpkgs ocaml-overlays pkgs;
+              src = ./.;
+            };
+            dune-trunk-package = import ./nix/dune-package.nix {
+              inherit nixpkgs ocaml-overlays;
+              pkgs = trunkPkgs;
+              src = ./.;
+            };
+          in
+          rec {
+            inherit (dune-package)
+              default
+              musl-static
+              windows-static
+              ;
+            dune = default;
+            dune-trunk = dune-trunk-package.default;
+            dune-static = musl-static;
+          }
+        )
+        // {
+          x86_64-darwin = {
+            inherit dune;
+            default = dune;
+          };
+        };
 
       devShells = forAllSystems (
         pkgs:
@@ -162,11 +212,17 @@
               mercurial
               unzip
               coreutils
+              bashInteractive
               curl
               git
               binaryen
               procps
               which
+            ]
+            ++ lib.optionals (lib.meta.availableOn stdenv.hostPlatform fish) [
+              # Fish is not installed on CI runners, and its completion backend
+              # is maintained in Dune rather than generated by Cmdliner.
+              fish
             ]
             ++ lib.optionals stdenv.isLinux [ strace ];
           testNativeBuildInputs =
@@ -187,6 +243,7 @@
             sphinx-design
             myst-parser
           ];
+          sourceDune = self.packages.${pkgs.stdenv.hostPlatform.system}.default;
           makeDuneDevShell = import ./nix/dev-shell.nix {
             inherit
               pkgs
@@ -194,8 +251,8 @@
               testBuildInputs
               testNativeBuildInputs
               docInputs
+              sourceDune
               ;
-            sourceDune = self.packages.${pkgs.stdenv.hostPlatform.system}.default;
           };
 
         in
@@ -297,7 +354,15 @@
             '';
           };
 
-          inherit (import ./nix/devShells/ox.nix { inherit pkgs makeDuneDevShell INSIDE_NIX; })
+          inherit
+            (import ./nix/devShells/ox.nix {
+              inherit
+                pkgs
+                makeDuneDevShell
+                sourceDune
+                INSIDE_NIX
+                ;
+            })
             bootstrap-ox
             ox-minimal
             ox-minimal-trunk

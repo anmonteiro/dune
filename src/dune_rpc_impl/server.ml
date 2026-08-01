@@ -25,6 +25,7 @@ end
 
 module Session = Rpc.Server.Session
 module Handler = Rpc.Server.Handler
+module Workspace = Source.Workspace
 module Source = Rpc.Long_poll.Source
 module Csexp_rpc = Rpc.Csexp_rpc
 
@@ -141,7 +142,7 @@ let cancel_all_build_requests t =
   | Enabled { build_loop; _ } -> Build_loop.cancel_all_rpc_requests build_loop
 ;;
 
-let handler (t : t Fdecl.t) action_runner_server : unit Handler.t =
+let handler (t : t Fdecl.t) : unit Handler.t =
   let on_init session (_ : Initialize.Request.t) =
     let t = Fdecl.get t in
     t.server.clients <- Clients.add_session t.server.clients session;
@@ -348,6 +349,13 @@ let handler (t : t Fdecl.t) action_runner_server : unit Handler.t =
   in
   let () =
     let f _ () =
+      let+ workspace = Memo.run (Workspace.workspace ()) in
+      Workspace.pkg_enabled workspace
+    in
+    Handler.implement_request rpc Decl.pkg_enabled f
+  in
+  let () =
+    let f _ () =
       current_errors () |> List.map ~f:Diagnostics.diagnostic_of_error |> Fiber.return
     in
     Handler.implement_request rpc Procedures.Public.diagnostics f
@@ -389,7 +397,6 @@ let handler (t : t Fdecl.t) action_runner_server : unit Handler.t =
     let f _ () = Fiber.return Path.Build.(to_string root) in
     Handler.implement_request rpc Procedures.Public.build_dir f
   in
-  Action_runner.implement_handler action_runner_server rpc;
   Dune_rules_rpc.register rpc;
   rpc
 ;;
@@ -418,7 +425,7 @@ let create ~registry ~root ~build ~where ~action_runner watch_mode =
                  (Path.Build.to_string_maybe_quoted (Where.rpc_socket_file ()))
              ])
     in
-    let handler = Rpc.Server.make (handler t action_runner) in
+    let handler = Rpc.Server.make (handler t) in
     let server = Lazy.force server in
     let lifecycle = Rpc.Server.Lifecycle.create ~handler ~root ~where ~registry ~server in
     action_runner, lifecycle

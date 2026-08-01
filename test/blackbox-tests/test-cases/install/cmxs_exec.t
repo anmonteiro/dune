@@ -59,6 +59,21 @@ Test the error message if a destination is a non-empty directory instead of a fi
   Error: Please delete non-empty directory prefix/lib/foo/foo.a manually.
   [1]
 
+Dry runs should validate the same blocker.
+
+  $ dune install --prefix prefix --display short --dry-run
+  Creating directory prefix/lib/foo
+  Removing (if it exists) prefix/lib/foo/META
+  Installing prefix/lib/foo/META
+  Copying _build/install/default/lib/foo/META to prefix/lib/foo/META (executable: false)
+  Creating directory prefix/lib/foo
+  Removing (if it exists) prefix/lib/foo/dune-package
+  Installing prefix/lib/foo/dune-package
+  Copying _build/install/default/lib/foo/dune-package to prefix/lib/foo/dune-package (executable: false)
+  Creating directory prefix/lib/foo
+  Error: Please delete non-empty directory prefix/lib/foo/foo.a manually.
+  [1]
+
 Test the error message if a destination is a file instead of a directory.
 
   $ rm -rf prefix

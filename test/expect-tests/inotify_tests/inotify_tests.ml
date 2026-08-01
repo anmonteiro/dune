@@ -351,18 +351,14 @@ let%expect_test "Check that FS events are reported chronologically 2" =
 ;;
 
 let run cmd =
-  match
-    snd
-      (Unix.waitpid
-         []
-         (Unix.create_process
-            (List.hd cmd)
-            (Array.of_list cmd)
-            Unix.stdin
-            Unix.stdout
-            Unix.stderr))
-  with
-  | WEXITED 0 -> ()
+  let prog =
+    Bin.which ~path:(Env_path.path Env.initial) (List.hd cmd)
+    |> Option.value_exn
+    |> Path.to_string
+  in
+  let pid = Spawn.spawn ~prog ~argv:cmd () in
+  match Proc.wait (Pid pid) [] with
+  | Some { status = WEXITED 0; _ } -> ()
   | _ -> assert false
 ;;
 

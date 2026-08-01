@@ -170,7 +170,7 @@ module Cache = struct
       (let base = Path.relative (Lazy.force Dune_util.cache_root_dir) "rev_store" in
        let path = Path.relative base version in
        let rev_store_cache = Config.get rev_store_cache in
-       Log.info "Revision store cache" [ "status", Config.Toggle.to_dyn rev_store_cache ];
+       Log.info "Revision store cache" [ "status", Toggle.to_dyn rev_store_cache ];
        match rev_store_cache with
        | `Disabled -> None
        | `Enabled ->
@@ -234,26 +234,7 @@ module Cache = struct
   ;;
 
   module Files_and_submodules = struct
-    module Key = struct
-      module T = struct
-        type t = Object.t
-
-        let compare = Object.compare
-        let to_dyn = Object.to_dyn
-      end
-
-      include T
-      module C = Comparable.Make (T)
-
-      let conv =
-        Lmdb.Conv.make
-          ~serialise:(fun alloc obj ->
-            Object.to_hex obj |> Lmdb.Conv.(serialise string alloc))
-          ~deserialise:(fun bs ->
-            Lmdb.Conv.(deserialise string bs) |> Object.of_sha1_unsafe)
-          ()
-      ;;
-    end
+    module Key = Key
 
     let map =
       lazy

@@ -134,7 +134,6 @@ let add_rule sctx ?mode ?loc ~dir build =
 ;;
 
 let for_ = Compilation_mode.Melange
-let sandbox = Compilation_mode.default_sandbox for_
 
 let impl_only_modules_defined_in_this_lib ~sctx ~scope lib =
   match Lib_info.modules (Lib.info lib) ~for_ with
@@ -222,7 +221,7 @@ let make_same_lib_emission_deps =
       |> Module_name.Unique.Map.mapi ~f:(fun _ sourced_module ->
         let module_ = Modules.Sourced_module.to_module sourced_module in
         Dep_rules.read_immediate_deps_of
-          ~sandbox
+          ~sandbox:Compilation_mode.default_sandbox
           ~sctx
           ~obj_dir
           ~modules
@@ -253,7 +252,7 @@ let make_same_lib_emission_deps =
       | true ->
         let* intf_deps =
           Dep_rules.read_deps_of
-            ~sandbox
+            ~sandbox:Compilation_mode.default_sandbox
             ~sctx
             ~obj_dir
             ~modules
@@ -264,9 +263,9 @@ let make_same_lib_emission_deps =
             module_
         in
         (* Cross-module optimization follows implementation artifacts, but the
-         initial reachability also comes from the emitted module's interface
-         dependencies. Seed the implementation graph with that interface
-         closure so wrappers such as [Stdlib] stay visible to the emitter. *)
+           initial reachability also comes from the emitted module's interface
+           dependencies. Seed the implementation graph with that interface
+           closure so wrappers such as [Stdlib] stay visible to the emitter. *)
         Dep_graph.top_closed_implementations dep_graph (module_ :: intf_deps)
         |> Action_builder.map ~f:(deps_of_xopt_closure ~obj_dir)
       | false ->
@@ -275,8 +274,13 @@ let make_same_lib_emission_deps =
            when a dependency has an [.mli], which is insufficient for JS
            emission. Follow the implementation dependency graph directly
            instead. *)
+        let stdlib_aliases =
+          Modules.With_vlib.alias_for modules module_
+          |> List.filter ~f:(Modules.With_vlib.is_stdlib_alias modules)
+        in
         Dep_graph.top_closed_implementations dep_graph [ module_ ]
-        |> Action_builder.map ~f:(deps_of_closure ~obj_dir ~kind:Cmj)
+        |> Action_builder.map ~f:(fun deps ->
+          deps_of_closure ~obj_dir ~kind:Cmj (stdlib_aliases @ deps))
 ;;
 
 let make_external_lib_emission_deps =

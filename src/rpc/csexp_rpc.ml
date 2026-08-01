@@ -16,15 +16,16 @@ module Socket = struct
   end
 
   module Mac = struct
-    external pthread_chdir : string -> unit = "dune_pthread_chdir" [@@noalloc]
+    external pthread_chdir : string -> unit = "dune_pthread_chdir"
+    external reset_pthread_cwd : unit -> unit = "dune_reset_pthread_cwd"
     external set_nosigpipe : Unix.file_descr -> unit = "dune_set_nosigpipe"
 
     let with_chdir fd ~socket ~f =
-      let old = Sys.getcwd () in
       let dir = Filename.dirname socket in
       let sock = Filename.basename socket in
       pthread_chdir dir;
-      Exn.protectx (Unix.ADDR_UNIX sock) ~f:(f fd) ~finally:(fun _ -> pthread_chdir old)
+      Exn.protectx (Unix.ADDR_UNIX sock) ~f:(f fd) ~finally:(fun _ ->
+        reset_pthread_cwd ())
     ;;
 
     let connect fd ~socket : unit =
@@ -149,6 +150,14 @@ module Session = struct
         }
     in
     { id; state }
+  ;;
+
+  let of_fd fd =
+    Socket.prepare_fd fd
+    |> Result.map ~f:(fun () ->
+      Fd.set_close_on_exec fd;
+      create fd)
+    |> Result.ok_exn
   ;;
 
   let close_fd t =
