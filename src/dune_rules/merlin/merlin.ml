@@ -107,7 +107,15 @@ module Processed = struct
     { opens : Module_name.t list
     ; module_ : Module.t
     ; reader : string list option
+    ; kind : Ml_kind.t
     }
+
+  type per_file_config =
+    { exact : module_config Path.Build.Map.t
+    ; extensionless : module_config list Path.Build.Map.t
+    }
+
+  let ml_kind_repr = Repr.view Repr.string ~to_:Ml_kind.to_string
 
   let module_config_repr =
     Repr.record
@@ -115,15 +123,32 @@ module Processed = struct
       [ Repr.field "opens" (Repr.list Module_name.repr) ~get:(fun t -> t.opens)
       ; Repr.field "module_" (Repr.abstract Module.to_dyn) ~get:(fun t -> t.module_)
       ; Repr.field "reader" (Repr.option (Repr.list Repr.string)) ~get:(fun t -> t.reader)
+      ; Repr.field "kind" ml_kind_repr ~get:(fun t -> t.kind)
+      ]
+  ;;
+
+  let per_file_config_repr =
+    Repr.record
+      "merlin-per-file-config"
+      [ Repr.field
+          "exact"
+          (Repr.abstract (Path.Build.Map.to_dyn (Repr.to_dyn module_config_repr)))
+          ~get:(fun t -> t.exact)
+      ; Repr.field
+          "extensionless"
+          (Repr.abstract
+             (Path.Build.Map.to_dyn (Dyn.list (Repr.to_dyn module_config_repr))))
+          ~get:(fun t -> t.extensionless)
       ]
   ;;
 
   (* ...but modules can have different preprocessing specifications*)
   type configuration =
     { config : config
-    ; per_file_config : module_config Path.Build.Map.t
+    ; per_file_config : per_file_config
     ; pp_config : pp_flag option Module_name.Per_item.t
     ; is_default : bool
+    ; for_ : Compilation_mode.t
     }
 
   type t = configuration Nonempty_list.t
@@ -163,15 +188,14 @@ module Processed = struct
     Repr.record
       "merlin-processed-configuration"
       [ Repr.field "config" config_repr ~get:(fun t -> t.config)
-      ; Repr.field
-          "per_file_config"
-          (Repr.abstract (Path.Build.Map.to_dyn (Repr.to_dyn module_config_repr)))
-          ~get:(fun t -> t.per_file_config)
+      ; Repr.field "per_file_config" per_file_config_repr ~get:(fun t ->
+          t.per_file_config)
       ; Repr.field
           "pp_config"
           (Module_name.Per_item.repr (Repr.option pp_flag_repr))
           ~get:(fun t -> t.pp_config)
       ; Repr.field "is_default" Repr.bool ~get:(fun t -> t.is_default)
+      ; Repr.field "for_" Compilation_mode.repr ~get:(fun t -> t.for_)
       ]
   ;;
 
@@ -183,7 +207,7 @@ module Processed = struct
 
     let name = "merlin-conf"
     let sharing = false
-    let version = 9
+    let version = 10
 
     let repr =
       Repr.view Repr.string ~to_:(fun _ -> "Use [dune ocaml dump-dot-merlin] instead")
@@ -392,10 +416,50 @@ module Processed = struct
     | Exact_or_copy
     | Extensionless
 
-  let get_configuration { per_file_config; pp_config; config; is_default = _ } ~file =
+  type source_kind =
+    | Implementation
+    | Interface
+
+  type file_configuration =
+    { for_ : Compilation_mode.t
+    ; is_default : bool
+    ; kind : source_kind
+    ; counterpart : Path.t option
+    ; directives : Sexp.t
+    }
+
+  let select_extensionless candidates ~file =
+    let extension = Path.Build.extension file |> Filename.Extension.Or_empty.to_string in
+    let matching_extension =
+      List.filter candidates ~f:(fun { module_; kind; opens = _; reader = _ } ->
+        match Module.source_without_pp module_ ~ml_kind:kind with
+        | None -> false
+        | Some source ->
+          String.equal
+            extension
+            (Path.extension source |> Filename.Extension.Or_empty.to_string))
+    in
+    match matching_extension with
+    | [ candidate ] -> Some candidate
+    | [] ->
+      (match candidates with
+       | [ candidate ] -> Some candidate
+       | [] | _ :: _ :: _ -> None)
+    | _ :: _ :: _ -> None
+  ;;
+
+  let get_configuration
+        { per_file_config = { exact; extensionless }
+        ; pp_config
+        ; config
+        ; is_default = _
+        ; for_ = _
+        }
+        ~file
+    =
     let open Option.O in
-    let+ match_kind, { module_; opens; reader } =
-      let find file = Path.Build.Map.find per_file_config file in
+    let+ match_kind, ({ module_; opens; reader; kind = _ } as module_config) =
+      let find file = Path.Build.Map.find exact file in
       match find file with
       | Some config -> Some (Exact_or_copy, config)
       | None ->
@@ -410,45 +474,94 @@ module Processed = struct
               This is too rough but, really, preprocessors should emit copy
               line directives instead and then Dune should have the database
               similar to Copy_line_directive to handle this. *)
-           Path.Build.Map.find per_file_config (remove_extension file)
+           Path.Build.Map.find extensionless (remove_extension file)
+           >>= select_extensionless ~file
            |> Option.map ~f:(fun config -> Extensionless, config))
     in
     let pp = Module_name.Per_item.get pp_config (Module.name module_) in
     let unit_name = Module_name.Unique.to_string (Module.obj_name module_) in
-    match_kind, to_sexp ~unit_name ~opens ~pp ~reader config
+    match_kind, module_config, to_sexp ~unit_name ~opens ~pp ~reader config
   ;;
 
-  let get configurations ~file =
+  let matching_configurations configurations ~file =
     let exact, extensionless =
       Nonempty_list.to_list configurations
       |> List.fold_left ~init:([], []) ~f:(fun (exact, extensionless) configuration ->
         match get_configuration configuration ~file with
         | None -> exact, extensionless
-        | Some (Exact_or_copy, directives) ->
-          (configuration, directives) :: exact, extensionless
-        | Some (Extensionless, directives) ->
-          exact, (configuration, directives) :: extensionless)
+        | Some (Exact_or_copy, module_config, directives) ->
+          (configuration, module_config, directives) :: exact, extensionless
+        | Some (Extensionless, module_config, directives) ->
+          exact, (configuration, module_config, directives) :: extensionless)
     in
-    let configurations =
-      match exact with
-      | _ :: _ -> List.rev exact
-      | [] -> List.rev extensionless
-    in
-    let rec choose fallback = function
-      | [] -> fallback
-      | (configuration, directives) :: configurations ->
-        if configuration.is_default
-        then Some directives
-        else choose (Option.first_some fallback (Some directives)) configurations
-    in
-    choose None configurations
+    match exact with
+    | _ :: _ -> List.rev exact
+    | [] -> List.rev extensionless
   ;;
 
-  let dump_entries { per_file_config; pp_config; config; is_default = _ }
+  let configurations t ~file =
+    matching_configurations t ~file
+    |> List.map
+         ~f:
+           (fun
+             ( { for_; is_default; config = _; per_file_config = _; pp_config = _ }
+             , { module_; kind; opens = _; reader = _ }
+             , directives )
+           ->
+           let counterpart_kind =
+             match kind with
+             | Ml_kind.Impl -> Ml_kind.Intf
+             | Intf -> Ml_kind.Impl
+           in
+           let counterpart =
+             Module.source_without_pp module_ ~ml_kind:counterpart_kind
+             |> Option.map ~f:Path.drop_optional_build_context
+           in
+           let kind =
+             match kind with
+             | Ml_kind.Impl -> Implementation
+             | Intf -> Interface
+           in
+           { for_; is_default; kind; counterpart; directives })
+    |> Nonempty_list.of_list
+  ;;
+
+  let get t ~file =
+    match configurations t ~file with
+    | None -> None
+    | Some configurations ->
+      let rec choose fallback = function
+        | [] -> fallback
+        | configuration :: configurations ->
+          if configuration.is_default
+          then Some configuration.directives
+          else
+            choose
+              (Option.first_some fallback (Some configuration.directives))
+              configurations
+      in
+      choose None (Nonempty_list.to_list configurations)
+  ;;
+
+  let dump_entries
+        { per_file_config = { exact; extensionless }
+        ; pp_config
+        ; config
+        ; is_default = _
+        ; for_ = _
+        }
     : Dump_entry.t list
     =
-    Path.Build.Map.to_list per_file_config
-    |> List.map ~f:(fun (source_path, { module_; opens; reader }) ->
+    let extensionless =
+      Path.Build.Map.to_list extensionless
+      |> List.filter_map ~f:(fun (path, configurations) ->
+        Option.map (List.hd_opt configurations) ~f:(fun configuration ->
+          path, configuration))
+    in
+    Path.Build.Map.to_list exact @ extensionless
+    |> Path.Build.Map.of_list_reduce ~f:(fun existing _ -> existing)
+    |> Path.Build.Map.to_list
+    |> List.map ~f:(fun (source_path, { module_; opens; reader; kind = _ }) ->
       let module_name = Module.name module_ in
       let unit_name = Module_name.Unique.to_string (Module.obj_name module_) in
       let pp = Module_name.Per_item.get pp_config module_name in
@@ -504,8 +617,9 @@ module Processed = struct
     | Ok containers ->
       let configurations =
         List.map containers ~f:(fun configurations ->
-          List.find (Nonempty_list.to_list configurations) ~f:(fun configuration ->
-            configuration.is_default)
+          List.find
+            (Nonempty_list.to_list configurations)
+            ~f:(fun (configuration : configuration) -> configuration.is_default)
           |> Option.value ~default:(Nonempty_list.hd configurations))
       in
       (match configurations with
@@ -548,6 +662,7 @@ module Processed = struct
                  { per_file_config = _
                  ; pp_config
                  ; is_default = _
+                 ; for_ = _
                  ; config =
                      { stdlib_dir = _
                      ; source_root = _
@@ -889,30 +1004,35 @@ module Unprocessed = struct
       ; parameters
       }
     and+ pp_config = pp_config t context ~expander in
-    let per_file_config =
+    let exact, extensionless =
       (* And copy for each module the resulting pp flags *)
       modules
       |> Modules.With_vlib.drop_vlib
-      |> Modules.fold ~init:[] ~f:(fun m init ->
-        Module.sources_without_pp m
-        |> Path.Build.Set.of_list_map ~f:(fun src -> Path.as_in_build_dir_exn src)
-        |> Path.Build.Set.fold ~init ~f:(fun src acc ->
-          let config =
-            { Processed.module_ = Module.set_pp m None
-            ; opens = Modules.With_vlib.local_open modules m
-            ; reader =
-                String.Map.find
-                  readers
-                  (Filename.Extension.Or_empty.to_string (Path.Build.extension src))
-            }
-          in
-          (* we add the config with and without the extension, the latter is
-             needed for a fallback in this file's [get] function. *)
-          let src_without_extension = remove_extension src in
-          (src, config) :: (src_without_extension, config) :: acc))
-      |> Path.Build.Map.of_list_reduce ~f:(fun existing _ -> existing)
+      |> Modules.fold ~init:([], []) ~f:(fun m init ->
+        List.fold_left Ml_kind.all ~init ~f:(fun (exact, extensionless) kind ->
+          match Module.source_without_pp m ~ml_kind:kind with
+          | None -> exact, extensionless
+          | Some source ->
+            let source = Path.as_in_build_dir_exn source in
+            let config =
+              { Processed.module_ = Module.set_pp m None
+              ; opens = Modules.With_vlib.local_open modules m
+              ; reader =
+                  String.Map.find
+                    readers
+                    (Filename.Extension.Or_empty.to_string (Path.Build.extension source))
+              ; kind
+              }
+            in
+            (source, config) :: exact, (remove_extension source, config) :: extensionless))
     in
-    { Processed.pp_config; config; per_file_config; is_default }
+    let per_file_config =
+      { Processed.exact =
+          Path.Build.Map.of_list_reduce exact ~f:(fun existing _ -> existing)
+      ; extensionless = Path.Build.Map.of_list_multi extensionless
+      }
+    in
+    { Processed.pp_config; config; per_file_config; is_default; for_ = t.config.for_ }
   ;;
 end
 
@@ -926,6 +1046,17 @@ let group ~(default : Unprocessed.t) ~(alternatives : Unprocessed.t list) =
   List.iter alternatives ~f:(fun (alternative : Unprocessed.t) ->
     if not (Merlin_ident.equal default.ident alternative.ident)
     then Code_error.raise "Merlin.group: configurations have different identifiers" []);
+  let modes =
+    default.config.for_ :: List.map alternatives ~f:(fun t -> t.Unprocessed.config.for_)
+  in
+  let rec check_modes seen = function
+    | [] -> ()
+    | mode :: modes ->
+      if List.exists seen ~f:(Compilation_mode.equal mode)
+      then Code_error.raise "Merlin.group: configurations have duplicate modes" []
+      else check_modes (mode :: seen) modes
+  in
+  check_modes [] modes;
   { ident = default.ident; default; alternatives }
 ;;
 

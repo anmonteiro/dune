@@ -634,6 +634,80 @@ filenames.
   >   | grep -Eo 'pp_(ocaml|melange)' | sort -u
   pp_ocaml
 
+An ambiguous extensionless key uses the query's final extension to retain the
+matched source kind.
+
+  $ query_ocaml_merlin_configurations_pp "$PWD/mixed/iface.pp.mli" \
+  >   --root mixed | grep -E 'MODE|KIND'
+     (MODE ocaml)
+     (KIND interface)
+     (MODE melange)
+     (KIND interface)
+
+The plural request returns every exact file configuration from the first
+matching stanza. Each entry carries its stable mode key, matched source kind,
+and exact existing counterpart selected in that mode.
+
+  $ query_ocaml_merlin_configurations_pp "$PWD/mixed/iface.ml" --root mixed \
+  >   | grep -E 'CONFIGURATIONS|MODE|DEFAULT|KIND|COUNTERPART'
+  (CONFIGURATIONS
+     (MODE ocaml)
+     (DEFAULT true)
+     (KIND implementation)
+     (COUNTERPART $TESTCASE_ROOT/mixed/iface.mli)
+     (MODE melange)
+     (DEFAULT false)
+     (KIND implementation)
+     (COUNTERPART $TESTCASE_ROOT/mixed/iface.melange.mli)
+
+Exact conditional matches do not leak extensionless matches from another mode.
+
+  $ for file in platform.ml platform.melange.ml iface.mli iface.melange.mli \
+  >   melange_only.ml; do
+  >   printf '%s: ' "$file"
+  >   query_ocaml_merlin_configurations_pp "$PWD/mixed/$file" --root mixed \
+  >     | grep -Eo '\(MODE (ocaml|melange)\)' | tr '\n' ' ' | sed 's/ $//'
+  >   echo
+  > done
+  platform.ml: (MODE ocaml)
+  platform.melange.ml: (MODE melange)
+  iface.mli: (MODE ocaml)
+  iface.melange.mli: (MODE melange)
+  melange_only.ml: (MODE melange)
+
+The counterpart field is absent when that mode has no opposite-kind source.
+
+  $ query_ocaml_merlin_configurations_pp "$PWD/mixed/melange_only.ml" \
+  >   --root mixed | grep -E 'MODE|KIND|COUNTERPART'
+     (MODE melange)
+     (KIND implementation)
+
+Interface queries report the authored implementation counterpart.
+
+  $ query_ocaml_merlin_configurations_pp "$PWD/mixed/iface.melange.mli" \
+  >   --root mixed | grep -E 'KIND|COUNTERPART'
+     (KIND interface)
+     (COUNTERPART $TESTCASE_ROOT/mixed/iface.ml)
+
+A supported lookup failure is tagged and cannot be confused with an old server.
+
+  $ query_ocaml_merlin_configurations_pp "$PWD/mixed/missing.ml" --root mixed
+  (CONFIGURATIONS-ERROR "No config found for file missing.ml. Try calling 'dune build'.")
+
+An unrelated incompatible persistent file does not mask a later valid stanza.
+
+  $ cp mixed/_build/default/.merlin-conf/lib-aaa lib-aaa.good
+  $ chmod u+w mixed/_build/default/.merlin-conf/lib-aaa
+  $ printf 'not-a-merlin-config' > mixed/_build/default/.merlin-conf/lib-aaa
+  $ query_ocaml_merlin_configurations_pp "$PWD/mixed/foo.ml" --root mixed \
+  >   | grep -Eo '\(MODE (ocaml|melange)\)'
+  (MODE ocaml)
+  (MODE melange)
+  $ query_ocaml_merlin_pp "$PWD/mixed/foo.ml" --root mixed \
+  >   | grep -E '\(B .*\.mixed\.objs/byte\)'
+   (B $TESTCASE_ROOT/mixed/_build/default/.mixed.objs/byte)
+  $ cp lib-aaa.good mixed/_build/default/.merlin-conf/lib-aaa
+
 Dump-dot-merlin continues to use only the default OCaml configuration.
 
   $ dune ocaml dump-dot-merlin --root mixed "$PWD/mixed" \
