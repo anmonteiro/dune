@@ -26,3 +26,15 @@ val with_empty_intf
   -> Module.t Memo.t
 
 val melange_js_basename : Module.t -> Filename.t
+
+module For_benchmarks : sig
+  type input
+
+  val create_input
+    :  aliases:(Module_name.Path.t * Module_name.t * Module_name.Unique.t) list
+    -> shadowed:Module_name.t list
+    -> input
+
+  (** Includes the alias preparation normally performed by [of_modules]. *)
+  val prepare_and_render : input -> string
+end

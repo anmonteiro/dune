@@ -88,6 +88,11 @@ module For_tests = struct
   module Cc_flags = Cc_flags
 end
 
+module For_benchmarks = struct
+  module Alias_module = Module_compilation.For_benchmarks
+  module Parameterised_instances = Parameterised_instances.For_benchmarks
+end
+
 module Rocq = struct
   module Rocq_mode = Rocq_mode
   module Rocq_rules = Rocq_rules

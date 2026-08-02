@@ -55,3 +55,17 @@
  (allow_overlapping_dependencies)
  (modules path_bench_main)
  (libraries path_bench core_bench.inline_benchmarks))
+
+(library
+ (name module_compilation_bench)
+ (modules module_compilation_bench)
+ (library_flags -linkall)
+ (preprocess
+  (pps ppx_bench))
+ (libraries base dune_lang dune_rules stdune core_bench.inline_benchmarks))
+
+(executable
+ (name module_compilation_bench_main)
+ (allow_overlapping_dependencies)
+ (modules module_compilation_bench_main)
+ (libraries module_compilation_bench core_bench.inline_benchmarks))
