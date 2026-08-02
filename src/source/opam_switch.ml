@@ -5,16 +5,20 @@ type t =
   ; switch : string
   }
 
-let to_dyn { root; switch } =
-  Dyn.(record [ "root", option string root; "switch", string switch ])
+let repr =
+  Repr.record
+    "opam-switch"
+    [ Repr.field "root" (Repr.option Repr.string) ~get:(fun t -> t.root)
+    ; Repr.field "switch" Repr.string ~get:(fun t -> t.switch)
+    ]
 ;;
 
-let equal { root; switch } t =
-  Option.equal String.equal root t.root && String.equal switch t.switch
-;;
+let to_dyn = Repr.to_dyn repr
 
-let hash { root; switch } =
-  Tuple.T2.hash (Option.hash String.hash) String.hash (root, switch)
-;;
+include Repr.Poly (struct
+    type nonrec t = t
+
+    let repr = repr
+  end)
 
 let opam_switch_prefix_var_name = "OPAM_SWITCH_PREFIX"

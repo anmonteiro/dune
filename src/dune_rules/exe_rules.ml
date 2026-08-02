@@ -100,16 +100,27 @@ let o_files
   if not (Executables.has_foreign exes)
   then Memo.return @@ Mode.Map.empty
   else (
-    let what =
-      if List.is_empty exes.buildable.foreign_stubs then "archives" else "stubs"
+    let has_foreign_stubs = not (List.is_empty exes.buildable.foreign_stubs) in
+    let what = if has_foreign_stubs then "stubs" else "archives" in
+    let native_only_hint =
+      Pp.text "If you only need to build a native executable use \"(modes exe)\"."
+    in
+    let hints =
+      if has_foreign_stubs
+      then
+        [ native_only_hint
+        ; Pp.text
+            "To build a bytecode executable with foreign stubs, put the stubs in a \
+             library and depend on that library."
+        ]
+      else [ native_only_hint ]
     in
     if List.exists linkages ~f:Exe.Linkage.is_byte
     then
       User_error.raise
         ~loc:exes.buildable.loc
         [ Pp.textf "Pure bytecode executables cannot contain foreign %s." what ]
-        ~hints:
-          [ Pp.text "If you only need to build a native executable use \"(modes exe)\"." ];
+        ~hints;
     let* foreign_sources =
       let+ foreign_sources = Dir_contents.foreign_sources dir_contents in
       let first_exe = first_exe exes in
@@ -151,10 +162,10 @@ let executables_rules
      of the same name *)
   let* modules, obj_dir =
     let first_exe = first_exe exes in
-    Dir_contents.ocaml dir_contents
+    Dir_contents.ml dir_contents ~for_
     >>= Ml_sources.modules_and_obj_dir ~libs:(Scope.libs scope) ~for_:(Exe { first_exe })
   in
-  let* () = Check_rules.add_obj_dir sctx ~obj_dir Ocaml in
+  let* () = Check_rules.add_obj_dir sctx ~obj_dir for_ in
   let ctx = Super_context.context sctx in
   let* ocaml = Context.ocaml ctx in
   let project = Scope.project scope in
@@ -176,7 +187,7 @@ let executables_rules
       ~jsoo_enabled_modes
       ~jsoo_is_whole_program
   in
-  let* flags = Buildable_rules.ocaml_flags sctx ~dir exes.buildable.flags in
+  let* flags = Ocaml_flags_db.ocaml_flags sctx ~dir exes.buildable.flags in
   let* modules, pp =
     let+ modules, pp =
       Buildable_rules.modules_rules
@@ -186,12 +197,16 @@ let executables_rules
         ~dir
         scope
         modules
+        ~for_
     in
     Modules.With_vlib.modules modules, pp
   in
   let programs = programs ~modules ~exes in
   let* cctx =
     let requires_compile = Lib.Compile.direct_requires compile_info ~for_ in
+    let user_written_requires =
+      Some (lazy (Lib.Compile.user_written_requires_no_loc compile_info ~for_))
+    in
     let requires_link = Lib.Compile.requires_link compile_info ~for_ in
     let instances =
       Parameterised_instances.instances
@@ -206,7 +221,7 @@ let executables_rules
           x)
     in
     Compilation_context.create
-      Ocaml
+      for_
       ~loc:exes.buildable.loc
       ~super_context:sctx
       ~scope
@@ -215,6 +230,7 @@ let executables_rules
       ~flags
       ~requires_link
       ~requires_compile
+      ~user_written_requires
       ~preprocessing:pp
       ~js_of_ocaml
       ~opaque:Inherit_from_settings
@@ -242,7 +258,7 @@ let executables_rules
     let* dep_graphs =
       (* Building an archive for foreign stubs, we link the corresponding object
        files directly to improve perf. *)
-      let link_deps, sandbox =
+      let env, sandbox =
         Dep_conf_eval.unnamed
           Sandbox_config.no_special_requirements
           ~expander
@@ -252,7 +268,6 @@ let executables_rules
         Command.Args.S
           [ Dyn
               (let open Action_builder.O in
-               let* () = link_deps in
                let use_standard_cxx_flags =
                  match Dune_project.use_standard_c_and_cxx_flags project with
                  | Some true -> Buildable.has_foreign_cxx exes.buildable
@@ -304,6 +319,7 @@ let executables_rules
           ~promote:exes.promote
           ~embed_in_plugin_libraries
           ~sandbox
+          ~env
       | Some _ ->
         (* Ctypes stubgen builds utility .exe files that need to share modules
          with this compilation context. To support that, we extract the one-time
@@ -324,6 +340,7 @@ let executables_rules
             ~embed_in_plugin_libraries
             cctx
             ~sandbox
+            ~env
         in
         link
     in
@@ -340,7 +357,7 @@ let executables_rules
       ~libname:None
       ~obj_dir
       ~preprocess:
-        (Preprocess.Per_module.without_instrumentation exes.buildable.preprocess)
+        (Preprocess.Per_module.without_instrumentation exes.buildable.preprocess.config)
       ~dialects:(Dune_project.dialects (Scope.project scope))
       ~ident:(Merlin_ident.for_exes ~names:(Nonempty_list.map ~f:snd exes.names))
       ~for_
@@ -354,7 +371,7 @@ let compile_info ~scope (exes : Executables.t) =
   let+ pps =
     (* TODO resolution should be delayed *)
     Instrumentation.with_instrumentation
-      exes.buildable.preprocess
+      exes.buildable.preprocess.config
       ~instrumentation_backend:(Lib.DB.instrumentation_backend (Scope.libs scope))
     |> Resolve.Memo.read_memo
     >>| Preprocess.Per_module.pps

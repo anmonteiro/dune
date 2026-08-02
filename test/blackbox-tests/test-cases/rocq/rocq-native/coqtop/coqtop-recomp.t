@@ -14,10 +14,7 @@ https://github.com/ocaml/dune/pull/5457#issuecomment-1084161587).
   > (rocq.theory
   >  (name basic))
   > EOF
-  $ cat >dune-project <<EOF
-  > (lang dune 3.21)
-  > (using rocq 0.11)
-  > EOF
+  $ make_rocq_project 3.21 0.11
   $ dune rocq top --display short --toplevel echo dir/bar.v | ../scrub_coq_args.sh
           rocq dir/.basic.theory.d
           rocq dir/Nbasic_foo.{cmi,cmxs},dir/foo.{glob,vo}
@@ -53,8 +50,6 @@ https://github.com/ocaml/dune/pull/5457#issuecomment-1084161587).
   -R coq/theories Corelib
   -R $TESTCASE_ROOT/_build/default/dir basic
   $ (cd dir && dune rocq top --root .. --display short --toplevel echo dir/bar.v) | ../scrub_coq_args.sh
-  Entering directory '..'
-  Leaving directory '..'
   -topfile $TESTCASE_ROOT/_build/default/dir/bar.v
   -w -deprecated-native-compiler-option -native-output-dir .
   -native-compiler on

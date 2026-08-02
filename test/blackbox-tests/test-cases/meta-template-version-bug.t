@@ -7,10 +7,7 @@ custom version:
   $ git commit -qm _
   $ git tag -a 1.0 -m 1.0
 
-  $ cat >dune-project <<EOF
-  > (lang dune 2.7)
-  > (package (name foobarlib))
-  > EOF
+  $ make_dune_project_with_package 2.7 foobarlib
 
   $ cat >foobarlib.ml <<EOF
   > let foo () =
@@ -45,6 +42,4 @@ custom version:
   > EOF
 
   $ OCAMLPATH=$PWD/_install/lib dune exec --root external ./main.exe
-  Entering directory 'external'
-  Leaving directory 'external'
   foobarlib

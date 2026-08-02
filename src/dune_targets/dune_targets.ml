@@ -1,54 +1,74 @@
 open Import
 
+let immutable_path_set_of_set set =
+  if Path.Build.Set.is_empty set
+  then Path.Build.Array.Set.empty
+  else Path.Build.Set.to_list set |> Path.Build.Array.Set.of_sorted_list
+;;
+
 (* CR-someday amokhov: Most of these records will have [dir = empty]. We might
    want to somehow optimise for the common case, e.g. by switching to a sum type
    with the [Files_only] constructor. It's best not to expose the current
    representation so we can easily change it in future. *)
 type t =
-  { files : Path.Build.Set.t
-  ; dirs : Path.Build.Set.t
+  { files : Path.Build.Array.Set.t
+  ; dirs : Path.Build.Array.Set.t
   }
 
 module File = struct
-  let create file = { files = Path.Build.Set.singleton file; dirs = Path.Build.Set.empty }
+  let create file =
+    { files = Path.Build.Array.Set.singleton file; dirs = Path.Build.Array.Set.empty }
+  ;;
 end
 
 module Files = struct
-  let create files = { files; dirs = Path.Build.Set.empty }
+  let create files =
+    { files = immutable_path_set_of_set files; dirs = Path.Build.Array.Set.empty }
+  ;;
 end
 
-let create ~files ~dirs = { files; dirs }
-let empty = { files = Path.Build.Set.empty; dirs = Path.Build.Set.empty }
+let create ~files ~dirs =
+  { files = immutable_path_set_of_set files; dirs = immutable_path_set_of_set dirs }
+;;
+
+let empty = { files = Path.Build.Array.Set.empty; dirs = Path.Build.Array.Set.empty }
 
 let combine x y =
-  { files = Path.Build.Set.union x.files y.files
-  ; dirs = Path.Build.Set.union x.dirs y.dirs
+  { files = Path.Build.Array.Set.union x.files y.files
+  ; dirs = Path.Build.Array.Set.union x.dirs y.dirs
   }
 ;;
 
 let diff t { files; dirs } =
-  { files = Path.Build.Set.diff t.files files; dirs = Path.Build.Set.diff t.dirs dirs }
+  { files = Path.Build.Array.Set.diff t.files files
+  ; dirs = Path.Build.Array.Set.diff t.dirs dirs
+  }
 ;;
 
 let is_empty { files; dirs } =
-  Path.Build.Set.is_empty files && Path.Build.Set.is_empty dirs
+  Path.Build.Array.Set.is_empty files && Path.Build.Array.Set.is_empty dirs
 ;;
 
 let head { files; dirs } =
-  match Path.Build.Set.choose files with
+  match Path.Build.Array.Set.choose files with
   | Some _ as target -> target
-  | None -> Path.Build.Set.choose dirs
+  | None -> Path.Build.Array.Set.choose dirs
 ;;
 
 let to_dyn { files; dirs } =
-  Dyn.Record [ "files", Path.Build.Set.to_dyn files; "dirs", Path.Build.Set.to_dyn dirs ]
+  Dyn.Record
+    [ "files", Path.Build.Array.Set.to_dyn files
+    ; "dirs", Path.Build.Array.Set.to_dyn dirs
+    ]
 ;;
 
-let all { files; dirs } = Path.Build.Set.to_list files @ Path.Build.Set.to_list dirs
+let all { files; dirs } =
+  Path.Build.Array.Set.to_list files @ Path.Build.Array.Set.to_list dirs
+;;
 
 let iter { files; dirs } ~file ~dir =
-  Path.Build.Set.iter files ~f:file;
-  Path.Build.Set.iter dirs ~f:dir
+  Path.Build.Array.Set.iter files ~f:file;
+  Path.Build.Array.Set.iter dirs ~f:dir
 ;;
 
 module Validated = struct
@@ -64,15 +84,17 @@ module Validated = struct
     }
 
   let iter { root; files; dirs } ~file ~dir =
-    Filename.Set.iter files ~f:(fun fn -> file (Path.Build.relative root fn));
-    Filename.Set.iter dirs ~f:(fun dn -> dir (Path.Build.relative root dn))
+    Filename.Set.iter files ~f:(fun fn -> file (Path.Build.relative_fname root fn));
+    Filename.Set.iter dirs ~f:(fun dn -> dir (Path.Build.relative_fname root dn))
   ;;
 
   let fold { root; files; dirs } ~init ~file ~dir =
     let acc =
-      Filename.Set.fold files ~init ~f:(fun fn -> file (Path.Build.relative root fn))
+      Filename.Set.fold files ~init ~f:(fun fn ->
+        file (Path.Build.relative_fname root fn))
     in
-    Filename.Set.fold dirs ~init:acc ~f:(fun dn -> dir (Path.Build.relative root dn))
+    Filename.Set.fold dirs ~init:acc ~f:(fun dn ->
+      dir (Path.Build.relative_fname root dn))
   ;;
 
   let head { root; files; dirs } =
@@ -84,14 +106,16 @@ module Validated = struct
          | Some name -> name
          | None -> assert false)
     in
-    Path.Build.relative root name
+    Path.Build.relative_fname root name
   ;;
 
   let unvalidate t : unvalidated =
     { files =
         Path.Build.Set.of_listing ~dir:t.root ~filenames:(Filename.Set.to_list t.files)
+        |> immutable_path_set_of_set
     ; dirs =
         Path.Build.Set.of_listing ~dir:t.root ~filenames:(Filename.Set.to_list t.dirs)
+        |> immutable_path_set_of_set
     }
   ;;
 
@@ -120,11 +144,11 @@ let validate { files; dirs } =
     if Filename.Set.mem t.files name
     then
       Validation_result.File_and_directory_target_with_the_same_name
-        (Path.Build.relative t.root name)
+        (Path.Build.relative_fname t.root name)
     else Valid { t with dirs = Filename.Set.add t.dirs name }
   in
   let build (init : Validation_result.t) ~paths ~f =
-    Path.Build.Set.fold paths ~init ~f:(fun path res ->
+    Path.Build.Array.Set.fold paths ~init ~f:(fun path res ->
       let parent = Path.Build.parent_exn path in
       let name = Path.Build.basename path in
       match res with
@@ -162,11 +186,12 @@ module Produced = struct
     }
 
   let head { root; contents = { files; subdirs } } =
-    Path.Build.relative
-      root
-      (match Filename.Map.choose files with
-       | Some (x, _) -> x
-       | None -> Filename.Map.choose subdirs |> Option.value_exn |> fst)
+    let basename =
+      match Filename.Map.choose files with
+      | Some (x, _) -> x
+      | None -> Filename.Map.choose subdirs |> Option.value_exn |> fst
+    in
+    Path.Build.relative_fname root basename
   ;;
 
   let equal
@@ -253,7 +278,7 @@ module Produced = struct
         let parent = Path.Local.parent_exn file in
         if Path.Local.is_root parent
         then (
-          let file = Path.Local.to_string file in
+          let file = Path.Local.basename file in
           match mb_payload with
           | Some payload ->
             { contents with files = Filename.Map.add_exn contents.files file payload }
@@ -273,15 +298,15 @@ module Produced = struct
       match
         file_f
           (let dir_build = Path.Build.relative root dir in
-           Path.Local.relative (Path.Build.local dir_build) fname)
+           Path.Local.relative_fname (Path.Build.local dir_build) fname)
       with
       | None -> acc
       | Some payload ->
-        let key = Path.Local.of_string (Filename.concat dir fname) in
+        let key = Path.Local.of_string (Filename.append dir fname) in
         Path.Local.Map.set acc key (Some payload)
     in
     let on_dir ~dir fname acc =
-      let key = Path.Local.of_string (Filename.concat dir fname) in
+      let key = Path.Local.of_string (Filename.append dir fname) in
       Path.Local.Map.set acc key None
     in
     let on_error ~dir err _acc =
@@ -302,7 +327,7 @@ module Produced = struct
           ~on_other:
             (`Call
                 (fun ~dir fname kind _ ->
-                  let path = Path.Build.relative root (Filename.concat dir fname) in
+                  let path = Path.Build.relative root (Filename.append dir fname) in
                   raise_notrace (Traverse_error (Unsupported_file (path, kind)))))
           ~on_symlink:(`Call (fun ~dir fname acc -> on_file ~dir fname acc, None))
           ~on_error:(`Call on_error)
@@ -317,7 +342,7 @@ module Produced = struct
     let open Result.O in
     (* We assume here that [dir_name] is either a child of [root], or that we're ok with having [root/a/b] but not [root/a]. *)
     let aggregate_dir { root; contents } dir_name =
-      let dir = Path.Build.relative root dir_name in
+      let dir = Path.Build.relative_fname root dir_name in
       let* new_contents = contents_of_dir ~file_f:(fun _ -> Some ()) dir in
       if is_empty_dir_conts new_contents
       then Error (Empty_dir dir)
@@ -355,7 +380,7 @@ module Produced = struct
            let+ contents = Filename.Map.find subdirs final in
            Right contents)
       | parent :: rest ->
-        let path = Path.Local.relative path parent in
+        let path = Path.Local.relative_fname path parent in
         let* subdir = Filename.Map.find subdirs parent in
         aux path subdir rest
     in
@@ -394,11 +419,11 @@ module Produced = struct
       Seq.append
         (Filename.Map.to_seq files
          |> Seq.map ~f:(fun (file_name, payload) ->
-           Path.Local.relative path file_name, payload))
+           Path.Local.relative_fname path file_name, payload))
         (Seq.concat
            (Filename.Map.to_seq subdirs
             |> Seq.map ~f:(fun (dir_name, subdir_contents) ->
-              aux (Path.Local.relative path dir_name) subdir_contents)))
+              aux (Path.Local.relative_fname path dir_name) subdir_contents)))
     in
     aux Path.Local.root contents
   ;;
@@ -408,7 +433,7 @@ module Produced = struct
       Seq.concat
         (Filename.Map.to_seq subdirs
          |> Seq.map ~f:(fun (dir_name, dir_contents) ->
-           let dir = Path.Local.relative path dir_name in
+           let dir = Path.Local.relative_fname path dir_name in
            Seq.cons dir (aux dir dir_contents)))
     in
     aux Path.Local.root contents
@@ -427,11 +452,11 @@ module Produced = struct
     let rec aux path { files; subdirs } acc =
       let acc' =
         Filename.Map.foldi files ~init:acc ~f:(fun file_name payload acc ->
-          let file = Path.Local.relative path file_name in
+          let file = Path.Local.relative_fname path file_name in
           f file (Some payload) acc)
       in
       Filename.Map.foldi subdirs ~init:acc' ~f:(fun dir_name dir_contents acc ->
-        let dir = Path.Local.relative path dir_name in
+        let dir = Path.Local.relative_fname path dir_name in
         let acc' = f dir None acc in
         aux dir dir_contents acc')
     in
@@ -441,10 +466,10 @@ module Produced = struct
   let iteri_dir_contents contents ~f ~d =
     let rec aux path { files; subdirs } =
       Filename.Map.iteri files ~f:(fun file_name payload ->
-        let file = Path.Local.relative path file_name in
+        let file = Path.Local.relative_fname path file_name in
         f file payload);
       Filename.Map.iteri subdirs ~f:(fun dir_name dir_contents ->
-        let dir = Path.Local.relative path dir_name in
+        let dir = Path.Local.relative_fname path dir_name in
         d dir;
         aux dir dir_contents)
     in
@@ -457,11 +482,11 @@ module Produced = struct
     let rec aux path { files; subdirs } =
       let file_list =
         Filename.Map.to_list_map files ~f:(fun file_name payload ->
-          f (Path.Local.relative path file_name) (Some payload))
+          f (Path.Local.relative_fname path file_name) (Some payload))
       in
       let dir_list =
         Filename.Map.to_list_map subdirs ~f:(fun dir_name dir_contents ->
-          let dir = Path.Local.relative path dir_name in
+          let dir = Path.Local.relative_fname path dir_name in
           let d = f dir None in
           d :: aux dir dir_contents)
         |> List.concat
@@ -477,7 +502,7 @@ module Produced = struct
   let iter_dirs { contents; root = _ } ~f =
     let rec aux path { subdirs; files = _ } =
       Filename.Map.iteri subdirs ~f:(fun dir_name dir_contents ->
-        let dir = Path.Local.relative path dir_name in
+        let dir = Path.Local.relative_fname path dir_name in
         f dir;
         aux dir dir_contents)
     in
@@ -485,7 +510,7 @@ module Produced = struct
   ;;
 
   module Path_traversal = Fiber.Make_parallel_map (Path.Local.Map)
-  module Filename_traversal = Fiber.Make_parallel_map (String.Map)
+  module Filename_traversal = Fiber.Make_parallel_map (Filename.Map)
 
   let parallel_map { root; contents } ~f =
     let open Fiber.O in
@@ -494,11 +519,11 @@ module Produced = struct
         Fiber.fork_and_join
           (fun () ->
              Filename_traversal.parallel_map files ~f:(fun file_name ->
-               let file = Path.Local.relative path file_name in
+               let file = Path.Local.relative_fname path file_name in
                f file))
           (fun () ->
              Filename_traversal.parallel_map subdirs ~f:(fun dir_name ->
-               let dir = Path.Local.relative path dir_name in
+               let dir = Path.Local.relative_fname path dir_name in
                aux dir))
       in
       { files; subdirs }
@@ -508,11 +533,14 @@ module Produced = struct
   ;;
 
   let digest { contents; root = _ } =
-    let rec all_digests _ { files; subdirs } =
+    let rec all_digests { files; subdirs } =
       let ffiles = Filename.Map.values files in
-      List.concat (ffiles :: Filename.Map.to_list_map subdirs ~f:all_digests)
+      List.concat
+        (ffiles :: Filename.Map.to_list_map subdirs ~f:(fun _ dir -> all_digests dir))
     in
-    Digest.generic (all_digests "ignored" contents)
+    let d = Digest.Manual.create () in
+    Digest.Manual.list d (all_digests contents) ~f:Digest.Manual.digest;
+    Digest.Manual.get d
   ;;
 
   (* The odd type of [d] and [f] is due to the fact that [map_with_errors]
@@ -538,7 +566,7 @@ module Produced = struct
         ~init:(Fiber.return Filename.Map.empty)
         ~f:(fun file_name _payload acc ->
           let* acc = acc in
-          let path = Path.Build.relative path file_name in
+          let path = Path.Build.relative_fname path file_name in
           let* result = f path in
           match result with
           | None -> Fiber.return acc
@@ -550,7 +578,7 @@ module Produced = struct
         ~init:(Fiber.return Filename.Map.empty)
         ~f:(fun dir_name dir_contents acc ->
           let* acc = acc in
-          let dir = Path.Build.relative path dir_name in
+          let dir = Path.Build.relative_fname path dir_name in
           let* mapped = aux dir dir_contents in
           Fiber.return (Filename.Map.set acc dir_name mapped))
     and aux path { files; subdirs } =
@@ -591,11 +619,11 @@ module Produced = struct
     let rec aux path { files; subdirs } =
       let files =
         Filename.Map.filter_mapi files ~f:(fun file _ ->
-          f (Path.Build.relative path file))
+          f (Path.Build.relative_fname path file))
       in
       let subdirs =
         Filename.Map.mapi subdirs ~f:(fun dir subdirs_contents ->
-          let dir = Path.Build.relative path dir in
+          let dir = Path.Build.relative_fname path dir in
           aux dir subdirs_contents)
       in
       (match d with

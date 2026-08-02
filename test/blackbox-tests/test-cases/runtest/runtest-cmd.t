@@ -1,8 +1,6 @@
 Here we test the features of the `dune runtest` command. 
 
-  $ cat > dune-project <<EOF
-  > (lang dune 3.16)
-  > EOF
+  $ make_dune_project 3.16
 
   $ cat > mytest.t <<EOF
   >   $ echo "Hello, world!"
@@ -289,4 +287,3 @@ that context as expected.
   Error: Multiple contexts are defined but no default context was found. Please
   use the --context flag or specify a build directory path.
   [1]
-

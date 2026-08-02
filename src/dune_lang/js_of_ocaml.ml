@@ -9,20 +9,28 @@ module Mode = struct
     | JS
     | Wasm
 
-  let equal (a : t) b = Poly.equal a b
+  let repr =
+    Repr.variant
+      "js-of-ocaml-mode"
+      [ Repr.case0 "js" ~test:(function
+          | JS -> true
+          | Wasm -> false)
+      ; Repr.case0 "wasm" ~test:(function
+          | Wasm -> true
+          | JS -> false)
+      ]
+  ;;
+
+  include Repr.Poly (struct
+      type nonrec t = t
+
+      let repr = repr
+    end)
 
   let select ~mode ~js ~wasm =
     match mode with
     | JS -> js
     | Wasm -> wasm
-  ;;
-
-  let compare m m' =
-    match m, m' with
-    | JS, JS -> Eq
-    | JS, _ -> Lt
-    | _, JS -> Gt
-    | Wasm, Wasm -> Eq
   ;;
 
   let decode =
@@ -31,7 +39,7 @@ module Mode = struct
   ;;
 
   let to_string mode = select ~mode ~js:"js" ~wasm:"wasm"
-  let to_dyn t = Dyn.variant (to_string t) []
+  let to_dyn = Repr.to_dyn repr
   let all = [ JS; Wasm ]
 
   module Pair = struct
@@ -63,6 +71,21 @@ module Sourcemap = struct
     | Inline
     | File
 
+  let repr =
+    Repr.variant
+      "js-of-ocaml-sourcemap"
+      [ Repr.case0 "No" ~test:(function
+          | No -> true
+          | Inline | File -> false)
+      ; Repr.case0 "Inline" ~test:(function
+          | Inline -> true
+          | No | File -> false)
+      ; Repr.case0 "File" ~test:(function
+          | File -> true
+          | No | Inline -> false)
+      ]
+  ;;
+
   let decode ~mode =
     let open Decoder in
     match (mode : Mode.t) with
@@ -70,13 +93,11 @@ module Sourcemap = struct
     | Wasm -> enum [ "no", No; "inline", Inline ]
   ;;
 
-  let equal x y =
-    match x, y with
-    | No, No -> true
-    | Inline, Inline -> true
-    | File, File -> true
-    | No, _ | Inline, _ | File, _ -> false
-  ;;
+  include Repr.Poly (struct
+      type nonrec t = t
+
+      let repr = repr
+    end)
 end
 
 module Flags = struct
@@ -158,17 +179,27 @@ module Compilation_mode = struct
     | Whole_program
     | Separate_compilation
 
+  let repr =
+    Repr.variant
+      "js-of-ocaml-compilation-mode"
+      [ Repr.case0 "Whole_program" ~test:(function
+          | Whole_program -> true
+          | Separate_compilation -> false)
+      ; Repr.case0 "Separate_compilation" ~test:(function
+          | Separate_compilation -> true
+          | Whole_program -> false)
+      ]
+  ;;
+
   let decode =
     Decoder.enum [ "whole_program", Whole_program; "separate", Separate_compilation ]
   ;;
 
-  let equal x y =
-    match x, y with
-    | Separate_compilation, Separate_compilation -> true
-    | Whole_program, Whole_program -> true
-    | Separate_compilation, _ -> false
-    | Whole_program, _ -> false
-  ;;
+  include Repr.Poly (struct
+      type nonrec t = t
+
+      let repr = repr
+    end)
 end
 
 module In_buildable = struct

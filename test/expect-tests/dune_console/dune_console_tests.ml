@@ -65,9 +65,28 @@ let test_status_line_overwrite (module Console : New_console) =
   Status_line.clear ()
 ;;
 
+let test_status_line_constant_overlay (module Console : New_console) =
+  let open Console in
+  let overlay =
+    Status_line.add_overlay (Status_line.Constant (Pp.text "Here is an overlay"))
+  in
+  Status_line.remove_overlay overlay
+;;
+
+let test_status_line_section (module Console : New_console) =
+  let open Console in
+  Status_line.set (Status_line.Live (fun () -> Pp.text "Done: 50%"));
+  let section =
+    Status_line.add_section
+      (Status_line.Live (fun () -> Pp.text "Connected to RPC server"))
+  in
+  Status_line.remove_section section;
+  Status_line.clear ()
+;;
+
 (* Dumb backend *)
 
-let%expect_test "basic usage" =
+let%expect_test "dumb backend: basic usage" =
   let module Console = New () in
   Console.Backend.set Console.Backend.dumb;
   test_basic_usage (module Console);
@@ -80,7 +99,7 @@ time that this is over.
   |}]
 ;;
 
-let%expect_test "Status line clearing." =
+let%expect_test "dumb backend: status line clearing" =
   let module Console = New () in
   Console.Backend.set Console.Backend.dumb;
   test_status_line_clearing (module Console);
@@ -91,7 +110,7 @@ Here is a status line
   |}]
 ;;
 
-let%expect_test "Status line clearing with wrapping." =
+let%expect_test "dumb backend: status line clearing with wrapping" =
   let module Console = New () in
   Console.Backend.set Console.Backend.dumb;
   test_status_line_clearing_with_wrapping (module Console);
@@ -103,7 +122,7 @@ and therefore will not be cleared properly.
   |}]
 ;;
 
-let%expect_test "Multi-line status line clearing." =
+let%expect_test "dumb backend: multi-line status line clearing" =
   let module Console = New () in
   Console.Backend.set Console.Backend.dumb;
   test_status_line_clearing_multiline (module Console);
@@ -117,7 +136,7 @@ line
   |}]
 ;;
 
-let%expect_test "Status line overwriting." =
+let%expect_test "dumb backend: status line overwriting" =
   let module Console = New () in
   Console.Backend.set Console.Backend.dumb;
   test_status_line_overwrite (module Console);
@@ -129,9 +148,20 @@ Here is another status line
   |}]
 ;;
 
+let%expect_test "dumb backend: constant status line overlay" =
+  let module Console = New () in
+  Console.Backend.set Console.Backend.dumb;
+  test_status_line_constant_overlay (module Console);
+  escape [%expect.output];
+  [%expect
+    {|
+Here is an overlay
+  |}]
+;;
+
 (* Progress backend *)
 
-let%expect_test "basic usage" =
+let%expect_test "progress backend: basic usage" =
   let module Console = New () in
   Console.Backend.set Console.Backend.progress;
   test_basic_usage (module Console);
@@ -144,7 +174,7 @@ time that this is over.
   |}]
 ;;
 
-let%expect_test "Status line clearing." =
+let%expect_test "progress backend: status line clearing" =
   let module Console = New () in
   Console.Backend.set Console.Backend.progress;
   test_status_line_clearing (module Console);
@@ -157,7 +187,7 @@ Here is a status line\r                     \r
 
 (* CR-someday alizter: this should insert the appropriate number of "\r"s in order to
    fully clear the previous lines when wrapped. *)
-let%expect_test "Status line clearing with wrapping." =
+let%expect_test "progress backend: status line clearing with wrapping" =
   let module Console = New () in
   Console.Backend.set Console.Backend.progress;
   test_status_line_clearing_with_wrapping (module Console);
@@ -169,7 +199,7 @@ and therefore will not be cleared properly.\r                                   
  |}]
 ;;
 
-let%expect_test "Multi-line status line clearing." =
+let%expect_test "progress backend: multi-line status line clearing" =
   let module Console = New () in
   Console.Backend.set Console.Backend.progress;
   test_status_line_clearing_multiline (module Console);
@@ -183,7 +213,7 @@ line\r                          \r
   |}]
 ;;
 
-let%expect_test "Status line overwriting." =
+let%expect_test "progress backend: status line overwriting" =
   let module Console = New () in
   Console.Backend.set Console.Backend.progress;
   test_status_line_overwrite (module Console);
@@ -192,4 +222,13 @@ let%expect_test "Status line overwriting." =
     {|
 Here is a status line\r                     \rHere is another status line\r                           \r
   |}]
+;;
+
+let%expect_test "Status line sections." =
+  let module Console = New () in
+  Console.Backend.set Console.Backend.progress;
+  test_status_line_section (module Console);
+  escape [%expect.output];
+  [%expect
+    {| Done: 50%\r         \rDone: 50% | Connected to RPC server\r                                   \rDone: 50%\r         \r |}]
 ;;

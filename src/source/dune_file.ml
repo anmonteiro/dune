@@ -27,8 +27,8 @@ open Memo.O
    are somewhat mixed together.
 *)
 
-let fname = "dune"
-let alternative_fname = "dune-file"
+let fname = Filename.dune
+let alternative_fname = Filename.dune_file
 
 type kind =
   | Plain
@@ -66,8 +66,11 @@ module Dir_map = struct
         match t with
         | None -> files
         | Some (_, glob) ->
-          Filename.Set.filter files ~f:(fun filename ->
-            Predicate_lang.Glob.test glob ~standard:Predicate_lang.true_ filename)
+          Filename.Array.Set.filter files ~f:(fun filename ->
+            Predicate_lang.Glob.test
+              glob
+              ~standard:Predicate_lang.true_
+              (Filename.to_string filename))
       ;;
     end
 
@@ -112,7 +115,7 @@ module Dir_map = struct
   let empty = { data = Per_dir.empty; nodes = Filename.Map.empty }
   let root t = t.data
   let descend t (p : Filename.t) = Filename.Map.find t.nodes p
-  let sub_dirs t = Filename.Map.keys t.nodes
+  let sub_dirs t = Filename.Map.keys t.nodes |> Filename.Array.Set.of_sorted_list
 
   let rec make_at_path path data =
     match path with
@@ -288,7 +291,7 @@ module Ast = struct
     fields
     @@
     let+ subdirs = multi_field "subdir" (subdir ~inside_include)
-    and+ dirs = field_o "dirs" dirs
+    and+ dirs = multi_field "dirs" dirs
     and+ files = field_o "files" files
     and+ ignored_sub_dirs =
       multi_field "ignored_subdirs" (ignored_sub_dirs ~inside_subdir)
@@ -298,7 +301,7 @@ module Ast = struct
     and+ rest = leftover_fields in
     let ast =
       List.concat
-        [ Option.to_list dirs
+        [ dirs
         ; Option.to_list files
         ; Option.to_list vendored_dirs
         ; subdirs
@@ -410,7 +413,7 @@ module Group = struct
     { Source_dir_status.Map.normal = dirs; data_only; vendored = vendored_dirs }
   ;;
 
-  let combine t (ast : Ast.t) =
+  let combine ~dune_version t (ast : Ast.t) =
     match ast with
     | Ignored_sub_dirs (loc, glob) ->
       { t with ignored_sub_dirs = (loc, glob) :: t.ignored_sub_dirs }
@@ -420,15 +423,25 @@ module Group = struct
       }
     | Vendored_dirs (loc, glob) ->
       { t with vendored_dirs = Some (no_dupes "vendored_dirs" loc t.vendored_dirs glob) }
-    | Dirs (loc, glob) -> { t with dirs = Some (no_dupes "dirs" loc t.dirs glob) }
+    | Dirs (loc, glob) ->
+      let dirs =
+        if dune_version >= (3, 23)
+        then (
+          match t.dirs with
+          | None -> loc, glob
+          | Some (existing_loc, existing_glob) ->
+            existing_loc, Predicate_lang.or_ [ existing_glob; glob ])
+        else no_dupes "dirs" loc t.dirs glob
+      in
+      { t with dirs = Some dirs }
     | Files (loc, glob) -> { t with files = Some (no_dupes "files" loc t.files glob) }
     | Subdir (path, stanzas) -> { t with subdirs = (path, stanzas) :: t.subdirs }
     | Leftovers stanzas -> { t with leftovers = List.rev_append stanzas t.leftovers }
     | Include _ -> assert false
   ;;
 
-  let of_ast (ast : Ast.t list) =
-    let t = List.fold_left ast ~init:empty ~f:combine in
+  let of_ast (ast : Ast.t list) ~dune_version =
+    let t = List.fold_left ast ~init:empty ~f:(combine ~dune_version) in
     let t = { t with leftovers = List.rev t.leftovers } in
     match t.data_only_dirs, t.dirs, t.ignored_sub_dirs with
     | _, Some (loc, _), _ :: _ ->
@@ -445,8 +458,8 @@ module Group = struct
   ;;
 end
 
-let rec to_dir_map ast =
-  let group = Group.of_ast ast in
+let rec to_dir_map ast ~dune_version =
+  let group = Group.of_ast ast ~dune_version in
   let node =
     let subdir_status = Group.subdir_status group in
     let files = group.files in
@@ -454,7 +467,7 @@ let rec to_dir_map ast =
   in
   let subdirs =
     List.map group.subdirs ~f:(fun (path, stanzas) ->
-      Dir_map.make_at_path (Path.Local.explode path) (to_dir_map stanzas))
+      Dir_map.make_at_path (Path.Local.explode path) (to_dir_map stanzas ~dune_version))
   in
   Dir_map.merge_all (node :: subdirs)
 ;;
@@ -478,7 +491,7 @@ let decode ~file project sexps =
        ~inside_subdir
        ~inside_include
        Filename.current_dir_name
-  >>| to_dir_map
+  >>| to_dir_map ~dune_version:(Dune_project.dune_version project)
 ;;
 
 type t =
@@ -550,7 +563,7 @@ let ensure_dune_project_file_exists =
     let project_dir = Dune_project.root project in
     let+ exists =
       let supposed_project_file =
-        Path.Source.relative project_dir Dune_project.filename
+        Path.Source.relative_fname project_dir Dune_project.filename
       in
       Path.Outside_build_dir.In_source_dir supposed_project_file |> Fs_memo.file_exists
     in
@@ -588,9 +601,9 @@ let load ~dir (status : Source_dir_status.t) project ~files ~parent =
     then None
     else if
       Dune_project.accept_alternative_dune_file_name project
-      && Filename.Set.mem files alternative_fname
+      && Filename.Array.Set.mem files alternative_fname
     then Some alternative_fname
-    else if Filename.Set.mem files fname
+    else if Filename.Array.Set.mem files fname
     then Some fname
     else None
   in
@@ -606,6 +619,6 @@ let load ~dir (status : Source_dir_status.t) project ~files ~parent =
       | None -> Memo.return ()
       | Some _ -> ensure_dune_project_file_exists project
     in
-    let file = Option.map file ~f:(Path.Source.relative dir) in
+    let file = Option.map file ~f:(fun file -> Path.Source.relative_fname dir file) in
     load file ~from_parent:parent ~project >>| Option.some
 ;;

@@ -530,11 +530,11 @@ end = struct
         List.filter libs ~f:(fun lib ->
           not (List.is_empty (jsoo_runtime_files ~mode [ lib ])))
       in
-      let lib_names =
-        List.sort libs_with_runtime ~compare:(fun a b ->
-          Lib_name.compare (Lib.name a) (Lib.name b))
-        |> List.map ~f:Lib.name
-      in
+      (* Keep the topological order from [requires_link]: jsoo runtime
+         contents are concatenated and later files override earlier ones,
+         so reordering (e.g. sorting by name) can change which conflicting
+         binding wins. *)
+      let lib_names = List.map libs_with_runtime ~f:Lib.name in
       let project_root = Lib.L.project_root libs_with_runtime in
       { mode; lib_names; project_root }
     ;;
@@ -542,8 +542,24 @@ end = struct
 
   let reverse_table : (Digest.t, Decoded.t) Table.t = Table.create (module Digest) 128
 
+  let mode_repr =
+    Repr.variant
+      "jsoo-mode"
+      [ Repr.case0 "js" ~test:(function
+          | Js_of_ocaml.Mode.JS -> true
+          | Wasm -> false)
+      ; Repr.case0 "wasm" ~test:(function
+          | Js_of_ocaml.Mode.Wasm -> true
+          | JS -> false)
+      ]
+  ;;
+
   let encode ({ Decoded.mode; lib_names; project_root } as x) =
-    let y = Digest.generic (mode, lib_names, project_root) in
+    let y =
+      Digest.repr
+        Repr.(triple mode_repr (list Lib_name.repr) (option Path.Source.repr))
+        (mode, lib_names, project_root)
+    in
     match Table.find reverse_table y with
     | None ->
       Table.set reverse_table y x;
@@ -657,7 +673,8 @@ let exe_rule
 ;;
 
 let with_js_ext ~mode s =
-  let name, ext = Filename.split_extension s in
+  let ext = Stdlib.Filename.extension s |> Filename.Extension.Or_empty.of_string_exn in
+  let name = Stdlib.Filename.remove_extension s in
   let ext = Filename.Extension.Or_empty.extension_exn ext in
   if Filename.Extension.equal ext Filename.Extension.cma
   then name ^ Filename.Extension.to_string (Js_of_ocaml.Ext.cma ~mode)
@@ -676,7 +693,7 @@ let jsoo_archives ~mode ctx config lib =
       in_obj_dir'
         ~obj_dir
         ~config:(Some config)
-        [ with_js_ext ~mode (Path.basename archive) ])
+        [ with_js_ext ~mode (Path.basename archive |> Filename.to_string) ])
   | false ->
     List.map archives.byte ~f:(fun archive ->
       Path.build
@@ -684,7 +701,7 @@ let jsoo_archives ~mode ctx config lib =
            ctx
            ~config
            [ Lib_name.to_string (Lib.name lib)
-           ; with_js_ext ~mode (Path.basename archive)
+           ; with_js_ext ~mode (Path.basename archive |> Filename.to_string)
            ]))
 ;;
 
@@ -830,7 +847,7 @@ let build_cm'
 
 let build_from_cm sctx ~dir ~in_context ~mode ~src ~obj_dir ~shapes ~config ~sourcemap =
   let target =
-    let name = with_js_ext ~mode (Path.basename src) in
+    let name = with_js_ext ~mode (Path.basename src |> Filename.to_string) in
     in_obj_dir ~obj_dir ~config [ name ]
   in
   build_cm'
@@ -975,13 +992,14 @@ let setup_separate_compilation_rules sctx components =
          Memo.parallel_iter archives ~f:(fun fn ->
            let build_context = Context.build_context ctx in
            let name = Path.basename fn in
+           let name_s = Filename.to_string name in
            let dir = in_build_dir build_context ~config [ lib_name ] in
            let src =
              let src_dir = Lib_info.src_dir info in
-             Path.relative src_dir name
+             Path.relative src_dir name_s
            in
            let target =
-             in_build_dir build_context ~config [ lib_name; with_js_ext ~mode name ]
+             in_build_dir build_context ~config [ lib_name; with_js_ext ~mode name_s ]
            in
            let shapes =
              let open Action_builder.O in
@@ -1102,7 +1120,14 @@ let build_standalone_runtime cc ~loc ~in_context ~jsoo_mode:mode =
     assert (Js_of_ocaml.Mode.select ~mode ~js:(wasm_files = []) ~wasm:true);
     let runtime_files = javascript_files @ wasm_files in
     let* eligible =
-      if List.is_empty runtime_files
+      if
+        List.is_empty runtime_files
+        (* The shared runtime is built with the default flags, so an
+           executable customizing [build_runtime_flags] needs its own
+           runtime. *)
+        && Ordered_set_lang.Unexpanded.equal
+             (Js_of_ocaml.Flags.build_runtime flags)
+             Ordered_set_lang.Unexpanded.standard
       then
         Resolve.Memo.peek (Compilation_context.requires_link cc)
         >>| function
@@ -1201,6 +1226,7 @@ let build_exe
             ~config:None
             [ Path.Build.basename
                 (Path.Build.set_extension src ~ext:(Js_of_ocaml.Ext.runtime ~mode))
+              |> Filename.to_string
             ]
         in
         Action_builder.return (Command.Args.Dep (Path.build path)), Some path

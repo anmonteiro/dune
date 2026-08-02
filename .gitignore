@@ -8,6 +8,7 @@ _perf
 _coverage
 __pycache__
 *.install
+compile_commands.json
 
 # vim swap files
 *.swp
@@ -32,9 +33,11 @@ src/dune_rules/setup.ml
 nix/profiles/
 result
 result-*
-start/dune
+start/
 
 .claude/
+.codex
+.scratch/
 
 perf.data
 perf.data.old

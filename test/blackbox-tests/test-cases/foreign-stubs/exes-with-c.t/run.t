@@ -1,3 +1,5 @@
+Builds executables with C stubs and rejects pure bytecode ones.
+
   $ dune exec ./aa.exe
   A
   $ dune exec ./bb.exe
@@ -21,5 +23,7 @@
   4 |  (foreign_stubs (language c) (names stubs)))
   Error: Pure bytecode executables cannot contain foreign stubs.
   Hint: If you only need to build a native executable use "(modes exe)".
+  Hint: To build a bytecode executable with foreign stubs, put the stubs in a
+  library and depend on that library.
   Leaving directory 'err'
   [1]

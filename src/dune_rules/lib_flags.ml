@@ -67,13 +67,16 @@ module Link_params = struct
         (match mode with
          | Byte_for_jsoo | Byte | Byte_with_stubs_statically_linked_in ->
            let cmo_ext = Filename.Extension.to_string (Cm_kind.ext Cmo) in
-           Path.extend_basename obj_name ~suffix:cmo_ext :: hidden_deps
+           Path.extend_basename obj_name ~suffix:(Filename.of_string_exn cmo_ext)
+           :: hidden_deps
          | Native ->
            let cmx_ext = Filename.Extension.to_string (Cm_kind.ext Cmx) in
-           Path.extend_basename obj_name ~suffix:cmx_ext
+           Path.extend_basename obj_name ~suffix:(Filename.of_string_exn cmx_ext)
            :: Path.extend_basename
                 obj_name
-                ~suffix:(Filename.Extension.to_string lib_config.ext_obj)
+                ~suffix:
+                  (Filename.of_string_exn
+                     (Filename.Extension.to_string lib_config.ext_obj))
            :: hidden_deps)
     in
     { deps; hidden_deps; include_dirs }
@@ -254,14 +257,17 @@ module L = struct
           let dir = Path.as_in_build_dir_exn @@ Lib_info.src_dir info in
           let headers =
             let+ expander = Super_context.expander sctx ~dir in
-            let deps, sandbox =
+            let env, sandbox =
               Dep_conf_eval.unnamed
                 Sandbox_config.no_special_requirements
                 ~expander
                 public_headers
             in
             assert (Sandbox_config.equal sandbox Sandbox_config.no_special_requirements);
-            deps
+            (* [public_headers] are installed source files, not commands;
+               there is no action here for the bin-layout PATH hint in
+               [action_env] to apply to. Discard env, keep the deps. *)
+            Action_builder.ignore env
           in
           headers :: local, external_)
     in

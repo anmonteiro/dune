@@ -2,14 +2,24 @@ open Import
 open Types
 open Exported_types
 
-module type S = sig
+module type Public = sig
   type t
   type 'a fiber
   type chan
 
+  module Handler : sig
+    type t
+
+    val create
+      :  ?log:(Message.t -> unit fiber)
+      -> ?abort:(Message.t -> unit fiber)
+      -> unit
+      -> t
+  end
+
   module Versioned : sig
-    type ('a, 'b) request = ('a, 'b) Versioned_intf.Staged.request
-    type 'a notification = 'a Versioned_intf.Staged.notification
+    type ('a, 'b) request
+    type 'a notification
 
     val prepare_request
       :  t
@@ -58,15 +68,19 @@ module type S = sig
     val submit : t -> unit fiber
   end
 
-  module Handler : sig
-    type t
+  val connect
+    :  ?handler:Handler.t
+    -> chan
+    -> Initialize.Request.t
+    -> f:(t -> 'a fiber)
+    -> 'a fiber
+end
 
-    val create
-      :  ?log:(Message.t -> unit fiber)
-      -> ?abort:(Message.t -> unit fiber)
-      -> unit
-      -> t
-  end
+module type S = sig
+  include
+    Public
+    with type ('a, 'b) Versioned.request = ('a, 'b) Versioned_intf.Staged.request
+     and type 'a Versioned.notification = 'a Versioned_intf.Staged.notification
 
   type proc =
     | Request : ('a, 'b) Decl.request -> proc
@@ -77,13 +91,6 @@ module type S = sig
   val connect_with_menu
     :  ?handler:Handler.t
     -> private_menu:proc list
-    -> chan
-    -> Initialize.Request.t
-    -> f:(t -> 'a fiber)
-    -> 'a fiber
-
-  val connect
-    :  ?handler:Handler.t
     -> chan
     -> Initialize.Request.t
     -> f:(t -> 'a fiber)
@@ -124,8 +131,7 @@ struct
 
   module Chan = struct
     type t =
-      { read : unit -> Sexp.t option Fiber.t
-      ; closed_read : bool
+      { closed_read : bool
       ; mutable closed_write : bool
       ; disconnected : unit Fiber.Ivar.t
       ; chan : Chan.t
@@ -133,15 +139,20 @@ struct
 
     let of_chan c =
       let disconnected = Fiber.Ivar.create () in
-      let read () =
-        let* result = Chan.read c in
+      { chan = c; closed_read = false; closed_write = false; disconnected }
+    ;;
+
+    let read t =
+      let* () = Fiber.return () in
+      if t.closed_read
+      then Fiber.return None
+      else
+        let* result = Chan.read t.chan in
         match result with
         | None ->
-          let+ () = Fiber.Ivar.fill disconnected () in
+          let+ () = Fiber.Ivar.fill t.disconnected () in
           None
-        | _ -> Fiber.return result
-      in
-      { chan = c; read; closed_read = false; closed_write = false; disconnected }
+        | Some _ -> Fiber.return result
     ;;
 
     let close t =
@@ -154,12 +165,19 @@ struct
     ;;
 
     let write (t : t) packet =
-      List.map ~f:(Conv.to_sexp Packet.sexp) packet |> Chan.write t.chan
-    ;;
-
-    let read t =
       let* () = Fiber.return () in
-      if t.closed_read then Fiber.return None else Chan.read t.chan
+      if t.closed_write
+      then Fiber.return `Closed
+      else
+        (* CR-soon rgrinberg: catch [Chan.write] errors here *)
+        let+ res =
+          Fiber.collect_errors (fun () ->
+            List.map ~f:(Conv.to_sexp Packet.sexp) packet |> Chan.write t.chan)
+        in
+        match res with
+        | Ok () -> `Ok
+        | Error [] -> assert false
+        | Error (exn :: _) -> `Exn exn
     ;;
   end
 
@@ -169,7 +187,8 @@ struct
         ( Id.t
           , [ `Cancelled
             | `Pending of
-                [ `Completed of Response.t | `Connection_dead | `Cancelled ] Fiber.Ivar.t
+                [ `Completed of Response.t | `Connection_dead | `Cancelled | `Exn of exn ]
+                  Fiber.Ivar.t
             ] )
           Table.t
     ; initialize : Initialize.Request.t
@@ -186,7 +205,7 @@ struct
 
   (* When the client is terminated via this function, the session is
      considered to be dead without a way to recover. *)
-  let terminate t =
+  let terminate t error =
     let* () = Fiber.return () in
     match t.running with
     | false -> Fiber.return ()
@@ -210,17 +229,21 @@ struct
            Fiber.parallel_iter ivars ~f:(fun status ->
              match status with
              | `Cancelled -> Fiber.return ()
-             | `Pending ivar -> Fiber.Ivar.fill ivar `Connection_dead))
+             | `Pending ivar -> Fiber.Ivar.fill ivar error))
   ;;
 
   let terminate_with_error t message info =
     Fiber.fork_and_join_unit
-      (fun () -> terminate t)
+      (fun () -> terminate t `Connection_dead)
       (fun () ->
          (* TODO stop using code error here. If [terminate_with_error] is
             called, it's because the other side is doing something unexpected,
             not because we have a bug *)
          Code_error.raise message info)
+  ;;
+
+  let connection_dead_error ?payload ~message () =
+    Response.Error.create ?payload ~message ~kind:Connection_dead ()
   ;;
 
   let create ~chan ~initialize ~handler ~on_preemptive_abort =
@@ -264,7 +287,13 @@ struct
     match prepare_request' conn (id, req) with
     | Error e -> Fiber.return (`Completed (Error e))
     | Ok ivar ->
-      let* () = Chan.write conn.chan [ Request (id, req) ] in
+      let* res = Chan.write conn.chan [ Request (id, req) ] in
+      let* () =
+        match res with
+        | `Ok -> Fiber.return ()
+        | `Exn exn -> terminate conn (`Exn exn)
+        | `Closed -> terminate conn `Connection_dead
+      in
       Fiber.Ivar.read ivar
   ;;
 
@@ -307,6 +336,7 @@ struct
     let req = encode_req req in
     let* res = request_untyped t (id, req) in
     match res with
+    | `Exn exn -> raise exn
     | `Connection_dead -> Fiber.return `Connection_dead
     | `Cancelled -> Fiber.return `Cancelled
     | `Completed res ->
@@ -318,7 +348,7 @@ struct
     match Table.find t.requests id with
     | None | Some `Cancelled -> Fiber.return ()
     | Some (`Pending ivar) ->
-      Table.remove t.requests id;
+      Table.set t.requests id `Cancelled;
       Fiber.Ivar.fill ivar `Cancelled
   ;;
 
@@ -336,11 +366,9 @@ struct
     | false ->
       let err =
         let payload = Conv.to_sexp (Conv.record Call.fields) call in
-        Response.Error.create
+        connection_dead_error
           ~payload
           ~message:"notification sent while connection is dead"
-            (* CR-soon rgrinberg: Should be Connection_dead *)
-          ~kind:Code_error
           ()
       in
       raise (Response.Error.E err)
@@ -348,7 +376,27 @@ struct
 
   let notification (type a) t (stg : a Versioned.notification) (n : a) =
     let* () = Fiber.return () in
-    make_notification t stg n (fun call -> Chan.write t.chan [ Notification call ])
+    make_notification t stg n (fun call ->
+      let payload = Conv.to_sexp (Conv.record Call.fields) call in
+      let* res = Chan.write t.chan [ Notification call ] in
+      match res with
+      | `Ok -> Fiber.return ()
+      | `Exn exn ->
+        let* () = terminate t (`Exn exn) in
+        raise
+          (Response.Error.E
+             (connection_dead_error
+                ~payload
+                ~message:"connection terminated while sending notification"
+                ()))
+      | `Closed ->
+        let* () = terminate t `Connection_dead in
+        raise
+          (Response.Error.E
+             (connection_dead_error
+                ~payload
+                ~message:"connection terminated while sending notification"
+                ())))
   ;;
 
   let disconnected t = Fiber.Ivar.read t.chan.disconnected
@@ -360,7 +408,6 @@ struct
       ; client : t
       ; id : Id.t
       ; mutable pending_request_id : Id.t option
-      ; counter : int
       ; mutable active : bool
       }
 
@@ -369,7 +416,7 @@ struct
       let open Result.O in
       let+ poll = V.Handler.prepare_request handler (Sub.poll sub)
       and+ cancel = V.Handler.prepare_notification handler (Sub.poll_cancel sub) in
-      { poll; cancel; client; id; pending_request_id = None; counter = 0; active = true }
+      { poll; cancel; client; id; pending_request_id = None; active = true }
     ;;
 
     let check_active t =
@@ -383,10 +430,7 @@ struct
        | Some _ ->
          Code_error.raise "Poll.next: previous Poll.next did not terminate yet" []
        | None -> ());
-      let id =
-        Sexp.record [ "poll", Id.to_sexp t.id; "i", Sexp.Atom (string_of_int t.counter) ]
-        |> Id.make
-      in
+      let id = gen_id t.client None in
       t.pending_request_id <- Some id;
       let+ res = request t.client id t.poll t.id in
       t.pending_request_id <- None;
@@ -413,6 +457,7 @@ struct
 
   let no_cancel_raise_connection_dead id = function
     | `Cancelled -> assert false
+    | `Exn exn -> raise exn
     | `Completed s -> s
     | `Connection_dead ->
       let payload = Sexp.record [ "id", Id.to_sexp id ] in
@@ -478,7 +523,11 @@ struct
       let* () = Fiber.return () in
       let pending = List.rev t.pending in
       t.pending <- [];
-      Chan.write t.client.chan pending
+      let* res = Chan.write t.client.chan pending in
+      match res with
+      | `Ok -> Fiber.return ()
+      | `Exn exn -> terminate t.client (`Exn exn)
+      | `Closed -> terminate t.client `Connection_dead
     ;;
   end
 
@@ -530,7 +579,11 @@ struct
                    ~message:"unexpected error"
                    ())
           in
-          Chan.write t.chan [ Response (id, result) ]
+          let* res = Chan.write t.chan [ Response (id, result) ] in
+          (match res with
+           | `Ok -> Fiber.return ()
+           | `Closed -> terminate t `Connection_dead
+           | `Exn exn -> terminate t (`Exn exn))
         | Response (id, response) ->
           (match Table.find t.requests id with
            | Some status ->
@@ -544,7 +597,7 @@ struct
                "unexpected response"
                [ "id", Id.to_dyn id; "response", Response.to_dyn response ]))
     in
-    terminate t
+    terminate t `Connection_dead
   ;;
 
   module Handler = struct
@@ -588,30 +641,12 @@ struct
   let setup_versioning ~private_menu ~(handler : Handler.t) =
     let module Builder = V.Builder in
     let t : unit Builder.t = Builder.create () in
-    (* CR-soon cwong: It is a *huge* footgun that you have to remember to
-         declare a request here, or via [private_menu], and there is no
-         mechanism to warn you if you forget. The closest thing is either seeing
-         that [dune rpc status] does not report the new procedure, or need to
-         deal with the [Notification_error.t], which contains some good context,
-         but very little to indicate this specific problem. *)
-    Builder.declare_request t Procedures.Public.ping;
-    Builder.declare_request t Procedures.Public.diagnostics;
-    Builder.declare_request t Procedures.Poll.(poll running_jobs);
-    Builder.declare_notification t Procedures.Public.shutdown;
-    Builder.declare_request t Procedures.Public.format;
-    Builder.declare_request t Procedures.Public.format_dune_file;
-    Builder.declare_request t Procedures.Public.promote;
-    Builder.declare_request t Procedures.Public.promote_many;
-    Builder.declare_request t Procedures.Public.build_dir;
-    Builder.declare_request t Procedures.Public.runtest;
+    List.iter Procedures.Builtin.declared_by_client ~f:(function
+      | Procedures.Builtin.Request { decl; _ } -> Builder.declare_request t decl
+      | Procedures.Builtin.Notification { decl; _ } -> Builder.declare_notification t decl);
     Builder.implement_notification t Procedures.Server_side.abort (fun () ->
       handler.abort);
     Builder.implement_notification t Procedures.Server_side.log (fun () -> handler.log);
-    Builder.declare_request t Procedures.Poll.(poll diagnostic);
-    Builder.declare_request t Procedures.Poll.(poll progress);
-    Builder.declare_notification t Procedures.Poll.(cancel running_jobs);
-    Builder.declare_notification t Procedures.Poll.(cancel diagnostic);
-    Builder.declare_notification t Procedures.Poll.(cancel progress);
     List.iter private_menu ~f:(function
       | Handle_request (r, h) -> Builder.implement_request t r (fun () -> h)
       | Request r -> Builder.declare_request t r

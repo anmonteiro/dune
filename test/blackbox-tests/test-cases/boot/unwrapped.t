@@ -25,9 +25,8 @@ Testing the bootstrap of unwrapped libraries.
   > open B
   > let () = Printf.printf "Hello from bootstrapped binary!"
   > EOF
-  ocamlc -output-complete-exe -intf-suffix .dummy -g -o .duneboot.exe -I boot -I +unix unix.cma boot/types.ml boot/libs.ml boot/duneboot.ml
-  ./.duneboot.exe
+  ocamllex -q -o boot/pps.ml boot/pps.mll
+  ocaml -I +unix unix.cma $DUNEBOOT
   Hello from unwrapped a/a.ml
   Hello from unwrapped a/b.ml
   Hello from bootstrapped binary!
-

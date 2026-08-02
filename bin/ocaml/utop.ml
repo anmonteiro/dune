@@ -28,16 +28,23 @@ let term =
   (* CR-someday Alizter: document this option *)
   and+ args = Arg.(value & pos_right 0 string [] (Arg.info [] ~docv:"ARGS" ~doc:None)) in
   let common, config = Common.init builder in
-  let dir = Common.prefix_target common dir in
+  let dir =
+    match Path.of_string dir with
+    | External _ as ext ->
+      (* Absolute path: if it's an external path inside the workspace, localize it.
+        Otherwise leave it external so the existing error handling kicks in *)
+      Path.Expert.try_localize_external ext |> Path.to_string
+    | _ ->
+      (* Relative path: account for the cwd when run from a subdirectory. *)
+      Common.prefix_target common dir
+  in
   if not (Fpath.is_directory (Path.to_string (Path.of_string dir)))
   then User_error.raise [ Pp.textf "cannot find directory: %s" (String.maybe_quoted dir) ];
   let env, utop_path =
     Scheduler_setup.go_with_rpc_server ~common ~config (fun () ->
-      let open Fiber.O in
-      let* setup = Util.setup () in
       Build.build_memo_exn (fun () ->
         let open Memo.O in
-        let* setup = setup in
+        let* setup = Util.setup () in
         let context = Dune_rules.Main.find_context_exn setup ~name:ctx_name in
         let utop_target_path filename =
           Path.build
@@ -104,7 +111,6 @@ let term =
           in
           env, Path.to_string utop_exe))
   in
-  Hooks.End_of_build.run ();
   Util.restore_cwd_and_execve (Common.root common) utop_path args env
 ;;
 

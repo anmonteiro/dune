@@ -118,12 +118,12 @@ let melange_js_basename m =
   | Some s ->
     (* we aren't using Filename.extension because we want to handle
        filenames such as foo.pp.ml *)
-    (match String.lsplit2 (Path.basename s) ~on:'.' with
+    (match String.lsplit2 (Path.basename s |> Filename.to_string) ~on:'.' with
      | None ->
        Code_error.raise
          "could not extract module name from file path"
          [ "module", Module.to_dyn m ]
-     | Some (module_name, _) -> module_name)
+     | Some (module_name, _) -> Filename.of_string_exn module_name)
   | None ->
     Code_error.raise
       "could not find melange source from module"
@@ -177,14 +177,14 @@ let melange_args (cctx : Compilation_context.t) (cm_kind : Lib_mode.Cm_kind.t) m
       :: A "--mel-package-output"
       :: Command.Args.Path mel_package_output
       :: A "--mel-module-name"
-      :: A (melange_js_basename module_)
+      :: A (melange_js_basename module_ |> Filename.to_string)
       :: mel_package_name
     else
       Command.Args.A "--bs-stop-after-cmj"
       :: A "--bs-package-output"
       :: Command.Args.Path mel_package_output
       :: A "--bs-module-name"
-      :: A (melange_js_basename module_)
+      :: A (melange_js_basename module_ |> Filename.to_string)
       :: mel_package_name
 ;;
 
@@ -204,17 +204,12 @@ let build_cm
   let ctx = Super_context.context sctx in
   let mode = Lib_mode.of_cm_kind cm_kind in
   let sandbox =
-    let default =
-      match mode with
-      | Melange -> Sandbox_config.needs_sandboxing
-      | Ocaml _ -> Compilation_context.sandbox cctx
-    in
     match Module.kind m with
     | Root ->
       (* This is need to guarantee that no local modules shadow the modules
          referenced by the root module *)
       Sandbox_config.needs_sandboxing
-    | _ -> default
+    | _ -> Compilation_context.sandbox cctx
   in
   let ocaml = Compilation_context.ocaml cctx in
   let* compiler =
@@ -406,6 +401,8 @@ let build_cm
       Action_builder.with_no_targets other_cm_files
       >>> Command.run
             ~dir:(Path.build (Context.build_dir ctx))
+            ~sandbox
+            ~forbid_action_runner:true
             compiler
             [ flags
             ; pp_flags
@@ -433,64 +430,61 @@ let build_cm
                  location snippets. *)
               Hidden_deps (Dep.Set.of_files (Option.to_list original))
             ; other_targets
-            ]
-      >>| Action.Full.add_sandbox sandbox))
+            ]))
   |> Memo.Option.iter ~f:Fun.id
 ;;
 
 let build_module ?(force_write_cmi = false) ?(precompiled_cmi = false) cctx m =
   let open Memo.O in
-  let { Lib_mode.Map.ocaml; melange } = Compilation_context.modes cctx in
   let build_cm = build_cm cctx m ~force_write_cmi ~precompiled_cmi in
-  let* () =
-    Memo.when_ (ocaml.byte || ocaml.native) (fun () ->
-      let* () = build_cm ~cm_kind:(Ocaml Cmo) ~phase:None
-      and* () =
-        let ctx = Compilation_context.context cctx in
-        let ocaml = Compilation_context.ocaml cctx in
-        let can_split =
-          Ocaml.Version.supports_split_at_emit ocaml.version
-          || Ocaml_config.is_dev_version ocaml.ocaml_config
-        in
-        match Context.fdo_target_exe ctx, can_split with
-        | None, _ -> build_cm ~cm_kind:(Ocaml Cmx) ~phase:None
-        | Some _, false -> build_cm ~cm_kind:(Ocaml Cmx) ~phase:(Some All)
-        | Some _, true ->
-          build_cm ~cm_kind:(Ocaml Cmx) ~phase:(Some Compile)
-          >>> Fdo.opt_rule cctx m
-          >>> build_cm ~cm_kind:(Ocaml Cmx) ~phase:(Some Emit)
-      and* () =
-        Memo.when_ (not precompiled_cmi) (fun () ->
-          build_cm ~cm_kind:(Ocaml Cmi) ~phase:None)
+  match Compilation_context.for_ cctx with
+  | Ocaml ->
+    let* () = build_cm ~cm_kind:(Ocaml Cmo) ~phase:None
+    and* () =
+      let ctx = Compilation_context.context cctx in
+      let ocaml = Compilation_context.ocaml cctx in
+      let can_split =
+        Ocaml.Version.supports_split_at_emit ocaml.version
+        || Ocaml_config.is_dev_version ocaml.ocaml_config
       in
-      let obj_dir = Compilation_context.obj_dir cctx in
-      match Obj_dir.Module.cm_file obj_dir m ~kind:(Ocaml Cmo) with
-      | None -> Memo.return ()
-      | Some src ->
-        let ml_kind = Ml_kind.Impl in
-        let dep_graph = Ml_kind.Dict.get (Compilation_context.dep_graphs cctx) ml_kind in
-        let module_deps = Dep_graph.deps_of dep_graph m in
-        Memo.parallel_iter Js_of_ocaml.Mode.all ~f:(fun mode ->
-          Compilation_context.js_of_ocaml cctx
-          |> Js_of_ocaml.Mode.Pair.select ~mode
-          |> Memo.Option.iter ~f:(fun in_context ->
-            (* Build *.cmo.js / *.wasmo *)
-            let sctx = Compilation_context.super_context cctx in
-            let dir = Compilation_context.dir cctx in
-            let action_with_targets =
-              Jsoo_rules.build_cm
-                cctx
-                ~dir
-                ~in_context
-                ~mode
-                ~src:(Path.build src)
-                ~obj_dir
-                ~deps:module_deps
-                ~config:None
-            in
-            Super_context.add_rule sctx ~dir action_with_targets)))
-  in
-  Memo.when_ melange (fun () ->
+      match Context.fdo_target_exe ctx, can_split with
+      | None, _ -> build_cm ~cm_kind:(Ocaml Cmx) ~phase:None
+      | Some _, false -> build_cm ~cm_kind:(Ocaml Cmx) ~phase:(Some All)
+      | Some _, true ->
+        build_cm ~cm_kind:(Ocaml Cmx) ~phase:(Some Compile)
+        >>> Fdo.opt_rule cctx m
+        >>> build_cm ~cm_kind:(Ocaml Cmx) ~phase:(Some Emit)
+    and* () =
+      Memo.when_ (not precompiled_cmi) (fun () ->
+        build_cm ~cm_kind:(Ocaml Cmi) ~phase:None)
+    in
+    let obj_dir = Compilation_context.obj_dir cctx in
+    (match Obj_dir.Module.cm_file obj_dir m ~kind:(Ocaml Cmo) with
+     | None -> Memo.return ()
+     | Some src ->
+       let ml_kind = Ml_kind.Impl in
+       let dep_graph = Ml_kind.Dict.get (Compilation_context.dep_graphs cctx) ml_kind in
+       let module_deps = Dep_graph.deps_of dep_graph m in
+       Memo.parallel_iter Js_of_ocaml.Mode.all ~f:(fun mode ->
+         Compilation_context.js_of_ocaml cctx
+         |> Js_of_ocaml.Mode.Pair.select ~mode
+         |> Memo.Option.iter ~f:(fun in_context ->
+           (* Build *.cmo.js / *.wasmo *)
+           let sctx = Compilation_context.super_context cctx in
+           let dir = Compilation_context.dir cctx in
+           let action_with_targets =
+             Jsoo_rules.build_cm
+               cctx
+               ~dir
+               ~in_context
+               ~mode
+               ~src:(Path.build src)
+               ~obj_dir
+               ~deps:module_deps
+               ~config:None
+           in
+           Super_context.add_rule sctx ~dir action_with_targets)))
+  | Melange ->
     let* () = build_cm ~cm_kind:(Melange Cmj) ~phase:None
     and* () =
       Memo.when_ (not precompiled_cmi) (fun () ->
@@ -502,7 +496,19 @@ let build_module ?(force_write_cmi = false) ?(precompiled_cmi = false) cctx m =
       let obj_dir = Compilation_context.obj_dir cctx in
       Obj_dir.melange_dir obj_dir
     in
-    Alias_builder.define_all_alias ~project ~predicate_dir ~js_targets:[] dir)
+    let predicate =
+      [ Lib_mode.Cm_kind.ext (Melange Cmi); Lib_mode.Cm_kind.ext (Melange Cmj) ]
+      |> Glob.matching_extensions
+      |> Predicate_lang.Glob.of_glob
+    in
+    let deps =
+      File_selector.of_predicate_lang
+        ~dir:(Path.build predicate_dir)
+        ~only_generated_files:(Dune_project.dune_version project >= (3, 0))
+        predicate
+      |> Action_builder.paths_matching_unit ~loc:Loc.none
+    in
+    Rules.Produce.Alias.add_deps (Alias.make Alias0.all ~dir) deps
 ;;
 
 let ocamlc_i ~deps cctx (m : Module.t) ~output =
@@ -533,6 +539,8 @@ let ocamlc_i ~deps cctx (m : Module.t) ~output =
               (Ok ocaml.ocamlc)
               ~dir:(Path.build (Context.build_dir ctx))
               ~stdout_to:output
+              ~sandbox
+              ~forbid_action_runner:true
               [ Command.Args.dyn ocaml_flags
               ; A "-I"
               ; Path (Path.build (Obj_dir.byte_dir obj_dir))
@@ -545,8 +553,7 @@ let ocamlc_i ~deps cctx (m : Module.t) ~output =
               ; A "-i"
               ; Command.Ml_kind.flag Impl
               ; Dep src
-              ]
-        >>| Action.Full.add_sandbox sandbox))
+              ]))
 ;;
 
 module Alias_module = struct
@@ -564,23 +571,11 @@ module Alias_module = struct
      `-open` option of the compiler. This module is called the alias module and
      is implicitly generated by Dune.*)
 
-  type alias =
-    { local_name : Module_name.t
-    ; canonical_path : Module_name.Path.t
-    ; obj_name : Module_name.Unique.t
-    }
-
-  type t =
-    { aliases : alias list
-    ; shadowed : Module_name.t list
-    ; instances : Parameterised_instances.t
-    }
-
-  module Rendered_alias = struct
+  module Alias = struct
     type t =
       { canonical_path : string
-      ; local_name : string
-      ; obj_name : string
+      ; local_name : Module_name.t
+      ; obj_name : Module_name.t
       }
 
     let canonical_prefix = "\n(** @canonical "
@@ -595,31 +590,29 @@ module Alias_module = struct
       + String.length alias_suffix
     ;;
 
-    let of_alias { canonical_path; local_name; obj_name } =
-      { canonical_path = Module_name.Path.to_string canonical_path
-      ; local_name = Module_name.to_string local_name
-      ; obj_name =
-          Module_name.Unique.to_name ~loc:Loc.none obj_name |> Module_name.to_string
-      }
-    ;;
-
     let length { canonical_path; local_name; obj_name } =
       static_length
       + String.length canonical_path
-      + String.length local_name
-      + String.length obj_name
+      + String.length (Module_name.to_string local_name)
+      + String.length (Module_name.to_string obj_name)
     ;;
 
-    let add_to_buffer b { canonical_path; local_name; obj_name } =
-      Buffer.add_string b canonical_prefix;
-      Buffer.add_string b canonical_path;
-      Buffer.add_string b canonical_suffix;
-      Buffer.add_string b local_name;
-      Buffer.add_string b alias_separator;
-      Buffer.add_string b obj_name;
-      Buffer.add_string b alias_suffix
+    let add builder { canonical_path; local_name; obj_name } =
+      String_builder.add_string builder canonical_prefix;
+      String_builder.add_string builder canonical_path;
+      String_builder.add_string builder canonical_suffix;
+      String_builder.add_string builder (Module_name.to_string local_name);
+      String_builder.add_string builder alias_separator;
+      String_builder.add_string builder (Module_name.to_string obj_name);
+      String_builder.add_string builder alias_suffix
     ;;
   end
+
+  type t =
+    { aliases : Alias.t list
+    ; shadowed : Module_name.t list
+    ; instances : Parameterised_instances.t
+    }
 
   let shadowed_prefix = "\nmodule "
   let shadowed_suffix = " = struct end\n[@@deprecated \"this module is shadowed\"]\n"
@@ -628,46 +621,48 @@ module Alias_module = struct
     String.length shadowed_prefix + String.length shadowed_suffix
   ;;
 
-  let shadowed_length shadowed = shadowed_static_length + String.length shadowed
-
-  let add_shadowed_to_buffer b shadowed =
-    Buffer.add_string b shadowed_prefix;
-    Buffer.add_string b shadowed;
-    Buffer.add_string b shadowed_suffix
+  let shadowed_length shadowed =
+    shadowed_static_length + String.length (Module_name.to_string shadowed)
   ;;
 
-  let total_length ~header ~aliases ~shadowed =
-    let alias_lengths =
-      List.fold_left aliases ~init:0 ~f:(fun acc alias ->
-        acc + Rendered_alias.length alias)
-    in
-    let shadowed_lengths =
-      List.fold_left shadowed ~init:0 ~f:(fun acc shadowed ->
-        acc + shadowed_length shadowed)
-    in
-    String.length header + alias_lengths + shadowed_lengths
+  let add_shadowed builder shadowed =
+    String_builder.add_string builder shadowed_prefix;
+    String_builder.add_string builder (Module_name.to_string shadowed);
+    String_builder.add_string builder shadowed_suffix
   ;;
 
-  let to_ml =
-    let header = "(* generated by dune *)\n" in
-    fun { aliases; shadowed; instances } ->
-      let aliases = List.map aliases ~f:Rendered_alias.of_alias in
-      let shadowed = List.map shadowed ~f:Module_name.to_string in
-      let b = Buffer.create (total_length ~header ~aliases ~shadowed) in
-      Buffer.add_string b header;
-      List.iter aliases ~f:(Rendered_alias.add_to_buffer b);
-      List.iter shadowed ~f:(add_shadowed_to_buffer b);
-      Parameterised_instances.print_instances b instances;
-      Buffer.contents b
+  let header = "(* generated by dune *)\n"
+
+  let total_length { aliases; shadowed; instances } =
+    let length =
+      List.fold_left aliases ~init:(String.length header) ~f:(fun length alias ->
+        length + Alias.length alias)
+    in
+    let length =
+      List.fold_left shadowed ~init:length ~f:(fun length shadowed ->
+        length + shadowed_length shadowed)
+    in
+    length + Parameterised_instances.ml_source_length instances
+  ;;
+
+  let to_ml ({ aliases; shadowed; instances } as t) =
+    let builder = String_builder.create (total_length t) in
+    String_builder.add_string builder header;
+    List.iter aliases ~f:(Alias.add builder);
+    List.iter shadowed ~f:(add_shadowed builder);
+    Parameterised_instances.add_ml_source builder instances;
+    String_builder.build_exact_exn builder
   ;;
 
   let of_modules project modules group instances =
     let aliases =
       Modules.Group.for_alias group
       |> List.map ~f:(fun (local_name, m) ->
-        let canonical_path = Modules.With_vlib.canonical_path modules group m in
-        let obj_name = Module.obj_name m in
-        { canonical_path; local_name; obj_name })
+        let canonical_path =
+          Modules.With_vlib.canonical_path modules group m |> Module_name.Path.to_string
+        in
+        let obj_name = Module.obj_name m |> Module_name.Unique.to_name ~loc:Loc.none in
+        { Alias.canonical_path; local_name; obj_name })
     in
     let shadowed =
       if Dune_project.dune_version project < (3, 5)
@@ -720,10 +715,9 @@ let build_root_module cctx root_module =
   let for_ = Compilation_context.for_ cctx in
   let sctx = Compilation_context.super_context cctx in
   let entries =
-    Root_module.entries
-      sctx
-      ~requires_compile:(Compilation_context.requires_compile cctx)
-      ~for_
+    match Compilation_context.user_written_requires cctx with
+    | Some requires_compile -> Root_module.entries sctx ~requires_compile ~for_
+    | None -> Code_error.raise "root module without user-written dependencies" []
   in
   let cctx = Compilation_context.for_root_module cctx root_module in
   let file = Option.value_exn (Module.file root_module ~ml_kind:Impl) in

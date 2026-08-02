@@ -27,7 +27,7 @@
 
     The second part is the "external world". It is all the paths that live
     outside of the workspace and build directory. To be on the safe side Dune
-    makes no assumption does nothing clever with these paths.
+    makes no assumption and does nothing clever with these paths.
 
     External paths are represented as [Path.External.t] values.
 
@@ -70,6 +70,7 @@ module Local : sig
   val split_first_component : t -> (Filename.t * t) option
   val explode : t -> Filename.t list
   val descendant : t -> of_:t -> t option
+  val of_comps : Filename.t list -> t
 
   module Table : Hashtbl.S with type key = t
 end
@@ -82,6 +83,7 @@ module External : sig
   val cwd : unit -> t
   val parse_string_exn : loc:Loc0.t -> string -> t
   val relative : t -> string -> t
+  val relative_fname : t -> Filename.t -> t
   val of_filename_relative_to_initial_cwd : string -> t
   val append_local : t -> Local.t -> t
 
@@ -124,6 +126,7 @@ module Outside_build_dir : sig
 
   val hash : t -> int
   val relative : t -> string -> t
+  val relative_fname : t -> Filename.t -> t
   val extend_basename : t -> suffix:Filename.t -> t
   val append_local : t -> Local.t -> t
   val equal : t -> t -> bool
@@ -181,6 +184,7 @@ module Build : sig
   val split_sandbox_root : t -> t option * t
   val of_local : Local.t -> t
 
+  module Array : Array_intf.S with type Set.elt = t
   module Table : Hashtbl.S with type key = t
 end
 
@@ -205,7 +209,9 @@ module Table : sig
   val set : 'a t -> path -> 'a -> unit
   val remove : 'a t -> path -> unit
   val iter : 'a t -> f:('a -> unit) -> unit
+  val iteri : 'a t -> f:(key:path -> data:'a -> unit) -> unit
   val find : 'a t -> path -> 'a option
+  val find_or_add : 'a t -> path -> f:(path -> 'a) -> 'a
   val filteri_inplace : 'a t -> f:(key:path -> data:'a -> bool) -> unit
   val filter_inplace : 'a t -> f:('a -> bool) -> unit
   val to_dyn : ('a -> Dyn.t) -> 'a t -> Dyn.t
@@ -335,7 +341,7 @@ val is_dir_sep : char -> bool
 (** If the path does not exist, this function is a no-op. *)
 val rm_rf : ?chmod:bool -> ?allow_external:bool -> t -> unit
 
-val mkdir_p : ?perms:int -> t -> unit
+val mkdir_p : ?perms:Permissions.Mode.t -> t -> unit
 val build_dir_exists : unit -> bool
 val ensure_build_dir_exists : unit -> unit
 val source : Source.t -> t

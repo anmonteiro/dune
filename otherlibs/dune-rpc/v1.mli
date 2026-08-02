@@ -303,6 +303,7 @@ module Request : sig
 
   val ping : (unit, unit) t
   val diagnostics : (unit, Diagnostic.t list) t
+  val flush_file_watcher : (unit, [ `Ok | `Not_in_watch_mode ]) t
 
   (** format a [dune], [dune-project], or a [dune-workspace] file. The full
       path to the file is necessary so that dune knows the formatting options
@@ -599,7 +600,7 @@ module Registry : sig
        end)
       (_ : sig
          val scandir : string -> (string list, exn) result Fiber.t
-         val stat : string -> ([ `Mtime of Stdune.Time.t ], exn) result Fiber.t
+         val stat : string -> ([ `Mtime of float ], exn) result Fiber.t
          val read_file : string -> (string, exn) result Fiber.t
        end) : sig
     val poll : t -> (Refresh.t, exn) result Fiber.t

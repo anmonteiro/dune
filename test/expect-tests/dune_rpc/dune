@@ -4,8 +4,7 @@
  (libraries
   dune_util
   dune_rpc
-  dune_rpc_server
-  dune_rpc_client
+  rpc
   stdune
   test_scheduler
   csexp
@@ -18,3 +17,23 @@
   ppx_inline_test.config)
  (preprocess
   (pps ppx_expect)))
+
+(rule
+ (with-stdout-to
+  digests.mli
+  (echo "")))
+
+(rule
+ (with-stdout-to
+  dune_rpc_tests.mli
+  (echo "")))
+
+(rule
+ (with-stdout-to
+  long_polling.mli
+  (echo "")))
+
+(rule
+ (with-stdout-to
+  finalization.mli
+  (echo "")))

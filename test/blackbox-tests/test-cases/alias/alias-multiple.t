@@ -1,9 +1,7 @@
 Testing multiple aliases in rules stanza
 
 First we start with a dune-project before alias was introduced:
-  $ cat > dune-project << EOF
-  > (lang dune 1.9)
-  > EOF
+  $ make_dune_project 1.9
 
   $ cat > dune << EOF
   > (rule
@@ -20,9 +18,7 @@ First we start with a dune-project before alias was introduced:
   [1]
 
 Next we update the dune-project file to use dune 2.0:
-  $ cat > dune-project << EOF
-  > (lang dune 2.0)
-  > EOF
+  $ make_dune_project 2.0
 
   $ dune build @a
   I have run
@@ -57,9 +53,7 @@ That doesn't work so we use the aliases field
   [1]
 
 Updating the dune-project file to use dune 3.5 allows the build to succeed:
-  $ cat > dune-project << EOF
-  > (lang dune 3.5)
-  > EOF
+  $ make_dune_project 3.5
 
   $ dune build @a
   I have run
@@ -125,4 +119,70 @@ A similar test with a rule that produces a target
 
   $ dune clean
   $ dune build @b @c
+  I have run
+
+Rules with no targets can have surprising behavior.
+
+A when a target-less rule is attached to several aliases, the first listed
+alias is always built.
+
+Here, building [b] pulls in [a].
+  $ cat > dune << EOF
+  > (rule
+  >  (aliases a b)
+  >  (action (echo "a and b\n")))
+  > (rule
+  >  (alias a)
+  >  (action (echo "just a\n")))
+  > (rule
+  >  (alias b)
+  >  (action (echo "just b\n")))
+  > EOF
+
+  $ dune clean
+  $ dune build @b
+  a and b
+  just a
+  just b
+
+Building [a] does not pull in [b].
+  $ dune clean
+  $ dune build @a
+  a and b
+  just a
+
+Duplicating an alias causes a dependency cycle.
+  $ cat > dune << EOF
+  > (rule
+  >  (aliases a)
+  >  (action (echo "I have run\n")))
+  > EOF
+  $ dune clean
+  $ dune build @a
+  I have run
+  $ cat > dune << EOF
+  > (rule
+  >  (aliases a a)
+  >  (action (echo "I have run\n")))
+  > EOF
+  $ dune build @a
+  Error: Dependency cycle between:
+     alias a in dune:1
+  [1]
+
+Reordering the aliases causes the action to re-run.
+  $ cat > dune << EOF
+  > (rule
+  >  (aliases a b)
+  >  (action (echo "I have run\n")))
+  > EOF
+  $ dune clean
+  $ dune build @a @b
+  I have run
+  $ cat > dune << EOF
+  > (rule
+  >  (aliases b a)
+  >  (action (echo "I have run\n")))
+  > EOF
+  $ dune build @a @b
   I have run

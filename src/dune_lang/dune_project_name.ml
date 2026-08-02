@@ -15,12 +15,19 @@ module T = struct
 
   let equal a b = Ordering.is_eq (compare a b)
 
-  let to_dyn =
-    let open Dyn in
-    function
-    | Named n -> variant "Named" [ string n ]
-    | Anonymous p -> variant "Anonymous" [ Path.Source.to_dyn p ]
+  let repr =
+    Repr.variant
+      "dune-project-name"
+      [ Repr.case "Named" String.repr ~proj:(function
+          | Named n -> Some n
+          | Anonymous _ -> None)
+      ; Repr.case "Anonymous" Path.Source.repr ~proj:(function
+          | Anonymous p -> Some p
+          | Named _ -> None)
+      ]
   ;;
+
+  let to_dyn = Repr.to_dyn repr
 end
 
 include T

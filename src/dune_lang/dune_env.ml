@@ -79,7 +79,6 @@ type config =
   ; odoc : Odoc.t
   ; js_of_ocaml : Ordered_set_lang.Unexpanded.t Js_of_ocaml.Env.t
   ; wasm_of_ocaml : Ordered_set_lang.Unexpanded.t Js_of_ocaml.Env.t
-  ; coq : Coq_env.t
   ; rocq : Rocq_env.t
   ; format_config : Format_config.t option
   ; error_on_use : User_message.t option
@@ -105,7 +104,6 @@ let equal_config
       ; odoc
       ; js_of_ocaml
       ; wasm_of_ocaml
-      ; coq
       ; rocq
       ; format_config
       ; error_on_use
@@ -126,7 +124,6 @@ let equal_config
   && Option.equal Inline_tests.equal inline_tests t.inline_tests
   && Menhir_env.equal menhir t.menhir
   && Odoc.equal odoc t.odoc
-  && Coq_env.equal coq t.coq
   && Rocq_env.equal rocq t.rocq
   && Option.equal Format_config.equal format_config t.format_config
   && Js_of_ocaml.Env.equal js_of_ocaml t.js_of_ocaml
@@ -150,7 +147,6 @@ let empty_config =
   ; odoc = Odoc.empty
   ; js_of_ocaml = Js_of_ocaml.Env.empty
   ; wasm_of_ocaml = Js_of_ocaml.Env.empty
-  ; coq = Coq_env.default
   ; rocq = Rocq_env.default
   ; format_config = None
   ; error_on_use = None
@@ -200,17 +196,21 @@ let inline_tests_field =
   field_o "inline_tests" (Syntax.since Stanza.syntax (1, 11) >>> Inline_tests.decode)
 ;;
 
+let env_vars_decode =
+  located (repeat (pair string string))
+  >>| fun (loc, pairs) ->
+  match Env.Map.of_list pairs with
+  | Ok vars -> Env.extend Env.empty ~vars
+  | Error (k, _, _) ->
+    User_error.raise ~loc [ Pp.textf "Variable %s is specified several times" k ]
+;;
+
 let env_vars_field =
-  field
-    "env-vars"
+  fields_mutually_exclusive
     ~default:Env.empty
-    (Syntax.since Stanza.syntax (1, 5)
-     >>> located (repeat (pair string string))
-     >>| fun (loc, pairs) ->
-     match Env.Map.of_list pairs with
-     | Ok vars -> Env.extend Env.empty ~vars
-     | Error (k, _, _) ->
-       User_error.raise ~loc [ Pp.textf "Variable %s is specified several times" k ])
+    [ "env-vars", Syntax.since Stanza.syntax (1, 5) >>> env_vars_decode
+    ; "env_vars", Syntax.since Stanza.syntax (3, 24) >>> env_vars_decode
+    ]
 ;;
 
 let odoc_field =
@@ -254,7 +254,6 @@ let config =
   and+ odoc = odoc_field
   and+ js_of_ocaml = js_of_ocaml_field
   and+ wasm_of_ocaml = wasm_of_ocaml_field
-  and+ coq = Coq_env.decode
   and+ rocq = Rocq_env.decode
   and+ format_config = Format_config.field ~since:(2, 8)
   and+ bin_annot = bin_annot
@@ -277,7 +276,6 @@ let config =
   ; odoc
   ; js_of_ocaml
   ; wasm_of_ocaml
-  ; coq
   ; rocq
   ; format_config
   ; error_on_use = None
@@ -290,10 +288,12 @@ let config =
 let rule =
   enter
     (let+ pat =
-       keyword "_"
-       >>> return Any
-       <|> let+ p = Profile.decode in
-           Profile p
+       peek_exn
+       >>= function
+       | Atom (_, A "_") -> junk >>> return Any
+       | _ ->
+         let+ p = Profile.decode in
+         Profile p
      and+ configs = fields config in
      pat, configs)
 ;;

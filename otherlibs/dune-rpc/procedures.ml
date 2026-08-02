@@ -55,6 +55,34 @@ module Public = struct
     ;;
   end
 
+  module Flush_file_watcher = struct
+    type t =
+      [ `Ok
+      | `Not_in_watch_mode
+      ]
+
+    let sexp : (t, Conv.values) Conv.t =
+      let open Conv in
+      let ok = constr "ok" unit (fun () -> `Ok) in
+      let not_in_watch_mode =
+        constr "not_in_watch_mode" unit (fun () -> `Not_in_watch_mode)
+      in
+      sum
+        [ econstr ok; econstr not_in_watch_mode ]
+        (function
+          | `Ok -> case () ok
+          | `Not_in_watch_mode -> case () not_in_watch_mode)
+    ;;
+
+    let v1 = Decl.Request.make_current_gen ~req:Conv.unit ~resp:sexp ~version:1
+
+    let decl =
+      Decl.Request.make
+        ~method_:(Method.Name.of_string "flush-file-watcher")
+        ~generations:[ v1 ]
+    ;;
+  end
+
   module Format_dune_file = struct
     module V1 = struct
       let req =
@@ -135,6 +163,7 @@ module Public = struct
   let diagnostics = Diagnostics.decl
   let shutdown = Shutdown.decl
   let format = Format.decl
+  let flush_file_watcher = Flush_file_watcher.decl
   let format_dune_file = Format_dune_file.decl
   let promote = Promote.decl
   let promote_many = Promote_many.decl
@@ -324,5 +353,53 @@ module Poll = struct
   let running_jobs =
     let open Job in
     make name [ v1 ]
+  ;;
+end
+
+module Builtin = struct
+  type t =
+    | Request :
+        { decl : ('req, 'resp) Decl.Request.t
+        ; declare_with_client : bool
+        }
+        -> t
+    | Notification :
+        { decl : 'payload Decl.Notification.t
+        ; declare_with_client : bool
+        }
+        -> t
+
+  let request ?(declare_with_client = true) decl = Request { decl; declare_with_client }
+
+  let notification ?(declare_with_client = true) decl =
+    Notification { decl; declare_with_client }
+  ;;
+
+  let all =
+    [ request Public.ping
+    ; request Public.diagnostics
+    ; notification Public.shutdown
+    ; request Public.format
+    ; request Public.flush_file_watcher
+    ; request Public.format_dune_file
+    ; request Public.promote
+    ; request Public.promote_many
+    ; request Public.build_dir
+    ; request Public.runtest
+    ; notification ~declare_with_client:false Server_side.abort
+    ; notification ~declare_with_client:false Server_side.log
+    ; request (Poll.poll Poll.running_jobs)
+    ; request (Poll.poll Poll.diagnostic)
+    ; request (Poll.poll Poll.progress)
+    ; notification (Poll.cancel Poll.running_jobs)
+    ; notification (Poll.cancel Poll.diagnostic)
+    ; notification (Poll.cancel Poll.progress)
+    ]
+  ;;
+
+  let declared_by_client =
+    List.filter all ~f:(function
+        | Request { declare_with_client; _ } | Notification { declare_with_client; _ } ->
+        declare_with_client)
   ;;
 end

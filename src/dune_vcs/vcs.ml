@@ -7,24 +7,34 @@ module Kind = struct
     | Git
     | Hg
 
-  let of_dir_name = function
+  let of_dir_name name =
+    match Filename.to_string name with
     | ".git" -> Some Git
     | ".hg" -> Some Hg
     | _ -> None
   ;;
 
-  let of_dir_contents set =
-    match Filename.Set.find set ~f:(fun s -> Option.is_some (of_dir_name s)) with
-    | None -> None
-    | Some s -> Some (Option.value_exn (of_dir_name s))
+  let of_dir_contents ~files ~dirs =
+    let kind name =
+      if Filename.Array.Set.mem files name || Filename.Array.Map.mem dirs name
+      then of_dir_name name
+      else None
+    in
+    match kind Filename.git_dir_basename with
+    | Some _ as kind -> kind
+    | None -> kind Filename.hg_dir_basename
   ;;
 
-  let to_dyn t =
-    Dyn.Variant
-      ( (match t with
-         | Git -> "Git"
-         | Hg -> "Hg")
-      , [] )
+  let repr =
+    Repr.variant
+      "vcs-kind"
+      [ Repr.case0 "Git" ~test:(function
+          | Git -> true
+          | Hg -> false)
+      ; Repr.case0 "Hg" ~test:(function
+          | Hg -> true
+          | Git -> false)
+      ]
   ;;
 
   let equal = ( = )
@@ -36,9 +46,15 @@ module T = struct
     ; kind : Kind.t
     }
 
-  let to_dyn { root; kind } =
-    Dyn.record [ "root", Path.to_dyn root; "kind", Kind.to_dyn kind ]
+  let repr =
+    Repr.record
+      "vcs"
+      [ Repr.field "root" Path.repr ~get:(fun t -> t.root)
+      ; Repr.field "kind" Kind.repr ~get:(fun t -> t.kind)
+      ]
   ;;
+
+  let to_dyn = Repr.to_dyn repr
 
   let equal { root = ra; kind = ka } { root = rb; kind = kb } =
     Path.equal ra rb && Kind.equal ka kb
@@ -50,23 +66,30 @@ end
 
 include T
 
-let git, hg =
-  let get prog =
-    lazy
-      (match Bin.which ~path:(Env_path.path Env.initial) prog with
-       | Some x -> x
-       | None ->
-         let hint =
-           match prog with
-           | "git" ->
-             Some
-               "Git is required for version information in 'dune subst', build info, and \
-                package management. Install git or add it to your PATH."
-           | _ -> None
-         in
-         Utils.program_not_found prog ~loc:None ?hint)
-  in
-  get "git", get "hg"
+let git_path = lazy (Bin.which ~path:(Env_path.path Env.initial) "git")
+
+let git_for ~needed_for =
+  match Lazy.force git_path with
+  | Some x -> x
+  | None ->
+    Utils.program_not_found
+      "git"
+      ~loc:None
+      ~hint:(sprintf "Git is required %s. Install git or add it to your PATH." needed_for)
+;;
+
+let git =
+  lazy
+    (git_for
+       ~needed_for:
+         "for version information in 'dune subst', build info, and package management")
+;;
+
+let hg =
+  lazy
+    (match Bin.which ~path:(Env_path.path Env.initial) "hg" with
+     | Some x -> x
+     | None -> Utils.program_not_found "hg" ~loc:None)
 ;;
 
 let select git hg t =
@@ -141,26 +164,46 @@ let make_fun name ~git ~hg =
   Staged.stage (Memo.exec memo)
 ;;
 
+let with_git_hint ?needed_for t f =
+  (match needed_for, t.kind with
+   | Some needed_for, Git ->
+     let (_ : Path.t) = git_for ~needed_for in
+     ()
+   | None, Git | _, Hg -> ());
+  f t
+;;
+
 let describe =
-  Staged.unstage
-  @@ make_fun
-       "vcs-describe"
-       ~git:(fun t -> run_git t [ "describe"; "--always"; "--dirty"; "--abbrev=7" ])
-       ~hg:(fun x ->
-         let open Fiber.O in
-         let+ res = hg_describe x in
-         Some res)
+  let describe =
+    Staged.unstage
+    @@ make_fun
+         "vcs-describe"
+         ~git:(fun t -> run_git t [ "describe"; "--always"; "--dirty"; "--abbrev=7" ])
+         ~hg:(fun x -> Fiber.O.(hg_describe x >>| Option.some))
+  in
+  fun t ~needed_for -> with_git_hint ~needed_for t describe
 ;;
 
 let commit_id =
+  let commit_id =
+    Staged.unstage
+    @@ make_fun
+         "vcs-commit-id"
+         ~git:(fun t -> run_git t [ "rev-parse"; "HEAD" ])
+         ~hg:(fun t -> Fiber.O.(run t [ "id"; "-i" ] >>| Option.some))
+  in
+  fun t ~needed_for -> with_git_hint ~needed_for t commit_id
+;;
+
+let git_sha_short =
   Staged.unstage
   @@ make_fun
-       "vcs-commit-id"
-       ~git:(fun t -> run_git t [ "rev-parse"; "HEAD" ])
-       ~hg:(fun t ->
-         let open Fiber.O in
-         let+ res = run t [ "id"; "-i" ] in
-         Some res)
+       "vcs-git-sha-short"
+       ~git:(fun t ->
+         match run_git t [ "rev-parse"; "--short"; "HEAD" ] with
+         | exception _ -> Fiber.return None
+         | fiber -> fiber)
+       ~hg:(fun _ -> Fiber.return None)
 ;;
 
 let files =
@@ -213,9 +256,12 @@ let files =
     in
     run t args >>| List.filter_map ~f
   in
-  Staged.unstage
-  @@ make_fun
-       "vcs-files"
-       ~git:(f run_zero_separated_git [ "ls-tree"; "-z"; "-r"; "--name-only"; "HEAD" ])
-       ~hg:(f run_zero_separated_hg [ "files"; "-0" ])
+  let files =
+    Staged.unstage
+    @@ make_fun
+         "vcs-files"
+         ~git:(f run_zero_separated_git [ "ls-tree"; "-z"; "-r"; "--name-only"; "HEAD" ])
+         ~hg:(f run_zero_separated_hg [ "files"; "-0" ])
+  in
+  fun t ~needed_for -> with_git_hint ~needed_for t files
 ;;

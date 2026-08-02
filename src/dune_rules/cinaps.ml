@@ -74,6 +74,33 @@ let flags = Ocaml_flags.of_list [ "-w"; "-24" ]
 let for_ = Compilation_mode.Ocaml
 
 let gen_rules sctx t ~dir ~scope =
+  let digest_input_repr =
+    Repr.variant
+      "cinaps-digest-input"
+      [ Repr.case
+          "No_files"
+          Repr.(
+            triple
+              (list Lib_dep.repr)
+              (Preprocess.Per_module.repr Preprocess.Without_instrumentation.repr)
+              (list Dep_conf.repr))
+          ~proj:(function
+            | `No_files x -> Some x
+            | `With_files _ -> None)
+      ; Repr.case
+          "With_files"
+          Repr.(
+            pair
+              (list Path.Build.repr)
+              (triple
+                 (list Lib_dep.repr)
+                 (Preprocess.Per_module.repr Preprocess.Without_instrumentation.repr)
+                 (list Dep_conf.repr)))
+          ~proj:(function
+            | `With_files x -> Some x
+            | `No_files _ -> None)
+      ]
+  in
   let loc = t.loc in
   (* Files checked by cinaps *)
   let* cinapsed_files =
@@ -83,7 +110,7 @@ let gen_rules sctx t ~dir ~scope =
       if
         Predicate_lang.Glob.test
           t.files
-          (Path.Source.basename p)
+          (Path.Source.basename p |> Filename.to_string)
           ~standard:Predicate_lang.true_
       then
         Some
@@ -93,10 +120,20 @@ let gen_rules sctx t ~dir ~scope =
   let cinaps_dir =
     let stamp =
       let digest =
-        match cinapsed_files with
-        | [] -> Digest.generic (t.loc, t.libraries, t.preprocess, t.preprocessor_deps)
-        | _ :: _ ->
-          Digest.generic (cinapsed_files, t.libraries, t.preprocess, t.preprocessor_deps)
+        Digest.repr
+          digest_input_repr
+          (match cinapsed_files with
+           | [] ->
+             `No_files
+               ( t.libraries
+               , t.preprocess
+               , List.map t.preprocessor_deps ~f:Dep_conf.remove_locs )
+           | _ :: _ ->
+             `With_files
+               ( cinapsed_files
+               , ( t.libraries
+                 , t.preprocess
+                 , List.map t.preprocessor_deps ~f:Dep_conf.remove_locs ) ))
       in
       String.take (Digest.to_string digest) 8
     in
@@ -179,6 +216,7 @@ let gen_rules sctx t ~dir ~scope =
         ~modules
         ~opaque:(Explicit false)
         ~requires_compile
+        ~user_written_requires:None
         ~requires_link
         ~flags
         ~js_of_ocaml:(Js_of_ocaml.Mode.Pair.make None)
@@ -201,6 +239,7 @@ let gen_rules sctx t ~dir ~scope =
       ~program:{ name; main_module_name; loc }
       ~linkages:[ Exe.Linkage.native_or_custom (Compilation_context.ocaml cctx) ]
       ~promote:None
+      ~env:(Action_builder.return Env.empty)
   in
   let cinaps_alias = Alias.make ~dir @@ Option.value t.alias ~default:cinaps_alias in
   let* () =
@@ -210,7 +249,7 @@ let gen_rules sctx t ~dir ~scope =
         let cinaps_exe = Path.Build.relative cinaps_dir (name ^ ".exe") in
         Path.build cinaps_exe
       in
-      let runtime_deps, sandbox =
+      let env, sandbox =
         let sandbox =
           if t.cinaps_version >= (1, 1)
           then Sandbox_config.needs_sandboxing
@@ -218,12 +257,11 @@ let gen_rules sctx t ~dir ~scope =
         in
         Dep_conf_eval.unnamed sandbox ~expander t.runtime_deps
       in
-      let* () = runtime_deps in
       let+ () =
         cinaps_exe :: List.rev_map cinapsed_files ~f:Path.build
         |> Dep.Set.of_files
         |> Action_builder.deps
-      in
+      and+ env in
       Action.Full.make ~sandbox
       @@ Action.chdir
            (Path.build dir)
@@ -234,8 +272,9 @@ let gen_rules sctx t ~dir ~scope =
                   Action.diff
                     ~optional:true
                     (Path.build fn)
-                    (Path.Build.extend_basename fn ~suffix:".cinaps-corrected"))
+                    (Path.Build.extend_basename fn ~suffix:Filename.cinaps_corrected))
               ])
+      |> Action.Full.add_env env
     in
     Super_context.add_alias_action sctx ~dir ~loc cinaps_alias action
   in

@@ -94,9 +94,7 @@ and t =
   }
 
 let default_target_exec ~target_exec toolchain =
-  match
-    target_exec, !Dune_engine.Clflags.target_exec, Context_name.to_string toolchain
-  with
+  match target_exec, !Clflags.target_exec, Context_name.to_string toolchain with
   | _, Some (name, prog, args), toolchain when name = toolchain -> Some (prog, args)
   | Some target_exec, _, _ -> Some target_exec
   | _ -> None
@@ -241,7 +239,7 @@ module Opam : sig
 end = struct
   let opam =
     Memo.Lazy.create ~name:"context-opam" (fun () ->
-      Which.which ~path:(Env_path.path Env.initial) "opam"
+      Which.which ~path:(Env_path.path Env.initial) Filename.opam
       >>= function
       | None -> Utils.program_not_found "opam" ~loc:None
       | Some opam ->
@@ -441,7 +439,7 @@ let create (builder : Builder.t) ~(kind : Kind.t) =
           ~human_readable_description:(fun () ->
             Pp.textf
               "looking up binary %S in context %S"
-              prog
+              (Filename.to_string prog)
               (Context_name.to_string builder.name))
           (fun () ->
              which prog
@@ -632,7 +630,7 @@ module Group = struct
     let path =
       match Env.Map.find vars Env_path.var with
       | None ->
-        (* CR rgrinberg: Is this even possible? *)
+        (* CR-someday rgrinberg: Is this even possible? *)
         Env_path.path env
       | Some s -> Bin.parse_path s
     in

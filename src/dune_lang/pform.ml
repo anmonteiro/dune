@@ -138,6 +138,7 @@ module Var = struct
     | Pkg of Pkg.t
     | Oxcaml_supported
     | Dune_warnings
+    | Git_sha
 
   let compare : t -> t -> Ordering.t = Poly.compare
 
@@ -193,7 +194,8 @@ module Var = struct
        | Os os -> Os.to_dyn os
        | Pkg pkg -> Pkg.to_dyn pkg
        | Oxcaml_supported -> variant "Oxcaml_supported" []
-       | Dune_warnings -> variant "Dune_warnings" [])
+       | Dune_warnings -> variant "Dune_warnings" []
+       | Git_sha -> variant "Git_sha" [])
   ;;
 
   let of_opam_global_variable_name name =
@@ -297,7 +299,6 @@ module Macro = struct
     | Read_lines
     | Path_no_dep
     | Ocaml_config
-    | Coq_config
     | Rocq_config
     | Env
     | Artifact of Artifact.t
@@ -349,9 +350,6 @@ module Macro = struct
     | Ocaml_config, Ocaml_config -> Eq
     | Ocaml_config, _ -> Lt
     | _, Ocaml_config -> Gt
-    | Coq_config, Coq_config -> Eq
-    | Coq_config, _ -> Lt
-    | _, Coq_config -> Gt
     | Rocq_config, Rocq_config -> Eq
     | Rocq_config, _ -> Lt
     | _, Rocq_config -> Gt
@@ -389,7 +387,6 @@ module Macro = struct
     | Read_lines -> string "Read_lines"
     | Path_no_dep -> string "Path_no_dep"
     | Ocaml_config -> string "Ocaml_config"
-    | Coq_config -> string "Coq_config"
     | Rocq_config -> string "Rocq_config"
     | Env -> string "Env"
     | Artifact ext -> variant "Artifact" [ Artifact.to_dyn ext ]
@@ -415,7 +412,6 @@ module Macro = struct
     | Read_lines -> Ok "read-lines"
     | Path_no_dep -> Error `Pform_was_deleted
     | Ocaml_config -> Ok "ocaml-config"
-    | Coq_config -> Ok "coq"
     | Rocq_config -> Ok "rocq"
     | Env -> Ok "env"
     | Pkg -> Ok "pkg"
@@ -547,6 +543,7 @@ let encode_to_latest_dune_lang_version t =
        | Pkg pkg -> Some (Var.Pkg.encode_to_latest_dune_lang_version pkg)
        | Oxcaml_supported -> Some "oxcaml_supported"
        | Dune_warnings -> Some "dune-warnings"
+       | Git_sha -> Some "git-sha"
      with
      | None -> Pform_was_deleted
      | Some name -> Success { name; payload = None })
@@ -692,7 +689,7 @@ module Env = struct
          ; "ocaml-config", macro Ocaml_config
          ; "env", since ~version:(1, 4) Macro.Env
          ; "ppx", since ~version:(3, 21) Macro.Ppx
-         ; "coq", macro Coq_config
+         ; "pkg", since ~version:(3, 24) Macro.Pkg
          ; "rocq", macro Rocq_config
          ]
          @ List.map ~f:artifact Artifact.all)
@@ -768,6 +765,7 @@ module Env = struct
         ; ( "oxcaml_supported"
           , since ~what:Oxcaml.syntax ~version:(0, 1) Var.Oxcaml_supported )
         ; "dune-warnings", since ~version:(3, 21) Var.Dune_warnings
+        ; "git-sha", since ~version:(3, 24) Var.Git_sha
         ]
       in
       String.Map.of_list_exn
@@ -785,7 +783,7 @@ module Env = struct
     let syntax_lang = Unreleased.syntax in
     let vars =
       let os = os ~what:syntax_lang ~version:syntax_version () in
-      (* CR rgrinberg: This has to be disabled for multi context builds *)
+      (* CR-someday rgrinberg: This has to be disabled for multi context builds *)
       ("architecture", No_info Var.Architecture) :: os
     in
     { syntax_version = 0, 1

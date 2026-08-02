@@ -76,14 +76,17 @@ let open_for_digest file =
      [O_SHARE_DELETE] ensures that the main thread can delete it even if it
      is still open. See #8243. *)
   Unix.openfile file [ Unix.O_RDONLY; O_SHARE_DELETE; O_CLOEXEC ] 0
+  |> Fd.unsafe_of_unix_file_descr
 ;;
-
-(* CR-someday rgrinberg: maybe this should exist in blake3_mini? *)
-let zero = lazy (Hasher.with_singleton (fun _f -> ()))
 
 let digest_and_close_fd fd =
   let start = Counter.Timer.start () in
-  let res = Exn.protectx fd ~f:Blake3_mini.fd ~finally:Unix.close in
+  let res =
+    Exn.protectx
+      fd
+      ~f:(fun fd -> Blake3_mini.fd (Fd.unsafe_to_unix_file_descr fd))
+      ~finally:Fd.close
+  in
   Counter.Timer.stop Metrics.Digest.File.time start;
   res
 ;;
@@ -98,35 +101,168 @@ let file file =
   digest_and_close_fd fd
 ;;
 
-let async_digest_minimum = 1_000
-
-let file_async file =
-  let open Fiber.O in
-  let* () = Fiber.return () in
-  let fd = open_for_digest file in
-  Counter.incr Metrics.Digest.File.count;
-  let size =
-    match Unix.fstat fd with
-    | exception exn ->
-      Unix.close fd;
-      raise exn
-    | stat -> stat.st_size
-  in
-  Counter.add Metrics.Digest.File.bytes size;
-  if size = 0
-  then
-    let+ () = Fiber.return @@ Unix.close fd in
-    Lazy.force zero
-  else if size < async_digest_minimum
-  then Fiber.return (digest_and_close_fd fd)
-  else Dune_scheduler.Scheduler.async_exn (fun () -> digest_and_close_fd fd)
+let file_async =
+  let digest_throttle = lazy (Fiber.Throttle.create 32) in
+  fun file ->
+    Fiber.Throttle.run (Lazy.force digest_throttle) ~f:(fun () ->
+      let open Fiber.O in
+      let start = Counter.Timer.start () in
+      let+ digest, size =
+        Dune_scheduler.Scheduler.async_exn (fun () -> Blake3_mini.file_with_size file)
+      in
+      Counter.incr Metrics.Digest.File.count;
+      Counter.add Metrics.Digest.File.bytes size;
+      Counter.Timer.stop Metrics.Digest.File.time start;
+      digest)
 ;;
 
 let equal = Blake3_mini.Digest.equal
-let hash = Poly.hash
+let hash = Blake3_mini.Digest.hash
 let file p = file (Path.to_string p)
 let file_async p = file_async (Path.to_string p)
 let from_hex s = Blake3_mini.Digest.of_hex s
+
+let feed_string_raw hasher s =
+  Counter.add Metrics.Digest.Value.bytes (String.length s);
+  Blake3_mini.feed_string hasher s ~pos:0 ~len:(String.length s)
+;;
+
+let feed_bytes_raw hasher bytes ~len =
+  Counter.add Metrics.Digest.Value.bytes len;
+  Blake3_mini.feed_string hasher (Bytes.unsafe_to_string bytes) ~pos:0 ~len
+;;
+
+let feed_int64 hasher scratch i =
+  for byte = 0 to 7 do
+    let shift = 8 * byte in
+    let value = Int64.(to_int (logand (shift_right_logical i shift) 0xffL)) in
+    Bytes.set scratch byte (Char.chr value)
+  done;
+  feed_bytes_raw hasher scratch ~len:8
+;;
+
+let feed_bool hasher scratch b =
+  Bytes.set scratch 0 (if b then '\001' else '\000');
+  feed_bytes_raw hasher scratch ~len:1
+;;
+
+let feed_int hasher scratch i = feed_int64 hasher scratch (Int64.of_int i)
+
+let feed_string hasher scratch s =
+  feed_int hasher scratch (String.length s);
+  feed_string_raw hasher s
+;;
+
+let feed_repr hasher =
+  let scratch = Bytes.create 8 in
+  let rec loop : type a. a Repr.t -> a -> unit =
+    fun repr value ->
+    match repr with
+    | Unit ->
+      feed_int hasher scratch 1;
+      feed_bool hasher scratch false
+    | Bool ->
+      feed_int hasher scratch 2;
+      feed_bool hasher scratch value
+    | Int ->
+      feed_int hasher scratch 3;
+      feed_int hasher scratch value
+    | String ->
+      feed_int hasher scratch 4;
+      feed_string hasher scratch value
+    | Int32 ->
+      feed_int hasher scratch 12;
+      feed_int64 hasher scratch (Int64.of_int32 value)
+    | Int64 ->
+      feed_int hasher scratch 13;
+      feed_int64 hasher scratch value
+    | Nativeint ->
+      feed_int hasher scratch 14;
+      feed_int64 hasher scratch (Int64.of_nativeint value)
+    | Bytes ->
+      feed_int hasher scratch 15;
+      feed_int hasher scratch (Bytes.length value);
+      feed_bytes_raw hasher value ~len:(Bytes.length value)
+    | Char ->
+      feed_int hasher scratch 16;
+      feed_int hasher scratch (Char.code value)
+    | Float ->
+      feed_int hasher scratch 17;
+      feed_int64 hasher scratch (Int64.bits_of_float value)
+    | Option repr ->
+      feed_int hasher scratch 5;
+      (match value with
+       | None -> feed_bool hasher scratch false
+       | Some x ->
+         feed_bool hasher scratch true;
+         loop repr x)
+    | List repr ->
+      feed_int hasher scratch 6;
+      feed_int hasher scratch (List.length value);
+      List.iter value ~f:(loop repr)
+    | Array repr ->
+      feed_int hasher scratch 7;
+      feed_int hasher scratch (Array.length value);
+      Array.iter value ~f:(loop repr)
+    | Pair (left, right) ->
+      feed_int hasher scratch 8;
+      let left_value, right_value = value in
+      loop left left_value;
+      loop right right_value
+    | Triple (first, second, third) ->
+      feed_int hasher scratch 9;
+      let first_value, second_value, third_value = value in
+      loop first first_value;
+      loop second second_value;
+      loop third third_value
+    | Quadruple (first, second, third, fourth) ->
+      feed_int hasher scratch 18;
+      let first_value, second_value, third_value, fourth_value = value in
+      loop first first_value;
+      loop second second_value;
+      loop third third_value;
+      loop fourth fourth_value
+    | Fix repr -> loop (Lazy.force repr) value
+    | Record (_, fields) ->
+      feed_int hasher scratch 10;
+      loop_fields fields value
+    | Variant (_, cases) ->
+      feed_int hasher scratch 11;
+      loop_cases cases value
+    | View { repr; to_ } -> loop repr (to_ value)
+    | Abstract _ ->
+      Code_error.raise
+        "Digest.repr does not support Repr.abstract"
+        [ "repr", Dyn.string "<abstract>" ]
+  and loop_fields : type a. a Repr.field list -> a -> unit =
+    fun fields value ->
+    feed_int hasher scratch (List.length fields);
+    List.iter fields ~f:(fun (Repr.Field { name; repr; get }) ->
+      feed_string hasher scratch name;
+      loop repr (get value))
+  and loop_cases : type a. a Repr.case list -> a -> unit =
+    fun cases value ->
+    match cases with
+    | [] ->
+      Code_error.raise
+        "Repr.variant: value did not match any case"
+        [ "value", Dyn.string "<opaque>" ]
+    | Repr.Case0 { tag; test } :: rest ->
+      if test value
+      then (
+        feed_string hasher scratch tag;
+        feed_bool hasher scratch false)
+      else loop_cases rest value
+    | Repr.Case1 { tag; repr; proj } :: rest ->
+      (match proj value with
+       | Some argument ->
+         feed_string hasher scratch tag;
+         feed_bool hasher scratch true;
+         loop repr argument
+       | None -> loop_cases rest value)
+  in
+  loop
+;;
 
 module Feed = struct
   type hasher = Hasher.t
@@ -141,19 +277,13 @@ module Feed = struct
 
   let bool = contramap string ~f:Bool.to_string
   let int = contramap string ~f:Int.to_string
+  let repr repr hasher value = feed_repr hasher repr value
 
-  let repr repr =
-    contramap string ~f:(fun value -> Repr.to_dyn repr value |> Dyn.to_string)
+  let list feed_x hasher xs =
+    int hasher (List.length xs);
+    List.iter xs ~f:(feed_x hasher)
   ;;
 
-  (* We use [No_sharing] to avoid generating different digests for inputs that
-       differ only in how they share internal values. Without [No_sharing], if a
-       command line contains duplicate flags, such as multiple occurrences of the
-       flag [-I], then [Marshal.to_string] will produce different digests depending
-       on whether the corresponding strings ["-I"] point to the same memory location
-       or to different memory locations. *)
-  let generic hasher x = contramap string ~f:(Marshal.to_string ~sharing:false) hasher x
-  let list feed_x hasher xs = List.iter xs ~f:(feed_x hasher)
   let option feed_x hasher option_x = Option.iter option_x ~f:(feed_x hasher)
 
   let tuple2 feed_a feed_b hasher (a, b) =
@@ -176,17 +306,55 @@ end
 module Manual = struct
   type t = unit
 
+  let scratch = Bytes.create 8
   let create () = ()
 
-  let string () s =
+  let feed_string_raw s =
     Blake3_mini.feed_string ~pos:0 ~len:(String.length s) (Lazy.force Hasher.singleton) s
   ;;
 
-  let generic () s = string () (Marshal.to_string ~sharing:false s)
+  let feed_int64 i =
+    for byte = 0 to 7 do
+      let shift = 8 * byte in
+      let value = Int64.(to_int (logand (shift_right_logical i shift) 0xffL)) in
+      Bytes.set scratch byte (Char.chr value)
+    done;
+    feed_string_raw (Bytes.unsafe_to_string scratch)
+  ;;
+
+  let bool () b =
+    Bytes.set scratch 0 (if b then '\001' else '\000');
+    Blake3_mini.feed_string
+      ~pos:0
+      ~len:1
+      (Lazy.force Hasher.singleton)
+      (Bytes.unsafe_to_string scratch)
+  ;;
+
+  let int () i = feed_int64 (Int64.of_int i)
+
+  let string () s =
+    int () (String.length s);
+    feed_string_raw s
+  ;;
+
+  let option t ~f = function
+    | None -> bool t false
+    | Some x ->
+      bool t true;
+      f t x
+  ;;
+
+  let list t ~f xs =
+    int t (List.length xs);
+    List.iter xs ~f:(f t)
+  ;;
+
+  let repr () repr value = Feed.repr repr (Lazy.force Hasher.singleton) value
 
   let digest () s =
     let s = Blake3_mini.Digest.to_binary s in
-    string () s
+    feed_string_raw s
   ;;
 
   let get () =
@@ -200,33 +368,20 @@ end
 let string s = Feed.compute_digest Feed.string s
 let string_pooled s = Feed.compute_digest_pooled Feed.string s
 let to_string_raw s = Blake3_mini.Digest.to_binary s
+let digest_repr = Repr.view Repr.string ~to_:to_string
 
-let generic a =
+let repr_with compute_digest repr a =
   let start = Counter.Timer.start () in
   Counter.incr Metrics.Digest.Value.count;
-  let res = Feed.compute_digest Feed.generic a in
+  let res = compute_digest (Feed.repr repr) a in
   Counter.Timer.stop Metrics.Digest.Value.time start;
   res
 ;;
 
-let repr repr a =
-  let start = Counter.Timer.start () in
-  Counter.incr Metrics.Digest.Value.count;
-  let res = Feed.compute_digest (Feed.repr repr) a in
-  Counter.Timer.stop Metrics.Digest.Value.time start;
-  res
-;;
-
-let generic_pooled a =
-  let start = Counter.Timer.start () in
-  Counter.incr Metrics.Digest.Value.count;
-  let res = Feed.compute_digest_pooled Feed.generic a in
-  Counter.Timer.stop Metrics.Digest.Value.time start;
-  res
-;;
+let repr repr a = repr_with Feed.compute_digest repr a
+let repr_pooled repr a = repr_with Feed.compute_digest_pooled repr a
 
 let path_with_executable_bit_with string_digest =
-  (* We follow the digest scheme used by Jenga. *)
   let string_and_bool ~digest_hex ~bool =
     let suffix = if bool then "\001" else "\000" in
     string_digest (Blake3_mini.Digest.to_hex digest_hex ^ suffix)
@@ -277,12 +432,17 @@ end
 
 exception E of Path_digest_error.t
 
-let directory_digest_version = 3
+let directory_digest_with =
+  let directory_digest_version = 4 in
+  let directory_digest_repr = Repr.(triple int (list (pair string digest_repr)) bool) in
+  fun repr_digest ~contents ~executable ->
+    repr_digest directory_digest_repr (directory_digest_version, contents, executable)
+;;
 
 let path_with_stats_internal
       ~allow_dirs
       ~string_digest
-      ~generic_digest
+      ~directory_digest
       ~file_with_executable_bit
       path
       (stats : Stats_for_digest.t)
@@ -310,6 +470,7 @@ let path_with_stats_internal
        | Ok listing ->
          (match
             List.rev_map listing ~f:(fun name ->
+              let name = Filename.to_string name in
               let path = Path.relative path name in
               let stats =
                 match Path.lstat path with
@@ -325,8 +486,7 @@ let path_with_stats_internal
             |> List.sort ~compare:(fun (x, _) (y, _) -> String.compare x y)
           with
           | exception E e -> Error e
-          | contents ->
-            Ok (generic_digest (directory_digest_version, contents, stats.executable))))
+          | contents -> Ok (directory_digest ~contents ~executable:stats.executable)))
     | S_DIR | S_BLK | S_CHR | S_FIFO | S_SOCK -> Error Unexpected_kind
   in
   match stats.st_kind with
@@ -339,7 +499,7 @@ let path_with_stats ~allow_dirs path stats =
   path_with_stats_internal
     ~allow_dirs
     ~string_digest:string
-    ~generic_digest:generic
+    ~directory_digest:(directory_digest_with repr)
     ~file_with_executable_bit:file_with_executable_bit_sync
     path
     stats
@@ -350,7 +510,7 @@ let path_with_stats_async ~allow_dirs path (stats : Stats_for_digest.t) =
     path_with_stats_internal
       ~allow_dirs
       ~string_digest:string_pooled
-      ~generic_digest:generic_pooled
+      ~directory_digest:(directory_digest_with repr_pooled)
       ~file_with_executable_bit:file_with_executable_bit_pooled
       path
       stats

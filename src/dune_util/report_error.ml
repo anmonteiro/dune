@@ -66,9 +66,10 @@ let get_error_from_exn = function
       match msg.dir with
       | None -> msg
       | Some path ->
-        (match Path.extract_build_context (Path.of_string path) with
+        let path = Path.of_string path |> Path.drop_optional_sandbox_root in
+        (match Path.extract_build_context path with
          | None -> msg
-         | Some (ctxt, _) -> { msg with context = Some ctxt })
+         | Some (ctxt, _) -> { msg with context = Some (Filename.to_string ctxt) })
     in
     { responsible = User; msg; has_embedded_location; needs_stack_trace }
   | Code_error.E e ->
@@ -226,3 +227,8 @@ let gen_report exn backtrace =
 
 let report { Exn_with_backtrace.exn; backtrace } = gen_report exn (Some backtrace)
 let report_exception exn = gen_report exn None
+
+let debug_backtraces b =
+  report_backtraces b;
+  Memo.Debug.track_locations_of_lazy_values := b
+;;

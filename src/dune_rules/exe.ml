@@ -171,6 +171,7 @@ let link_exe
       ~link_args
       ~o_files
       ?(sandbox = Sandbox_config.default)
+      ~env
       cctx
   =
   let sctx = Compilation_context.super_context cctx in
@@ -212,6 +213,9 @@ let link_exe
     Action_builder.with_no_targets prefix
     >>> Command.run
           ~dir:(Path.build (Context.build_dir ctx))
+          ~sandbox
+          ~env
+          ~forbid_action_runner:true
           (Ocaml_toolchain.compiler ocaml mode)
           [ Command.Args.dyn ocaml_flags
           ; A "-o"
@@ -235,7 +239,6 @@ let link_exe
           ; fdo_linker_script_flags
           ; Dyn link_args
           ]
-    >>| Action.Full.add_sandbox sandbox
   and* mode =
     let sctx = Compilation_context.super_context cctx in
     let* expander = Super_context.expander sctx ~dir in
@@ -296,6 +299,7 @@ let link_many
       ?o_files
       ?(embed_in_plugin_libraries = [])
       ?sandbox
+      ~env
       ~programs
       ~linkages
       ~promote
@@ -417,7 +421,8 @@ let link_many
               ~promote
               ~link_args
               ~o_files
-              ?sandbox)
+              ?sandbox
+              ~env)
       in
       top_sorted_modules)
   in
@@ -429,6 +434,7 @@ let build_and_link_many
       ?o_files
       ?embed_in_plugin_libraries
       ?sandbox
+      ~env
       ~programs
       ~linkages
       ~promote
@@ -444,6 +450,7 @@ let build_and_link_many
     ?o_files
     ?embed_in_plugin_libraries
     ?sandbox
+    ~env
     ~programs
     ~linkages
     ~promote
@@ -455,6 +462,7 @@ let build_and_link
       ?o_files
       ?embed_in_plugin_libraries
       ?sandbox
+      ~env
       ~program
       ~linkages
       ~promote
@@ -465,6 +473,7 @@ let build_and_link
     ?o_files
     ?embed_in_plugin_libraries
     ?sandbox
+    ~env
     ~programs:[ program ]
     ~linkages
     ~promote

@@ -3,10 +3,14 @@
   (env-vars
    (DUNE_CONFIG__BACKGROUND_SANDBOXES disabled)
    (DUNE_CONFIG__BACKGROUND_DIGESTS disabled)
+   (DUNE_CONFIG__FILE_EVENT_DEBOUNCE 0)
    (DUNE_JOBS 1)
    ;; We set ocaml to always be colored since it changes the output of
    ;; ocamlc error messages. See https://github.com/ocaml/ocaml/issues/14144
-   (OCAML_COLOR always))
+   (OCAML_COLOR always)
+   ;; Cmdliner 2.0 uses colors which don't render in our tests.
+   ;; This option disables them in favour of quotes.
+   (NO_COLOR 1))
   (binaries
    ../utils/dune_cmd.exe
    ../utils/action_trace.exe
@@ -26,6 +30,7 @@
  (shell bash)
  (deps
   (env_var OCAML_COLOR)
+  (env_var NO_COLOR)
   (env_var DUNE_JOBS)
   ../dune.jq
   %{bin:jq}
@@ -39,16 +44,15 @@
  (timeout 60))
 
 (cram
- (applies_to windows-diff github6644)
+ (applies_to windows-diff staged-pps-with-sandboxing-gh6644)
  (alias runtest-windows))
 
-;; DISABLED TESTS
+(cram
+ (applies_to empty-meta-version-gh9176)
+ (deps
+  (package dune-build-info)))
 
-(subdir
- env
- (cram
-  (applies_to envs-and-contexts)
-  (enabled_if false)))
+;; DISABLED TESTS
 
 (cram
  (applies_to fdo)
@@ -81,7 +85,12 @@
    (= %{system} macosx))))
 
 (cram
- (applies_to github764)
+ (applies_to symlink-scan-cycle-github764)
+ (enabled_if
+  (<> %{ocaml-config:system} win)))
+
+(cram
+ (applies_to rpc-batch-idle-client)
  (enabled_if
   (<> %{ocaml-config:system} win)))
 
@@ -106,7 +115,14 @@
  (deps %{bin:truncate}))
 
 (cram
- (applies_to github8041)
+ (applies_to repository-lint)
+ (enabled_if %{bin-available:rg})
+ (deps
+  %{bin:rg}
+  (source_tree %{project_root})))
+
+(cram
+ (applies_to sendfile-fallback-copy-gh8041)
  (enabled_if
   (= %{system} linux))
  (deps %{bin:strace} %{bin:head}))
@@ -116,7 +132,7 @@
  (deps %{bin:refmt}))
 
 (cram
- (applies_to github4194)
+ (applies_to oversize-action-output-gh4194)
  (enabled_if
   (not %{arch_sixtyfour}))
  (deps %{bin:ocaml}))
@@ -130,3 +146,12 @@
  (applies_to hidden-deps-unsupported)
  (enabled_if
   (< %{ocaml_version} 5.2.0)))
+
+;; Skip on macOS: dune hangs on SIGINT due to a known macOS sigwait issue
+;; (see signal_watcher.ml). The SIGTERM-before-SIGKILL logic is
+;; platform-independent; this test just cannot exercise it on macOS.
+
+(cram
+ (applies_to graceful-shutdown)
+ (enabled_if
+  (<> %{system} macosx)))

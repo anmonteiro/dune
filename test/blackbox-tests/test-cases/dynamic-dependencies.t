@@ -1,8 +1,6 @@
 Tests for dynamic dependencies computed from the `%{read:...}` family of macros
 
-  $ cat > dune-project <<EOF
-  > (lang dune 3.1)
-  > EOF
+  $ make_dune_project 3.1
 
 Define 2 rules and a file containing their paths
 
@@ -37,13 +35,11 @@ Building `./output` should now produce a file with contents "depA depB"
   $ dune build ./output
 
   $ cat _build/default/output
-  depA depB
+  ./depA ./depB
 
 Doesn't work in dune pre 3.0
 
-  $ cat > dune-project <<EOF
-  > (lang dune 3.0)
-  > EOF
+  $ make_dune_project 3.0
 
   $ dune build ./output
   File "dune", line 12, characters 7-23:
@@ -55,9 +51,7 @@ Doesn't work in dune pre 3.0
 
 Works with aliases and other dependency specifications
 
-  $ cat > dune-project <<EOF
-  > (lang dune 3.1)
-  > EOF
+  $ make_dune_project 3.1
 
   $ cat > deps.d <<EOF
   > ((alias depA) (universe) depB another_dep)
@@ -90,7 +84,7 @@ Works with aliases and other dependency specifications
   $ dune build @output
   building depA
   building depB
-  dependencies depB another_dep
+  dependencies ./depB ./another_dep
 
 Multiple `(include)` nesting
 
@@ -107,5 +101,4 @@ Multiple `(include)` nesting
   > EOF
 
   $ dune build @nested
-  metadeps: depB another_dep
-
+  metadeps: ./depB ./another_dep

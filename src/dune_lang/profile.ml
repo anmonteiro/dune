@@ -8,6 +8,21 @@ type t =
   | Release
   | User_defined of string
 
+let repr =
+  Repr.variant
+    "profile"
+    [ Repr.case0 "Dev" ~test:(function
+        | Dev -> true
+        | Release | User_defined _ -> false)
+    ; Repr.case0 "Release" ~test:(function
+        | Release -> true
+        | Dev | User_defined _ -> false)
+    ; Repr.case "User_defined" Repr.string ~proj:(function
+        | User_defined s -> Some s
+        | Dev | Release -> None)
+    ]
+;;
+
 include (
   Stringlike.Make (struct
     type nonrec t = t
@@ -16,15 +31,25 @@ include (
     let module_ = "Profile"
 
     let of_string_opt p =
-      (* TODO actually validate *)
-      Some
-        (match p with
-         | "dev" -> Dev
-         | "release" -> Release
-         | s -> User_defined s)
+      let is_valid_char = function
+        | 'a' .. 'z' | 'A' .. 'Z' | '0' .. '9' | '_' | '-' -> true
+        | _ -> false
+      in
+      let is_valid_string s = s <> "" && String.for_all s ~f:is_valid_char in
+      match p with
+      | "dev" -> Some Dev
+      | "release" -> Some Release
+      | "_" -> None
+      | s -> if is_valid_string s then Some (User_defined s) else None
     ;;
 
-    let description_of_valid_string = None
+    let description_of_valid_string =
+      Some
+        (Pp.text
+           "Profile names must be non-empty and can only contain letters, digits, '_' \
+            and '-'. The name '_' is reserved as a wildcard.")
+    ;;
+
     let hint_valid = None
 
     let to_string = function
@@ -35,13 +60,11 @@ include (
   end) :
     Stringlike with type t := t)
 
-let equal x y =
-  match x, y with
-  | Dev, Dev -> true
-  | Release, Release -> true
-  | User_defined x, User_defined y -> String.equal x y
-  | _, _ -> false
-;;
+include Repr.Poly (struct
+    type nonrec t = t
+
+    let repr = repr
+  end)
 
 let default = Dev
 
@@ -60,10 +83,4 @@ let is_inline_test = function
   | _ -> true
 ;;
 
-let to_dyn =
-  let open Dyn in
-  function
-  | Dev -> variant "Dev" []
-  | Release -> variant "Release" []
-  | User_defined s -> variant "User_defined" [ string s ]
-;;
+let to_dyn = Repr.to_dyn repr

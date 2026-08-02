@@ -4,6 +4,7 @@ module Category : sig
   type t =
     | Rpc
     | Gc
+    | Alloc
     | Fd
     | Sandbox
     | Persistent
@@ -24,6 +25,7 @@ module Category : sig
     | Digest
     | Artifact_substitution
     | Thread
+    | Runtime
 end
 
 module Event : sig
@@ -33,6 +35,7 @@ module Event : sig
 
     val create_sandbox : loc:Loc.t -> data
     val fetch : url:string -> target:Path.t -> checksum:string option -> data
+    val pkg_load_lock_dir : path:string -> data
   end
 
   type t
@@ -63,7 +66,8 @@ module Event : sig
     }
 
   val process_start
-    :  pid:Pid.t
+    :  extra_args:(string * Sexp.t) list
+    -> pid:Pid.t
     -> dir:Path.t option
     -> prog:string
     -> args:string list
@@ -76,7 +80,8 @@ module Event : sig
     -> t
 
   val process
-    :  name:string option
+    :  extra_args:(string * Sexp.t) list
+    -> name:string option
     -> started_at:Time.t
     -> targets:targets option
     -> categories:string list
@@ -111,6 +116,35 @@ module Event : sig
 
   val scan_source : name:string -> start:Time.t -> stop:Time.t -> dir:Path.Source.t -> t
   val scheduler_idle : unit -> t
+  val process_cleanup_start : unit -> t
+  val process_cleanup_sigkill : unit -> t
+  val process_cleanup_finish : unit -> t
+
+  val child_process_cleanup
+    :  pids:Pid.t list
+    -> [ `Started | `Sent_signal of Signal.t | `Finished | `Failed ]
+    -> t
+
+  val process_group_cleanup
+    :  pid:Pid.t
+    -> [ `Already_exited
+       | `Sent_signal of Signal.t
+       | `Timed_out of Time.Span.t
+       | `Finished
+       ]
+    -> t
+
+  val watch_build_start : run_id:int -> restart:bool -> start:Time.t -> t
+  val watch_build_restart : run_id:int -> reasons:string list -> at:Time.t -> t
+
+  val watch_build_finish
+    :  run_id:int
+    -> outcome:[ `Success | `Failure ]
+    -> start:Time.t
+    -> stop:Time.t
+    -> restart_duration:Time.Span.t option
+    -> t
+
   val init : version:string option -> t
   val gc : unit -> t
   val fd_count : unit -> t option
@@ -131,14 +165,6 @@ module Event : sig
   val resolve_targets : Path.t list -> alias list -> t
   val load_dir : Path.t -> t
   val log : Log.Message.t -> t
-
-  val file_watcher
-    :  [ `File of Path.t * [ `Created | `Deleted | `File_changed | `Unknown ]
-       | `Queue_overflow
-       | `Sync of int
-       | `Watcher_terminated
-       ]
-    -> t
 
   val error
     :  Loc.t option
@@ -165,7 +191,16 @@ module Event : sig
 
     val packet_read : id:int -> success:bool -> error:string option -> t
     val packet_write : id:int -> count:int -> t
-    val accept : success:bool -> error:string option -> t
+
+    val accept
+      :  id:int
+      -> stage
+      -> [ `Close | `Error of Exn_with_backtrace.t | `Accept ] option
+      -> t
+
+    val shutdown : id:int -> stage -> t
+    val startup_failure : Exn_with_backtrace.t -> t
+    val registry_write : path:string -> t
     val close : id:int -> t
     val dropped_write_client_disconnect : Exn.t -> t
   end
@@ -188,6 +223,21 @@ module Event : sig
   module Action : sig
     val start : name:string -> start:Time.t -> t
     val finish : name:string -> start:Time.t -> t
+
+    module Runner : sig
+      type kind =
+        | Spawn of Pid.t
+        | Connection_start
+        | Connection_established
+        | Connected
+        | Request_sent
+        | Cancel_request_sent
+        | Cancel_start
+        | Disconnected
+
+      val runner_event : name:Action_runner_name.t -> kind -> t
+    end
+
     val write_file : start:Time.t -> finish:Time.t -> file:Path.t -> size:int -> t
     val trace : digest:string -> Csexp.t -> t
   end
@@ -217,6 +267,14 @@ module Event : sig
       -> new_stats:Dyn.t
       -> t
 
+    val reread_dir
+      :  path:Path.t
+      -> old_contents:Dyn.t
+      -> new_contents:Dyn.t
+      -> old_stats:Dyn.t
+      -> new_stats:Dyn.t
+      -> t
+
     val dropped_stale_mtimes : Path.t list -> fs_now:Time.t -> t
   end
 
@@ -224,22 +282,46 @@ module Event : sig
   val artifact_substitution : file:Path.t -> placeholder:Dyn.t -> value:string -> t
 end
 
+module File_watcher_event : sig
+  type kind =
+    | Created
+    | Deleted
+    | File_changed
+    | Unknown
+
+  type t =
+    [ `File of Path.t * kind
+    | `Queue_overflow
+    | `Sync of int
+    | `Watcher_terminated
+    ]
+
+  val kind_repr : kind Repr.t
+  val to_event : t -> Event.t
+  val debounce_extend : files:(Path.t * kind) list -> invalidation_empty:bool -> Event.t
+end
+
 module Out : sig
   type t
 
-  val create : Path.t -> t
+  val create : [ `Path of Path.t | `Fd of Fd.t ] -> t
   val emit : ?buffered:bool -> t -> Event.t -> unit
   val start : t option -> (unit -> Event.Async.data) -> Event.Async.t option
   val finish : t -> Event.Async.t option -> unit
 end
 
 val global : unit -> Out.t option
-val set_global : Out.t -> unit
+val set_global : Out.t -> path:Path.t -> unit
+val set_global_inherited_fd : ?common_args:(string * Sexp.t) list -> Fd.t -> unit
+val duplicate_global_fd : unit -> Fd.t option
 val always_emit : Event.t -> unit
 val enabled : Category.t -> bool
 val emit : ?buffered:bool -> Category.t -> (unit -> Event.t) -> unit
 val emit_all : ?buffered:bool -> Category.t -> (unit -> Event.t list) -> unit
+val emit_runtime : unit -> unit
 val flush : unit -> unit
+val reset_alloc_profile : unit -> unit
+val capture_alloc_profile : [ `Build of int | `Exit ] -> Event.t option
 val at_exit : At_exit.t
 
 module Private : sig

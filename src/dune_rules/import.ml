@@ -52,6 +52,8 @@ include struct
   module Sandbox_config = Sandbox_config
   module Sandbox_mode = Sandbox_mode
   module Action = Action
+  module Action_ext = Action_ext
+  module Action_plugin = Action_plugin
   module Process = Process
   module Execution_parameters = Execution_parameters
   module Build_context = Build_context
@@ -59,6 +61,7 @@ include struct
   module Load_rules = Load_rules
   module Response_file = Response_file
   module Subdir_set = Subdir_set
+  module Fs = Fs
 end
 
 module Compound_user_error = Dune_rpc.Private.Compound_user_error
@@ -112,6 +115,7 @@ include struct
   module Package_constraint = Package_constraint
   module Dune_project_name = Dune_project_name
   module Package = Package
+  module Compilation_mode = Compilation_mode
   module Dialect = Dialect
   module Lib_mode = Lib_mode
   module Module_name = Module_name
@@ -119,7 +123,6 @@ include struct
   module Dune_project = Dune_project
   module File_binding = File_binding
   module Foreign_language = Foreign_language
-  module Coq_env = Coq_env
   module Rocq_env = Rocq_env
   module Menhir_env = Menhir_env
   module Dune_env = Dune_env

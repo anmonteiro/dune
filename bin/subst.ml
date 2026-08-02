@@ -159,12 +159,18 @@ let subst_file path ~map opam_package_files =
     in
     let path = Path.source path in
     let subst = subst_string s ~map path in
+    let replace_or_prepend_version ver file_contents =
+      let re = Re.(compile (seq [ bol; str "version:"; rep (compl [ char '\n' ]) ])) in
+      if Re.execp re file_contents
+      then Re.replace_string re ~by:ver file_contents
+      else ver ^ "\n" ^ file_contents
+    in
     let contents =
       match version, subst with
       | None, None -> None
-      | Some x, None -> Some (x ^ "\n" ^ s)
+      | Some x, None -> Some (replace_or_prepend_version x s)
       | None, Some x -> Some x
-      | Some x, Some y -> Some (x ^ "\n" ^ y)
+      | Some x, Some y -> Some (replace_or_prepend_version x y)
     in
     Option.iter contents ~f:(Io.write_file path)
 ;;
@@ -187,7 +193,7 @@ module Dune_project = struct
     ; project : Dune_project.t
     }
 
-  let filename = Path.Source.of_string Dune_project.filename
+  let filename = Path.Source.of_string (Filename.to_string Dune_project.filename)
 
   let load ~dir ~files ~infer_from_opam_files =
     let open Memo.O in
@@ -335,9 +341,10 @@ let subst vcs =
   let open Memo.O in
   (match vcs with
    | Some vcs ->
-     let+ version = Vcs.describe vcs
-     and+ commit_id = Vcs.commit_id vcs
-     and+ files = Vcs.files vcs in
+     let needed_for = "by 'dune subst' to infer version information and list files" in
+     let+ version = Vcs.describe ~needed_for vcs
+     and+ commit_id = Vcs.commit_id ~needed_for vcs
+     and+ files = Vcs.files ~needed_for vcs in
      Some (version, commit_id, files)
    | None ->
      let* root = Source_tree.root () in
@@ -355,9 +362,11 @@ let subst vcs =
                ~trace_event_name:"Subst"
                ~f:(fun dir ->
                  Source_tree.Dir.filenames dir
-                 |> Filename.Set.fold ~init:Path.Source.Set.empty ~f:(fun fname acc ->
-                   Path.Source.relative (Source_tree.Dir.path dir) fname
-                   |> Path.Source.Set.add acc)
+                 |> Filename.Array.Set.fold
+                      ~init:Path.Source.Set.empty
+                      ~f:(fun fname acc ->
+                        Path.Source.relative_fname (Source_tree.Dir.path dir) fname
+                        |> Path.Source.Set.add acc)
                  |> Memo.return)
        in
        Some (None, None, Path.Source.Set.to_list files))
@@ -370,11 +379,10 @@ let subst vcs =
       (* CR-soon rgrinberg: unify this check with the above version check *)
       (let files =
          (* Filter-out files form sub-directories *)
-         List.fold_left files ~init:String.Set.empty ~f:(fun acc fn ->
+         List.filter_map files ~f:(fun fn ->
            let fn = Path.source fn in
-           if Path.is_root (Path.parent_exn fn)
-           then String.Set.add acc (Path.to_string fn)
-           else acc)
+           if Path.is_root (Path.parent_exn fn) then Some (Path.basename fn) else None)
+         |> Filename.Array.Set.of_list
        in
        Dune_project.load ~dir:Path.Source.root ~files ~infer_from_opam_files:true)
       >>| function

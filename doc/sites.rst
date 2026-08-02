@@ -34,7 +34,7 @@ will be installed as a sub-directory.
 
 .. code:: dune
 
-   (lang dune 3.23)
+   (lang dune {{latest}})
    (using dune_site 0.1)
    (name mygui)
 
@@ -100,8 +100,9 @@ by Dune. As such, the dependency on ``dune-site`` must be specified explicitly.
 
 .. warning::
 
-   An executable that depends (even transitively) on `dune-site` will be compiled with
-   `linkall`, regardless of other options.
+   An executable that depends, even transitively, on ``dune-site`` or
+   ``dune-site.plugins`` will be compiled with ``-linkall``, regardless of
+   other options.
 
 .. note::
 
@@ -249,7 +250,7 @@ Main Executable (C)
 
 .. code:: dune
 
-  (lang dune 3.23)
+  (lang dune {{latest}})
   (using dune_site 0.1)
   (name app)
 

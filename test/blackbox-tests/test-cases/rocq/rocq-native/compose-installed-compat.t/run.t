@@ -29,8 +29,6 @@ We setup an installed theory. Note that lib/coq/user-contrib doesn't exist yet,
 so this also tests that it won't be a problem.
 
   $ dune build --root B @install
-  Entering directory 'B'
-  Leaving directory 'B'
   $ dune install --root B --prefix=$PWD --display=short
   Installing $TESTCASE_ROOT/lib/B/META
   Installing $TESTCASE_ROOT/lib/B/dune-package
@@ -50,7 +48,7 @@ Next we go into our Dune project and build it.
 
 Now we check the flags that were passed to coqdep and coqc:
 
-  $ dune trace cat --trace-file A/_build/trace.csexp | jq 'include "dune"; coqcCoqdepFlags'
+  $ dune trace cat --trace-file A/_build/trace.csexp | jq_dune 'coqcCoqdepFlags'
   {
     "name": "rocq",
     "args": [

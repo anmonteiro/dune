@@ -45,15 +45,18 @@ module Event = struct
   type args = (string * Arg.t) list
   type t = Sexp.t
 
+  let common_args = ref []
   let base ~name cat : Sexp.t list = [ Atom (Category.to_string cat); Atom name ]
+  let record_args args = Arg.record (args @ !common_args)
+  let set_common_args args = common_args := args
 
   let complete ?(args = []) ~name ~start ~dur cat : t =
     List
-      (base ~name cat @ [ Sexp.List [ Arg.time start; Arg.span dur ] ] @ Arg.record args)
+      (base ~name cat @ [ Sexp.List [ Arg.time start; Arg.span dur ] ] @ record_args args)
   ;;
 
   let instant ?(args = []) ~name ts cat : t =
-    List (base ~name cat @ [ Arg.time ts ] @ Arg.record args)
+    List (base ~name cat @ [ Arg.time ts ] @ record_args args)
   ;;
 
   let async ?(args = []) id ~name ts stage cat : t =
@@ -68,7 +71,7 @@ module Event = struct
                   | `Start -> "start"
                   | `Stop -> "stop") )
            ]
-       @ Arg.record args)
+       @ record_args args)
   ;;
 end
 
@@ -102,9 +105,34 @@ module Async = struct
     in
     { args = Some args; cat = Pkg; name = "fetch" }
   ;;
+
+  let pkg_load_lock_dir ~path =
+    let args = [ "path", Arg.string path ] in
+    { args = Some args; cat = Pkg; name = "load_lock_dir" }
+  ;;
 end
 
 type t = Event.t
+
+type alloc_source =
+  { source : string
+  ; estimated_words : int
+  ; samples : int
+  }
+
+type alloc_entry =
+  { source : string
+  ; trace : string list
+  ; estimated_words : int
+  ; samples : int
+  }
+
+type alloc_heap =
+  { total_words : int
+  ; total_samples : int
+  ; by_source : alloc_source list
+  ; top : alloc_entry list
+  }
 
 let scan_source ~name ~start ~stop ~dir =
   let dur = Time.diff stop start in
@@ -124,7 +152,7 @@ let init ~version =
     let args =
       [ "build_dir", Arg.build_path Path.Build.root
       ; "argv", Arg.list (Array.to_list Sys.argv |> List.map ~f:Arg.string)
-      ; "env", Arg.list (Unix.environment () |> Array.to_list |> List.map ~f:Arg.string)
+      ; "env", Arg.list (Env.initial |> Env.to_unix |> List.map ~f:Arg.string)
       ; "root", Arg.string Path.(to_absolute_filename root)
       ; "pid", Arg.int (Unix.getpid ())
       ; "initial_cwd", Arg.string Fpath.initial_cwd
@@ -136,6 +164,47 @@ let init ~version =
     | Some v -> ("version", Arg.string v) :: args
   in
   Event.instant ~args ~name:"init" now Config
+;;
+
+let make_rusage_args resource_usage =
+  match resource_usage with
+  | None -> []
+  | Some
+      { Proc.Resource_usage.user_cpu_time
+      ; system_cpu_time
+      ; maxrss
+      ; minflt
+      ; majflt
+      ; inblock
+      ; oublock
+      ; nvcsw
+      ; nivcsw
+      } ->
+    [ ( "rusage"
+      , Arg.record
+          [ "user_cpu_time", Arg.span user_cpu_time
+          ; "system_cpu_time", Arg.span system_cpu_time
+          ; "maxrss", Arg.int maxrss
+          ; "minflt", Arg.int minflt
+          ; "majflt", Arg.int majflt
+          ; "inblock", Arg.int inblock
+          ; "oublock", Arg.int oublock
+          ; "nvcsw", Arg.int nvcsw
+          ; "nivcsw", Arg.int nivcsw
+          ]
+        |> Arg.list )
+    ]
+;;
+
+let make_process_times_args () =
+  let args =
+    [ "count", Arg.int (Metrics.Build.process_count ())
+    ; "elapsed_time", Arg.span (Metrics.Build.process_time ())
+    ; "user_cpu_time", Arg.span (Metrics.Build.process_user_cpu_time ())
+    ; "system_cpu_time", Arg.span (Metrics.Build.process_system_cpu_time ())
+    ]
+  in
+  [ "process_times", Arg.record args |> Arg.list ]
 ;;
 
 let exit () =
@@ -172,6 +241,7 @@ let exit () =
       |> Arg.list
     in
     [ "gc", gc; "io", io; "digest", digest ]
+    @ make_rusage_args (Proc.Resource_usage.get_self ())
   in
   Event.instant ~args ~name:"exit" now Config
 ;;
@@ -179,6 +249,134 @@ let exit () =
 let scheduler_idle () =
   let now = Time.now () in
   Event.instant ~name:"watch mode iteration" now Scheduler
+;;
+
+let process_cleanup_start () =
+  Event.instant ~name:"process-cleanup-start" (Time.now ()) Process
+;;
+
+let process_cleanup_sigkill () =
+  Event.instant ~name:"process-cleanup-sigkill" (Time.now ()) Process
+;;
+
+let process_cleanup_finish () =
+  Event.instant ~name:"process-cleanup-finish" (Time.now ()) Process
+;;
+
+let child_process_cleanup ~pids stage =
+  let stage, extra_args =
+    match stage with
+    | `Started -> "started", []
+    | `Sent_signal signal -> "sent-signal", [ "signal", Arg.string (Signal.name signal) ]
+    | `Finished -> "finished", []
+    | `Failed -> "failed", []
+  in
+  let args =
+    [ "stage", Arg.string stage
+    ; "pid_count", Arg.int (List.length pids)
+    ; "pids", Arg.list (List.map pids ~f:(fun pid -> Arg.int (Pid.to_int pid)))
+    ]
+  in
+  Event.instant
+    ~args:(args @ extra_args)
+    ~name:"child-process-cleanup"
+    (Time.now ())
+    Process
+;;
+
+let process_group_cleanup ~pid stage =
+  let stage, extra_args =
+    match stage with
+    | `Already_exited -> "already-exited", []
+    | `Sent_signal signal -> "sent-signal", [ "signal", Arg.string (Signal.name signal) ]
+    | `Timed_out timeout -> "timed-out", [ "timeout", Arg.span timeout ]
+    | `Finished -> "finished", []
+  in
+  let args = [ "pid", Arg.int (Pid.to_int pid); "stage", Arg.string stage ] in
+  Event.instant
+    ~args:(args @ extra_args)
+    ~name:"process-group-cleanup"
+    (Time.now ())
+    Process
+;;
+
+let watch_build_start ~run_id ~restart ~start =
+  let args =
+    [ "run_id", Arg.int run_id; "restart", Arg.bool restart ]
+    @ make_rusage_args (Proc.Resource_usage.get_self ())
+  in
+  Event.instant ~name:"build-start" ~args start Build
+;;
+
+let watch_build_restart ~run_id ~reasons ~at =
+  let args =
+    [ "run_id", Arg.int run_id; "reasons", Arg.list (List.map reasons ~f:Arg.string) ]
+  in
+  Event.instant ~name:"build-restart" ~args at Build
+;;
+
+let watch_build_finish ~run_id ~outcome ~start ~stop ~restart_duration =
+  let dur = Time.diff stop start in
+  let outcome =
+    match outcome with
+    | `Success -> "success"
+    | `Failure -> "failure"
+  in
+  let args =
+    [ "run_id", Arg.int run_id; "outcome", Arg.string outcome ]
+    @ (match restart_duration with
+       | None -> []
+       | Some restart_duration -> [ "restart_duration", Arg.span restart_duration ])
+    @ make_process_times_args ()
+    @ make_rusage_args (Proc.Resource_usage.get_self ())
+  in
+  Event.complete ~name:"build-finish" ~args ~start ~dur Build
+;;
+
+let alloc_summary ~phase ~run_id ~minor ~major ~promoted =
+  let now = Time.now () in
+  let source ({ source; estimated_words; samples } : alloc_source) =
+    Arg.record
+      [ "source", Arg.string source
+      ; "estimated_words", Arg.int estimated_words
+      ; "samples", Arg.int samples
+      ]
+    |> Arg.list
+  in
+  let entry ({ source; trace; estimated_words; samples } : alloc_entry) =
+    Arg.record
+      [ "source", Arg.string source
+      ; "trace", Arg.list (List.map trace ~f:Arg.string)
+      ; "estimated_words", Arg.int estimated_words
+      ; "samples", Arg.int samples
+      ]
+    |> Arg.list
+  in
+  let heap { total_words; total_samples; by_source; top } =
+    Arg.record
+      [ "total_words", Arg.int total_words
+      ; "total_samples", Arg.int total_samples
+      ; "by_source", Arg.list (List.map by_source ~f:source)
+      ; "top", Arg.list (List.map top ~f:entry)
+      ]
+    |> Arg.list
+  in
+  let args =
+    [ ( "phase"
+      , Arg.string
+          (match phase with
+           | `Build -> "build"
+           | `Exit -> "exit") )
+    ; "minor", heap minor
+    ; "major", heap major
+    ; "promoted", heap promoted
+    ]
+    @
+    match run_id with
+    | None -> []
+    | Some run_id -> [ "run_id", Arg.int run_id ]
+  in
+  Event.instant ~name:"summary" ~args now Alloc
 ;;
 
 module Exit_status = struct
@@ -203,41 +401,11 @@ let args_of_targets =
       [ ( name
         , Arg.list
             (Filename.Set.to_list_map set ~f:(fun x ->
-               Arg.build_path (Path.Build.relative root x))) )
+               Arg.build_path (Path.Build.relative_fname root x))) )
       ]
   in
   fun { root; files; dirs } ->
     paths root "target_files" files @ paths root "target_dirs" dirs
-;;
-
-let make_rusage_args resource_usage =
-  match resource_usage with
-  | None -> []
-  | Some
-      { Proc.Resource_usage.user_cpu_time
-      ; system_cpu_time
-      ; maxrss
-      ; minflt
-      ; majflt
-      ; inblock
-      ; oublock
-      ; nvcsw
-      ; nivcsw
-      } ->
-    [ ( "rusage"
-      , Arg.record
-          [ "user_cpu_time", Arg.span user_cpu_time
-          ; "system_cpu_time", Arg.span system_cpu_time
-          ; "maxrss", Arg.int maxrss
-          ; "minflt", Arg.int minflt
-          ; "majflt", Arg.int majflt
-          ; "inblock", Arg.int inblock
-          ; "oublock", Arg.int oublock
-          ; "nvcsw", Arg.int nvcsw
-          ; "nivcsw", Arg.int nivcsw
-          ]
-        |> Arg.list )
-    ]
 ;;
 
 let make_exit exit =
@@ -252,6 +420,7 @@ let make_exit exit =
 ;;
 
 let process_start
+      ~extra_args
       ~pid
       ~dir
       ~prog
@@ -287,12 +456,13 @@ let process_start
            | Some timeout -> [ "timeout", Arg.span timeout ])
         ]
     in
-    always @ extended
+    always @ extended @ extra_args
   in
   Event.instant ~args ~name:"start" started_at Process
 ;;
 
 let process
+      ~extra_args
       ~name
       ~started_at
       ~targets
@@ -336,7 +506,7 @@ let process
         ]
     in
     let resource_usage = make_rusage_args resource_usage in
-    always @ extended @ resource_usage
+    always @ extended @ resource_usage @ extra_args
   in
   Event.complete ~args ~start:started_at ~dur:elapsed_time ~name:"finish" Process
 ;;
@@ -407,11 +577,8 @@ module Rpc = struct
     | `Stop
     ]
 
-  let session ~id stage =
-    let now = Time.now () in
-    let id = Event.Id.int id in
-    Event.async id now stage ~name:"rpc_session" Rpc
-  ;;
+  let server ~id ~name stage = Event.async (Event.Id.int id) (Time.now ()) stage ~name Rpc
+  let session ~id stage = server ~id ~name:"rpc_session" stage
 
   let rec to_json : Sexp.t -> Arg.t = function
     | Atom s -> Arg.string s
@@ -451,15 +618,29 @@ module Rpc = struct
     Event.instant ~name:"packet_write" ~args now Rpc
   ;;
 
-  let accept ~success ~error =
-    let now = Time.now () in
+  let accept ~id stage res =
     let args =
-      let base = [ "success", Arg.bool success ] in
-      match error with
-      | None -> base
-      | Some err -> ("error", Arg.string err) :: base
+      match res with
+      | None -> []
+      | Some `Close -> [ "status", Arg.string "close" ]
+      | Some `Accept -> [ "status", Arg.string "accept" ]
+      | Some (`Error exn) -> [ "error", Arg.dyn (Exn_with_backtrace.to_dyn exn) ]
     in
-    Event.instant ~args ~name:"accept" now Rpc
+    Event.async (Event.Id.int id) ~args ~name:"accept" (Time.now ()) stage Rpc
+  ;;
+
+  let shutdown ~id stage = server ~id ~name:"shutdown" stage
+
+  let startup_failure exn =
+    let now = Time.now () in
+    let args = [ "error", Arg.dyn (Exn_with_backtrace.to_dyn exn) ] in
+    Event.instant ~args ~name:"startup-failure" now Rpc
+  ;;
+
+  let registry_write ~path =
+    let now = Time.now () in
+    let args = [ "path", Arg.string path ] in
+    Event.instant ~args ~name:"registry-write" now Rpc
   ;;
 
   let close ~id =
@@ -550,25 +731,6 @@ let load_dir dir =
   Event.instant ~name:"load-dir" ~args now Debug
 ;;
 
-let file_watcher event =
-  (* CR-soon rgrinberg: this timestamp is wrong *)
-  let now = Time.now () in
-  let name, args =
-    match event with
-    | `Queue_overflow -> "queue_overflow", []
-    | `Sync id -> "sync", [ "id", Arg.int id ]
-    | `Watcher_terminated -> "watcher_terminated", []
-    | `File (path, kind) ->
-      ( (match kind with
-         | `Created -> "create"
-         | `Deleted -> "delete"
-         | `File_changed -> "changed"
-         | `Unknown -> "unknown")
-      , [ "path", Arg.path path ] )
-  in
-  Event.instant ~name ~args now File_watcher
-;;
-
 let error loc kind exn backtrace memo_stack =
   let now = Time.now () in
   let name =
@@ -653,6 +815,35 @@ module Action = struct
     Event.complete ~args:[ "name", Arg.string name ] ~name:"finish" ~start ~dur Action
   ;;
 
+  module Runner = struct
+    type kind =
+      | Spawn of Pid.t
+      | Connection_start
+      | Connection_established
+      | Connected
+      | Request_sent
+      | Cancel_request_sent
+      | Cancel_start
+      | Disconnected
+
+    let name_and_args = function
+      | Spawn pid -> "runner-spawn", [ "pid", Arg.int (Pid.to_int pid) ]
+      | Connection_start -> "runner-connection-start", []
+      | Connection_established -> "runner-connection-established", []
+      | Connected -> "runner-connected", []
+      | Request_sent -> "runner-request-sent", []
+      | Cancel_request_sent -> "runner-cancel-request-sent", []
+      | Cancel_start -> "runner-cancel-start", []
+      | Disconnected -> "runner-disconnected", []
+    ;;
+
+    let runner_event ~name kind =
+      let event_name, extra_args = name_and_args kind in
+      let args = ("name", Arg.string (Action_runner_name.to_string name)) :: extra_args in
+      Event.instant ~args ~name:event_name (Time.now ()) Action
+    ;;
+  end
+
   let write_file ~start ~finish ~file ~size =
     let dur = Time.diff finish start in
     let args = [ "file", Arg.path file; "size", Arg.int size ] in
@@ -726,6 +917,19 @@ module Digest = struct
     Event.instant ~args ~name:"redigest" now Digest
   ;;
 
+  let reread_dir ~path ~old_contents ~new_contents ~old_stats ~new_stats =
+    let now = Time.now () in
+    let args =
+      [ "path", Arg.path path
+      ; "old_contents", Arg.dyn old_contents
+      ; "new_contents", Arg.dyn new_contents
+      ; "old_stats", Arg.dyn old_stats
+      ; "new_stats", Arg.dyn new_stats
+      ]
+    in
+    Event.instant ~args ~name:"reread_dir" now Digest
+  ;;
+
   let dropped_stale_mtimes paths ~fs_now =
     let now = Time.now () in
     let args =
@@ -777,4 +981,24 @@ let sandbox name ~start ~stop ~queued loc ~dir =
     | `Corrected -> "corrected"
   in
   Event.complete ~args ~name ~start ~dur Sandbox
+;;
+
+let runtime time what phase =
+  let args =
+    [ "phase", Arg.string (Runtime.runtime_phase_name phase)
+    ; ( "what"
+      , Arg.string
+          (match what with
+           | `Begin -> "begin"
+           | `End -> "end") )
+    ]
+  in
+  Event.instant ~args ~name:"event" time Runtime
+;;
+
+let runtime_counter time name value =
+  let args =
+    [ "name", Arg.string (Runtime.runtime_counter_name name); "value", Arg.int value ]
+  in
+  Event.instant ~args ~name:"counter" time Runtime
 ;;

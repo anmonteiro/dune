@@ -1,7 +1,7 @@
-(lang dune 3.23)
-;          ^^^^
-; When changing the version, don't forget to regenerate *.opam files
-; by running [dune build].
+(lang dune 3.24)
+;;         ^^^^
+;; When changing the version, don't forget to regenerate *.opam files
+;; by running [$ dune build @opam --auto-promote].
 (name dune)
 
 (generate_opam_files true)
@@ -11,7 +11,7 @@
 
 (strict_package_deps false)
 
-; Reserved for Dune itself. This is to help with the bootstrap
+;; Reserved for Dune itself. This is to help with the bootstrap
 (using dune-bootstrap-info 0.1)
 
 ;; This is required to allow Dune to access OxCaml variable. It
@@ -62,7 +62,10 @@ for free.
  (dir otherlibs/dune-build-info)
  (synopsis "Embed build information inside executable")
  (depends
-  (ocaml (>= 4.08)))
+  ; NOTE: The wider OCaml ecosystem can be deeply affected by changes to the dune
+  ; lower bound. Increases should be announced in advance, and only occur at
+  ; minor version bounds.
+  (ocaml (>= 4.14)))
  (description "\
 The build-info library allows to access information about how the
 executable was built, such as the version of the project at which it
@@ -98,7 +101,7 @@ no stability guarantee.
  (dir otherlibs/configurator)
  (synopsis "Helper library for gathering system configuration")
  (depends
-  (ocaml (>= 4.08.0))
+  (ocaml (>= 4.14))
   base-unix
   (csexp (>= 1.5.0)))
  (description "\

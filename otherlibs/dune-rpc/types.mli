@@ -7,6 +7,7 @@ module Id : sig
   val sexp : (t, Conv.values) Conv.t
   val required_field : (t, Conv.fields) Conv.t
   val optional_field : (t option, Conv.fields) Conv.t
+  val repr : t Stdune.Repr.t
   val to_dyn : t -> Dyn.t
   val hash : t -> int
   val equal : t -> t -> bool
@@ -226,7 +227,6 @@ module Decl : sig
       -> generations:('req, 'resp) gen list
       -> ('req, 'resp) t
 
-    val print_generations : ('req, 'resp) t -> unit
     val witness : ('a, 'b) t -> ('a, 'b) witness
   end
 
@@ -253,7 +253,6 @@ module Decl : sig
       }
 
     val make : method_:Method.Name.t -> generations:'payload gen list -> 'payload t
-    val print_generations : 'payload t -> unit
     val witness : 'a t -> 'a witness
   end
 

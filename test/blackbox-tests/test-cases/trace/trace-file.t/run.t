@@ -3,13 +3,13 @@
 
 This captures the commands that are being run:
 
-  $ dune trace cat | jq 'include "dune";
+  $ dune trace cat | jq_dune '
   >   processes
   > | .args
   > | del(.pid)
   > | .prog |= sub(".*/"; "")
   > | .rusage |= keys
-  > '
+  > ' | censor
   {
     "process_args": [
       "-config"
@@ -41,7 +41,7 @@ This captures the commands that are being run:
     "dir": "_build/default",
     "exit": 0,
     "target_files": [
-      "_build/default/.prog.eobjs/prog.impl.d"
+      "_build/.actions/default/$DIGEST"
     ],
     "rusage": [
       "inblock",
@@ -187,3 +187,24 @@ As well as data about the garbage collector:
     "stack_size",
     "top_heap_words"
   ]
+
+The [DUNE_TRACE] syntax can also update the default categories left to right:
+
+  $ check () {
+  >   rm -rf _build
+  >   export DUNE_TRACE="$1"
+  >   dune build prog.exe
+  >   dune trace cat | jq -sc --arg trace "$1" \
+  >     '{ trace: $trace
+  >      , process: any(.[]; .cat == "process")
+  >      , gc: any(.[]; .cat == "gc")
+  >      }'
+  > }
+  $ check gc
+  {"trace":"gc","process":false,"gc":true}
+  $ check +gc
+  {"trace":"+gc","process":true,"gc":true}
+  $ check +gc-process
+  {"trace":"+gc-process","process":false,"gc":true}
+  $ check -process+process
+  {"trace":"-process+process","process":true,"gc":false}

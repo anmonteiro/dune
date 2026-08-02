@@ -1,0 +1,32 @@
+Show an edge case of `(include_subdirs ..)` and ocamllex
+
+  $ make_dune_project 3.13
+
+  $ mkdir -p src/a
+  $ cat > dune << EOF
+  > (include_subdirs unqualified)
+  > (library (name foo))
+  > (ocamllex lexer)
+  > EOF
+
+  $ make_trivial_ocamllex src/a/lexer.mll
+
+  $ dune build
+  File "dune", line 3, characters 0-16:
+  3 | (ocamllex lexer)
+      ^^^^^^^^^^^^^^^^
+  Error: No rule found for lexer.mll
+  [1]
+
+The `(ocamllex ..)` stanza must live next to the source file
+
+  $ cat > dune << EOF
+  > (include_subdirs unqualified)
+  > (library (name foo))
+  > EOF
+
+  $ cat > src/a/dune << EOF
+  > (ocamllex lexer)
+  > EOF
+
+  $ dune build

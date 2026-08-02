@@ -1,0 +1,24 @@
+Sandboxed cram failures should preserve their build context.
+
+  $ make_dune_project 3.23
+
+  $ cat > dune-workspace <<EOF
+  > (lang dune 3.23)
+  > (context (default (name alt)))
+  > EOF
+
+  $ cat > mytest.t <<EOF
+  >   $ echo "Hello, world!"
+  >   "Goodbye, world!"
+  > EOF
+
+  $ dune test --sandbox symlink mytest.t
+  File "mytest.t", line 1, characters 0-0:
+  Context: alt
+  --- mytest.t
+  +++ mytest.t.corrected
+  @@ -1,2 +1,2 @@
+     $ echo "Hello, world!"
+  -  "Goodbye, world!"
+  +  Hello, world!
+  [1]

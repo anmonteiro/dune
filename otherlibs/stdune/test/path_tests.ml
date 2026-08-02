@@ -11,6 +11,24 @@ let of_filename_relative_to_initial_cwd s =
   Path.of_filename_relative_to_initial_cwd s |> Path.to_dyn |> print_dyn
 ;;
 
+let external_relative a b =
+  Path.External.relative (Path.External.of_string a) b
+  |> Path.External.to_string
+  |> print_endline
+;;
+
+let external_append_local a b =
+  Path.External.append_local (Path.External.of_string a) b
+  |> Path.External.to_string
+  |> print_endline
+;;
+
+let external_basename s =
+  match Path.External.basename (Path.External.of_string s) with
+  | basename -> print_endline (Filename.to_string basename)
+  | exception Code_error.E _ -> print_endline "invalid"
+;;
+
 let descendant p ~of_ = Dyn.option Path.to_dyn (Path.descendant p ~of_) |> print_dyn
 let is_descendant p ~of_ = Dyn.bool (Path.is_descendant p ~of_) |> print_dyn
 
@@ -253,10 +271,15 @@ None
 
 let%expect_test _ =
   reach "/foo/baz" ~from:"/foo/bar";
-  [%expect
-    {|
-"/foo/baz"
-|}]
+  [%expect {| "../baz" |}]
+;;
+
+let%expect_test _ =
+  if Sys.win32
+  then (
+    let result = Path.reach (e "C:/foo") ~from:(e "D:/bar") in
+    if not (String.equal result "C:/foo") then print_endline result);
+  [%expect {| |}]
 ;;
 
 let%expect_test _ =
@@ -435,6 +458,16 @@ External "/absolute/path"
 |}]
 ;;
 
+let%expect_test "external basename validates filename invariants" =
+  external_basename "/";
+  external_basename "/absolute/path";
+  [%expect
+    {|
+invalid
+path
+|}]
+;;
+
 let%expect_test _ =
   Path.is_managed (e "relative/path") |> Dyn.bool |> print_dyn;
   [%expect
@@ -543,10 +576,18 @@ let%expect_test _ =
 ;;
 
 let%expect_test _ =
+  reach_for_running (e "/fake/path") ~from:(e "/external/build/foo/bar/baz");
+  [%expect
+    {|
+"/fake/path"
+|}]
+;;
+
+let%expect_test _ =
   reach_for_running (Path.relative root "foo") ~from:(Path.relative root "foo");
   [%expect
     {|
-"./."
+"."
 |}]
 ;;
 
@@ -585,7 +626,7 @@ let%expect_test _ =
 
 let%expect_test _ =
   Path.Build.extract_first_component Path.Build.root
-  |> Dyn.(option (pair string Local.to_dyn))
+  |> Dyn.(option (pair Filename.to_dyn Local.to_dyn))
   |> print_dyn;
   [%expect
     {|
@@ -642,4 +683,69 @@ let%expect_test "drop prefix with a trailing /" =
   |> Dyn.option Path.Local.to_dyn
   |> print_dyn;
   [%expect {| Some "d/e" |}]
+;;
+
+let%expect_test "external relative plain" =
+  external_relative "/root" "foo/bar";
+  [%expect {| /root/foo/bar |}]
+;;
+
+let%expect_test "external relative dot-slash multi" =
+  external_relative "/root" "./foo/bar";
+  [%expect {| /root/foo/bar |}]
+;;
+
+let%expect_test "external relative dot" =
+  external_relative "/root" ".";
+  [%expect {| /root |}]
+;;
+
+let%expect_test "external relative single" =
+  external_relative "/root" "foo";
+  [%expect {| /root/foo |}]
+;;
+
+let%expect_test "external relative deep" =
+  external_relative "/root/sub" "foo/bar/baz";
+  [%expect {| /root/sub/foo/bar/baz |}]
+;;
+
+let%expect_test "external relative dot-slash single" =
+  external_relative "/root" "./foo";
+  [%expect {| /root/foo |}]
+;;
+
+let%expect_test "external append_local multi" =
+  external_append_local "/root" (Path.Local.of_string "foo/bar");
+  [%expect {| /root/foo/bar |}]
+;;
+
+let%expect_test "external append_local root" =
+  external_append_local "/root" Path.Local.root;
+  [%expect {| /root |}]
+;;
+
+let%expect_test "path relative external dot-slash" =
+  relative (Path.of_string "/ext") "./foo/bar";
+  [%expect {| External "/ext/foo/bar" |}]
+;;
+
+let%expect_test "path relative external plain" =
+  relative (Path.of_string "/ext") "foo";
+  [%expect {| External "/ext/foo" |}]
+;;
+
+let%expect_test "external relative trailing slash" =
+  external_relative "/root/" "foo/bar";
+  [%expect {| /root/foo/bar |}]
+;;
+
+let%expect_test "external relative trailing slash dot-slash" =
+  external_relative "/root/" "./foo";
+  [%expect {| /root/foo |}]
+;;
+
+let%expect_test "external relative dot-slash only" =
+  external_relative "/root" "./";
+  [%expect {| /root |}]
 ;;

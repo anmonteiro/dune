@@ -1,4 +1,5 @@
 open Import
+open Action_types
 
 include
   module type of Dune_engine.Action_builder
@@ -47,6 +48,7 @@ val lines_of : Path.t -> string list t
 val read_sexp : Path.t -> Dune_sexp.Ast.t t
 
 val symlink_dir : src:Path.t -> dst:Path.Build.t -> Action.Full.t With_targets.t
+val copy_dir : src:Path.t -> dst:Path.Build.t -> Action.Full.t With_targets.t
 val symlink : src:Path.t -> dst:Path.Build.t -> Action.Full.t With_targets.t
 val copy : src:Path.t -> dst:Path.Build.t -> Action.Full.t With_targets.t
 
@@ -55,19 +57,19 @@ val progn : Action.Full.t With_targets.t list -> Action.Full.t With_targets.t
 
 (** Create a file with the given contents. *)
 val write_file
-  :  ?perm:Action.File_perm.t
+  :  ?perm:File_perm.t
   -> Path.Build.t
   -> string
   -> Action.Full.t With_targets.t
 
 val write_file_dyn
-  :  ?perm:Action.File_perm.t
+  :  ?perm:File_perm.t
   -> Path.Build.t
   -> string t
   -> Action.Full.t With_targets.t
 
 val with_stdout_to
-  :  ?perm:Action.File_perm.t
+  :  ?perm:File_perm.t
   -> Path.Build.t
   -> Action.Full.t t
   -> Action.Full.t With_targets.t

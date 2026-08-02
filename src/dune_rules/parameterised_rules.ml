@@ -60,8 +60,8 @@ let build_instance
            (Obj_dir.all_obj_dirs ~mode:(Lib_mode.Ocaml mode) obj_dir))
     ; A "-w"
     ; A "-55"
-      (* CR art-w: ignore [inlining-impossible] warning, it's unclear
-         why it happens *)
+      (* CR-someday art-w: ignore [inlining-impossible] warning,
+         it's unclear why it happens *)
     ; A "-instantiate"
     ; Dep module_
     ; Dyn
@@ -78,6 +78,7 @@ let build_instance
     ]
     |> Command.run
          ~sandbox:Sandbox_config.needs_sandboxing
+         ~forbid_action_runner:true
          (Ok compiler)
          ~dir:(Path.build dir)
     |> Super_context.add_rule ~dir sctx)
@@ -161,6 +162,7 @@ let build_archive ~sctx ~mode ~obj_dir ~lib ~top_sorted_modules ~modules =
     ]
     |> Command.run
          ~sandbox:Sandbox_config.needs_sandboxing
+         ~forbid_action_runner:true
          (Ok compiler)
          ~dir:(Path.build dir)
     |> Super_context.add_rule ~dir sctx)
@@ -277,7 +279,7 @@ let build_modules ~sctx ~obj_dir ~modules_obj_dir ~dep_graph ~mode ~requires ~li
     Module_name.Map.add_exn acc (Module.name module_) instance)
 ;;
 
-let dep_graph ~ocaml_version ~preprocess ~obj_dir ~modules impl_only =
+let dep_graph ~sctx ~ocaml_version ~preprocess ~obj_dir ~modules impl_only =
   let pp_map =
     Staged.unstage
     @@ Pp_spec.pped_modules_map
@@ -291,7 +293,13 @@ let dep_graph ~ocaml_version ~preprocess ~obj_dir ~modules impl_only =
         let open Action_builder.O in
         let module_ = pp_map module_ in
         let+ deps =
-          Dep_rules.read_immediate_deps_of module_ ~modules ~obj_dir ~ml_kind:Impl ~for_
+          Dep_rules.read_immediate_deps_of
+            ~sandbox:Compilation_mode.default_sandbox
+            ~sctx
+            ~modules
+            ~obj_dir
+            ~ml_kind:Impl
+            module_
         in
         let local_open = Modules.With_vlib.alias_for modules module_ in
         local_open @ deps
@@ -331,6 +339,7 @@ let instantiate ~sctx lib =
   let impl_only = Modules.With_vlib.impl_only modules in
   let dep_graph =
     dep_graph
+      ~sctx
       ~ocaml_version:ocaml.version
       ~preprocess:(Lib_info.preprocess ~for_ lib_info)
       ~obj_dir:deps_obj_dir
@@ -402,7 +411,7 @@ let external_dep_rules ~sctx ~dir ~scope lib_name =
     let+ (_ : Dep_graph.Ml_kind.t) =
       Dep_rules.rules
         ~sctx
-        ~sandbox:Sandbox_config.no_special_requirements
+        ~sandbox:Compilation_mode.default_sandbox
         ~dir
         ~obj_dir:(obj_dir_for_dep_rules dir)
         ~impl:Virtual_rules.no_implements

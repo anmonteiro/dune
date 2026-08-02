@@ -1,0 +1,190 @@
+Batch and watch-mode builds emit run ids, process-time totals, and dune's own
+rusage snapshots on build trace events.
+
+  $ make_dune_project 3.22
+
+  $ cat >x <<EOF
+  > original
+  > EOF
+
+  $ cat >z <<EOF
+  > first
+  > EOF
+
+  $ cat >dune <<EOF
+  > (rule
+  >  (target y)
+  >  (deps x z)
+  >  (action (system "cat x z > y")))
+  > EOF
+
+  $ dune build y
+
+  $ dune trace cat | jq_dune -s '.[] | buildEvents'
+  {
+    "args": {
+      "run_id": 0,
+      "restart": false,
+      "rusage": [
+        "inblock",
+        "majflt",
+        "maxrss",
+        "minflt",
+        "nivcsw",
+        "nvcsw",
+        "oublock",
+        "system_cpu_time",
+        "user_cpu_time"
+      ]
+    },
+    "name": "build-start"
+  }
+  {
+    "args": {
+      "run_id": 0,
+      "outcome": "success",
+      "process_times": [
+        "count",
+        "elapsed_time",
+        "system_cpu_time",
+        "user_cpu_time"
+      ],
+      "rusage": [
+        "inblock",
+        "majflt",
+        "maxrss",
+        "minflt",
+        "nivcsw",
+        "nvcsw",
+        "oublock",
+        "system_cpu_time",
+        "user_cpu_time"
+      ]
+    },
+    "name": "build-finish"
+  }
+
+  $ start_dune
+
+  $ build y
+  Success
+
+  $ echo updated > x
+  $ echo second > z
+
+  $ build y
+  Success
+
+  $ stop_dune > /dev/null
+
+File changes observed while the build is idle are reflected by the next
+build-start event's restart flag. A build-restart event is only emitted when an
+active build is interrupted.
+
+  $ dune trace cat | jq_dune -s '
+  > .[] | buildEvents'
+  {
+    "args": {
+      "run_id": 1,
+      "restart": false,
+      "rusage": [
+        "inblock",
+        "majflt",
+        "maxrss",
+        "minflt",
+        "nivcsw",
+        "nvcsw",
+        "oublock",
+        "system_cpu_time",
+        "user_cpu_time"
+      ]
+    },
+    "name": "build-start"
+  }
+  {
+    "args": {
+      "run_id": 1,
+      "outcome": "success",
+      "process_times": [
+        "count",
+        "elapsed_time",
+        "system_cpu_time",
+        "user_cpu_time"
+      ],
+      "rusage": [
+        "inblock",
+        "majflt",
+        "maxrss",
+        "minflt",
+        "nivcsw",
+        "nvcsw",
+        "oublock",
+        "system_cpu_time",
+        "user_cpu_time"
+      ]
+    },
+    "name": "build-finish"
+  }
+  {
+    "args": {
+      "run_id": 2,
+      "restart": true,
+      "rusage": [
+        "inblock",
+        "majflt",
+        "maxrss",
+        "minflt",
+        "nivcsw",
+        "nvcsw",
+        "oublock",
+        "system_cpu_time",
+        "user_cpu_time"
+      ]
+    },
+    "name": "build-start"
+  }
+  {
+    "args": {
+      "run_id": 2,
+      "outcome": "success",
+      "restart_duration": "number",
+      "process_times": [
+        "count",
+        "elapsed_time",
+        "system_cpu_time",
+        "user_cpu_time"
+      ],
+      "rusage": [
+        "inblock",
+        "majflt",
+        "maxrss",
+        "minflt",
+        "nivcsw",
+        "nvcsw",
+        "oublock",
+        "system_cpu_time",
+        "user_cpu_time"
+      ]
+    },
+    "name": "build-finish"
+  }
+
+  $ dune trace cat | jq -s '
+  > last
+  > | select(.name == "exit")
+  > | { name, cat, rusage: (.args.rusage | keys) }'
+  {
+    "name": "exit",
+    "cat": "config",
+    "rusage": [
+      "inblock",
+      "majflt",
+      "maxrss",
+      "minflt",
+      "nivcsw",
+      "nvcsw",
+      "oublock",
+      "system_cpu_time",
+      "user_cpu_time"
+    ]
+  }

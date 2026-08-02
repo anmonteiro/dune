@@ -487,15 +487,19 @@ let common =
     field_o
       "bootstrap_info"
       (let+ loc = loc
-       and+ fname = filename
+       and+ fname = file_path
        and+ project = Dune_project.get_exn () in
        if not (Dune_project.is_extension_set project bootstrap_info_extension)
        then User_error.raise ~loc [ Pp.text "This field is reserved for Dune itself" ];
        fname)
   and+ project_root = Dune_project.get_exn () >>| Dune_project.root
   and+ enabled_if =
-    let allowed_vars = Enabled_if.common_vars ~since:(2, 3) in
     let is_error = Dune_lang.Syntax.Version.Infix.(dune_version >= (2, 6)) in
+    let allowed_vars =
+      if Dune_lang.Syntax.Version.Infix.(dune_version >= (3, 25))
+      then Enabled_if.Any
+      else Enabled_if.common_vars ~since:(2, 3)
+    in
     Enabled_if.decode ~allowed_vars ~is_error ~since:(Some (2, 3)) ()
   in
   fun names ~multi ->

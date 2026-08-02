@@ -1,0 +1,112 @@
+Tests for [Fs_memo] permission change handling.
+
+Dune doesn't notice permission changes because chmod doesn't trigger inotify
+events. This is a known bug.
+
+# CR-someday amokhov: Fix this.
+
+  $ export DUNE_TRACE=cache
+  $ setup_xdg_runtime_dir
+
+
+  $ make_fs_memo_project
+
+  $ echo -n 1 > file-1
+  $ echo -n 3 > file-3
+  $ touch dep
+  $ mkdir dir
+  $ mkdir subdir
+
+Dune doesn't notice that a directory's permission changed and succeeds instead
+of failing.
+
+  $ fs_memo_test "chmod -r subdir"
+  ------------------------------------------
+  Executing rule...
+  Success, waiting for filesystem changes...
+  Success, waiting for filesystem changes...
+  ------------------------------------------
+  result = '' -> '13' -> '13'
+  ------------------------------------------
+  {"cache_type":"dir_contents","path":"dune-workspace","result":"skipped"}
+  {"cache_type":"file_digest","path":"dune-workspace","result":"skipped"}
+  {"cache_type":"path_stat","path":"dune-workspace","result":"unchanged"}
+
+If we repeat the test, we finally see the failure.
+
+  $ fs_memo_test "echo How about now?"
+  ------------------------------------------
+  Failure
+  How about now?
+  Failure
+  Error: inotify_add_watch(subdir): Permission denied
+  Had 1 error, waiting for filesystem changes...
+  Error: inotify_add_watch(subdir): Permission denied
+  Had 1 error, waiting for filesystem changes...
+  ------------------------------------------
+  result = '13' -> '13' -> '13'
+  ------------------------------------------
+  {"cache_type":"dir_contents","path":"dune-workspace","result":"skipped"}
+  {"cache_type":"file_digest","path":"dune-workspace","result":"skipped"}
+  {"cache_type":"path_stat","path":"dune-workspace","result":"unchanged"}
+
+Same problem in the other direction.
+
+  $ fs_memo_test "chmod +r subdir"
+  ------------------------------------------
+  Failure
+  Failure
+  Error: inotify_add_watch(subdir): Permission denied
+  Had 1 error, waiting for filesystem changes...
+  Error: inotify_add_watch(subdir): Permission denied
+  Had 1 error, waiting for filesystem changes...
+  ------------------------------------------
+  result = '13' -> '13' -> '13'
+  ------------------------------------------
+  {"cache_type":"dir_contents","path":"dune-workspace","result":"skipped"}
+  {"cache_type":"file_digest","path":"dune-workspace","result":"skipped"}
+  {"cache_type":"path_stat","path":"dune-workspace","result":"unchanged"}
+
+  $ fs_memo_test "echo How about now?"
+  ------------------------------------------
+  How about now?
+  Success, waiting for filesystem changes...
+  Success, waiting for filesystem changes...
+  ------------------------------------------
+  result = '13' -> '13' -> '13'
+  ------------------------------------------
+  {"cache_type":"dir_contents","path":"dune-workspace","result":"skipped"}
+  {"cache_type":"file_digest","path":"dune-workspace","result":"skipped"}
+  {"cache_type":"path_stat","path":"dune-workspace","result":"unchanged"}
+
+Same problem for files.
+
+  $ fs_memo_test "chmod -r file-1"
+  ------------------------------------------
+  Success, waiting for filesystem changes...
+  Success, waiting for filesystem changes...
+  ------------------------------------------
+  result = '13' -> '13' -> '13'
+  ------------------------------------------
+  {"cache_type":"dir_contents","path":"dune-workspace","result":"skipped"}
+  {"cache_type":"file_digest","path":"dune-workspace","result":"skipped"}
+  {"cache_type":"path_stat","path":"dune-workspace","result":"unchanged"}
+
+  $ fs_memo_test "chmod +r file-1"
+  ------------------------------------------
+  Failure
+  Failure
+  File "file-1", line 1, characters 0-0:
+  Error: File unavailable: file-1
+  open(file-1): Permission denied
+  Had 1 error, waiting for filesystem changes...
+  File "file-1", line 1, characters 0-0:
+  Error: File unavailable: file-1
+  open(file-1): Permission denied
+  Had 1 error, waiting for filesystem changes...
+  ------------------------------------------
+  result = '13' -> '13' -> '13'
+  ------------------------------------------
+  {"cache_type":"dir_contents","path":"dune-workspace","result":"skipped"}
+  {"cache_type":"file_digest","path":"dune-workspace","result":"skipped"}
+  {"cache_type":"path_stat","path":"dune-workspace","result":"unchanged"}

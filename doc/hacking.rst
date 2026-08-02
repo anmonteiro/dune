@@ -54,31 +54,15 @@ Here are the most common commands you'll be running:
    $ ./dune.exe build @foo
 
 
-Note that tests are currently written for version 5.4.0 of the OCaml compiler.
-Some tests depend on the specific wording of compilation errors which can change
-between compiler versions, so to reliably run the tests make sure that
-``ocaml.5.4.0`` is installed. The ``TEST_OCAMLVERSION`` in the ``Makefile`` at
-the root of the Dune repo contains the current compiler version for which tests
-are written.
-
 .. seealso:: :doc:`explanation/bootstrap`
 
 Writing Tests
 =============
 
-Most of our tests are written as expectation-style tests. While creating such
-tests, the developer writes some code and then lets the system insert the output
-produced during the code execution. The system puts it right next to the code in
-the source file.
-
-Once you write and commit a test, the system checks that the captured output
-matches the one produced by a fresh code execution. When the two don't match,
-the test fails. The system then displays a diff between what was expected and
-what the code produced.
-
-We write both our unit tests and integration tests in this way. For unit tests,
-we use the ppx_expect_ framework, where we introduce tests via
-``let%expect_test``, and ``[%expect ...]`` nodes capture expectations:
+Dune uses expectation-style tests for both unit tests and integration tests. For
+unit tests, we use the ppx_expect_ framework, where we introduce tests via
+``let%expect_test``, and where we use ``[%expect ...]`` nodes to capture
+expectations:
 
 .. code:: ocaml
 
@@ -89,15 +73,25 @@ we use the ppx_expect_ framework, where we introduce tests via
       |}]
 
 For integration tests, we use a system similar to `Cram tests
-<https://bitheap.org/cram/>`_ for testing shell commands and their behavior:
+<https://bitheap.org/cram/>`_ for testing shell commands and their behavior.
+
+Test the output of ``echo``:
 
 .. code:: console
 
    $ echo 'Hello, world!'
    Hello, world!
 
+Test a nonzero exit status:
+
+.. code:: console
+
    $ false
    [1]
+
+Test a multi-line shell invocation:
+
+.. code:: console
 
    $ cat <<EOF
    > multi
@@ -105,6 +99,9 @@ For integration tests, we use a system similar to `Cram tests
    > EOF
    multi
    line
+
+Cram tests run with ``sh`` by default. Use only portable shell syntax unless a
+:doc:`/reference/dune/cram` stanza selects ``(shell bash)`` for the test.
 
 These tests must be reproducible, so it is often necessary to filter command
 output to show only relevant parts. This also prevents tests from breaking due
@@ -116,15 +113,29 @@ everywhere. When platform-specific functionality is needed, Cram tests can use
 operations: file statistics, waiting for files to appear, waiting for
 filesystem clocks to advance, and a subset of sed features with clearer syntax.
 
+The ``censor`` helper replaces hex digests and other values subject to change
+with stable labels. Distinct digests get distinct labels:
+
+.. code::
+
+   $ echo paths | censor
+   _build/.sandbox/$DIGEST1/foo.txt
+   _build/default/.ppx/$DIGEST2/ppx.exe
+
 .. _ppx_expect:      https://github.com/janestreet/ppx_expect
 
 .. seealso::
 
-   `actions_to_sh tests <https://github.com/ocaml/dune/blob/3.12.2/test/expect-tests/dune_engine/action_to_sh_tests.ml>`_
+   `timer tests`_
      An example of expect-tests.
 
-   `mdx-stanza/locks.t <https://github.com/ocaml/dune/blob/3.12.2/test/blackbox-tests/test-cases/mdx-stanza/locks.t>`_
-     An example of Cram test.
+   `Cram test examples`_
+     A collection of Cram tests.
+
+.. _timer tests:
+   https://github.com/ocaml/dune/blob/main/test/expect-tests/timer_tests.ml
+.. _Cram test examples:
+   https://github.com/ocaml/dune/tree/main/test/blackbox-tests/test-cases/cram
 
 When running Dune inside tests, the ``INSIDE_DUNE`` environment variable is set.
 This has the following effects:
@@ -242,11 +253,8 @@ We have the following shells for specific tasks:
 - ``nix develop .#slim-melange``: same as above, but additionally includes the
   ``melange`` and ``mel`` packages
 - Building documentation requires ``nix develop .#doc``.
-- For running the Coq tests, you can use ``nix develop .#coq``. NB: Coq native
-  is not currently installed; this will cause some of the tests to fail. It's
-  currently better to fallback to opam in this case.
-- We don't have yet a Nix setup for running the Rocq tests, as of
-  today, there are two classes of tests:
+- For running the Rocq tests, you can use ``nix develop .#rocq``. There are
+  two classes of tests:
   + ``make test-rocq``: these work well on a regular Dune opam dev switch
   + ``make test-rocq-native``: these require the Rocq native compiler to run, and thus need OCaml 4.x
 
@@ -355,7 +363,7 @@ Sometimes, Dune's versioning policy is too strict. For example, it doesn't work
 in the following situations:
 
 - When most Dune independent extensions only exist inside Dune for development
-  convenience, e.g., build rules for Coq. Such extensions would like to impose
+  convenience, e.g., build rules for Rocq. Such extensions would like to impose
   their own versioning policy.
 
 - When experimental features cannot guarantee Dune's strict backwards
@@ -364,13 +372,13 @@ in the following situations:
 To handle both of these use cases, Dune allows the definition of new languages
 (with the same syntax). These languages have their own versioning scheme and
 their own stanzas (or fields). In Dune itself, ``Syntax.t`` represents such
-languages. Here's an example of how the Coq syntax is defined:
+languages. Here's an example of how the Rocq syntax is defined:
 
 .. code:: ocaml
 
-   let coq_syntax =
-     Dune_lang.Syntax.create ~name:"coq" ~desc:"the coq extension (experimental)"
-      [ ((0, 1), `Since (1, 9)); ((0, 2), `Since (2, 5)) ]
+   let rocq_syntax =
+     Dune_lang.Syntax.create ~name:"rocq" ~desc:"Rocq Prover build language"
+      [ ((0, 11), `Since (3, 21)); ((0, 12), `Since (3, 22)) ]
 
 The list provides which versions of the syntax are provided and which version of
 Dune introduced them.
@@ -380,7 +388,7 @@ Such languages must be enabled in the ``dune`` project file separately:
 .. code:: dune
 
    (lang dune {{latest}})
-   (using coq 0.8)
+   (using rocq 0.13)
 
 If such extensions are experimental, it's recommended that they pass
 ``~experimental:true``, and that their versions are below 1.0.

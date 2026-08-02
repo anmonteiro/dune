@@ -15,7 +15,7 @@ let all : _ Cmdliner.Cmd.t list =
       ; Print_rules.command
       ; Ocaml.Utop.command
       ; Promotion.promote
-      ; Util.command_alias Printenv.command Printenv.term "printenv"
+      ; Common.command_alias Printenv.command Printenv.term "printenv"
       ; Help.command
       ; Format_dune_file.command
       ; Upgrade.command
@@ -25,11 +25,11 @@ let all : _ Cmdliner.Cmd.t list =
       ; Shutdown.command
       ; Diagnostics.command
       ; Monitor.command
+      ; Completion.command
       ]
   in
   let groups =
     [ Ocaml.Ocaml_cmd.group
-    ; Coq.Group.group
     ; Rocq.group
     ; Describe.group
     ; Describe.Show.group
@@ -110,8 +110,9 @@ let () =
     | Ok _ -> exit_and_flush Success
     | Error _ -> exit_and_flush Error
   with
-  | Scheduler.Run.Shutdown.E Requested -> exit_and_flush Success
-  | Scheduler.Run.Shutdown.E (Signal _) -> exit_and_flush Signal
+  | Dune_scheduler.Shutdown.E Failure -> exit_and_flush Error
+  | Dune_scheduler.Shutdown.E Requested -> exit_and_flush Success
+  | Dune_scheduler.Shutdown.E (Signal _) -> exit_and_flush Signal
   | exn ->
     let exn = Exn_with_backtrace.capture exn in
     Dune_util.Report_error.report exn;

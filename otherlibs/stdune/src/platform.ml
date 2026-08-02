@@ -7,27 +7,57 @@ module OS = struct
     | FreeBSD
     | NetBSD
     | OpenBSD
+    | DragonFly
     | Haiku
     | Other
 
-  let equal = Poly.equal
+  let repr =
+    Repr.variant
+      "platform"
+      [ Repr.case0 "Darwin" ~test:(function
+          | Darwin -> true
+          | _ -> false)
+      ; Repr.case0 "Linux" ~test:(function
+          | Linux -> true
+          | _ -> false)
+      ; Repr.case0 "Windows" ~test:(function
+          | Windows -> true
+          | _ -> false)
+      ; Repr.case0 "FreeBSD" ~test:(function
+          | FreeBSD -> true
+          | _ -> false)
+      ; Repr.case0 "NetBSD" ~test:(function
+          | NetBSD -> true
+          | _ -> false)
+      ; Repr.case0 "OpenBSD" ~test:(function
+          | OpenBSD -> true
+          | _ -> false)
+      ; Repr.case0 "DragonFly" ~test:(function
+          | DragonFly -> true
+          | _ -> false)
+      ; Repr.case0 "Haiku" ~test:(function
+          | Haiku -> true
+          | _ -> false)
+      ; Repr.case0 "Other" ~test:(function
+          | Other -> true
+          | _ -> false)
+      ]
+  ;;
+
+  include Repr.Poly (struct
+      type nonrec t = t
+
+      let repr = repr
+    end)
 
   external is_darwin : unit -> bool = "stdune_is_darwin"
   external is_freebsd : unit -> bool = "stdune_is_freebsd"
   external is_netbsd : unit -> bool = "stdune_is_netbsd"
   external is_openbsd : unit -> bool = "stdune_is_openbsd"
+  external is_dragonfly : unit -> bool = "stdune_is_dragonfly"
   external is_haiku : unit -> bool = "stdune_is_haiku"
 
-  let to_dyn : t -> Dyn.t = function
-    | Windows -> Dyn.variant "Windows" []
-    | Darwin -> Dyn.variant "Darwin" []
-    | Linux -> Dyn.variant "Linux" []
-    | FreeBSD -> Dyn.variant "FreeBSD" []
-    | NetBSD -> Dyn.variant "NetBSD" []
-    | OpenBSD -> Dyn.variant "OpenBSD" []
-    | Haiku -> Dyn.variant "Haiku" []
-    | Other -> Dyn.variant "Other" []
-  ;;
+  let to_dyn = Repr.to_dyn repr
 
   let is_linux () =
     try
@@ -55,6 +85,8 @@ module OS = struct
     then NetBSD
     else if is_openbsd ()
     then OpenBSD
+    else if is_dragonfly ()
+    then DragonFly
     else if is_haiku ()
     then Haiku
     else Other

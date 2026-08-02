@@ -6,39 +6,19 @@ Show target promotion in-source for `melange.emit`
   > (package (name foo))
   > (using melange 1.0)
   > EOF
-  $ mkdir -p lib/nested
-  $ echo "Some text" > lib/index.txt
-  $ echo "Some nested text" > lib/nested/hello.txt
-
-  $ cat > lib/dune <<EOF
-  > (library
-  >  (public_name foo)
-  >  (modes melange)
-  >  (preprocess (pps melange.ppx))
-  >  (melange.runtime_deps index.txt nested/hello.txt))
-  > EOF
-  $ cat > lib/foo.ml <<EOF
-  > external readFileSync : string -> encoding:string -> string = "readFileSync"
-  > [@@mel.module "fs"]
-  > let dirname = [%mel.raw "__dirname"]
-  > let () = Js.log2 "dirname:" dirname
-  > let file_path = "./index.txt"
-  > let read_asset () = readFileSync (dirname ^ "/" ^ file_path) ~encoding:"utf8"
-  > EOF
+  $ make_melange_runtime_deps_lib
 
   $ dune build --root lib
-  Entering directory 'lib'
-  Leaving directory 'lib'
 
   $ cat lib/_build/default/foo.install
   lib: [
     "_build/install/default/lib/foo/META"
     "_build/install/default/lib/foo/dune-package"
-    "_build/install/default/lib/foo/foo.ml"
     "_build/install/default/lib/foo/index.txt"
     "_build/install/default/lib/foo/melange/foo.cmi" {"melange/foo.cmi"}
     "_build/install/default/lib/foo/melange/foo.cmj" {"melange/foo.cmj"}
     "_build/install/default/lib/foo/melange/foo.cmt" {"melange/foo.cmt"}
+    "_build/install/default/lib/foo/melange/foo.ml" {"melange/foo.ml"}
     "_build/install/default/lib/foo/nested/hello.txt" {"nested/hello.txt"}
   ]
 
@@ -78,8 +58,6 @@ Show target promotion in-source for `melange.emit`
   > EOF
 
   $ OCAMLPATH=$PWD/prefix/lib/:$OCAMLPATH dune build --root app @mel
-  Entering directory 'app'
-  Leaving directory 'app'
 
   $ ls app/_build/default/output/node_modules/foo
   foo.js

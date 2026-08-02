@@ -57,17 +57,17 @@ Now we add [mli] files for the two modules whose implementation is generated:
 
 We format again. Filter menhir warnings (which vary by version) to keep output stable.
   $ dune build @fmt 2>&1 | grep -v "end-of-stream" | grep -v "never reduced" | grep -v 'File "parser_raw.mly"' | grep -v "in total"
-  fake ocamlformat is running: "--intf" "other_gen.mli"
-  fake ocamlformat is running: "--intf" "parser_raw.mli"
+  fake ocamlformat is running: "--intf" "./other_gen.mli"
+  fake ocamlformat is running: "--intf" "./parser_raw.mli"
   File "other_gen.mli", line 1, characters 0-0:
   --- other_gen.mli
-  +++ .formatted/other_gen.mli
+  +++ other_gen.mli.corrected
   @@ -0,0 +1 @@
   +(* fake ocamlformat output *)
   \ No newline at end of file
   File "parser_raw.mli", line 1, characters 0-0:
   --- parser_raw.mli
-  +++ .formatted/parser_raw.mli
+  +++ parser_raw.mli.corrected
   @@ -1,13 +1 @@
   -
   -(* The type of tokens. *)

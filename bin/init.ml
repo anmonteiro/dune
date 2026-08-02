@@ -268,6 +268,7 @@ let project =
        | None -> Dune_lang.Atom.to_string common.name
        | Some public -> Dune_init.Public_name.to_string public
      in
+     check_module_name common.name;
      let context =
        let init_context = Init_context.make path in
        let root =
@@ -300,6 +301,7 @@ let group =
       ; "init executable NAME [PATH] [OPTION]... "
       ; "init library NAME [PATH] [OPTION]... "
       ; "init test NAME [PATH] [OPTION]... "
+      ; "init start-file [PATH]"
       ]
   in
   let man =
@@ -339,8 +341,11 @@ let group =
         ; ( {|Configure a test component named `mytest' in a dune file in the
             ./test directory that depends on `mylib'|}
           , {|dune init test mytest test --libs mylib|} )
+        ; {|Write the standard `start/dune` helper file|}, {|dune init start-file|}
         ]
     ]
   in
-  Cmd.group (Cmd.info "init" ~doc ~man) [ executable; project; library; test ]
+  Cmd.group
+    (Cmd.info "init" ~doc ~man)
+    [ executable; project; library; test; Start_file.command ]
 ;;

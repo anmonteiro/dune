@@ -1,7 +1,6 @@
-  $ cat > dune-project <<EOF
-  > (lang dune 2.2)
-  > (using menhir 2.1)
-  > EOF
+Tests Menhir stanzas under env settings.
+
+  $ make_menhir_project 2.2 2.1
   $ cat >dune <<EOF
   > (env (_ (menhir_flags :standard "--comment")))
   > (menhir

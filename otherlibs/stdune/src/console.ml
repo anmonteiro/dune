@@ -1,5 +1,7 @@
 module type Backend = Backend_intf.S
 
+let sprintf = Printf.sprintf
+
 module Backend = struct
   type t = Backend_intf.t
 
@@ -45,6 +47,19 @@ let print_blank_line () =
 let first_msg = ref true
 let separate_messages v = separate_messages_flag := v
 
+type directory_state =
+  | Not_set
+  | Set of string
+  | Entering_printed of string
+
+let directory = ref Not_set
+
+let set_directory dir =
+  match !directory with
+  | Not_set -> directory := Set dir
+  | Set _ | Entering_printed _ -> ()
+;;
+
 (* If the [separate_messages = false], then [print_blank_line ()] does nothing.
    When [separate_messages = true], [print_blank_line ()] does nothing the
    first time it is called, whereas subsequent calls print a new line. Note
@@ -70,6 +85,13 @@ let print_blank_line () =
 
 let print_user_message msg =
   let (module M : Backend_intf.S) = !Backend.main in
+  (match !directory with
+   | Set dir ->
+     flush stdout;
+     directory := Entering_printed dir;
+     M.print_user_message
+       (User_message.make [ Pp.verbatim (Printf.sprintf "Entering directory '%s'" dir) ])
+   | Not_set | Entering_printed _ -> ());
   print_blank_line ();
   M.print_user_message msg
 ;;
@@ -103,6 +125,12 @@ let reset_flush_history () =
 
 let finish () =
   let (module M : Backend_intf.S) = !Backend.main in
+  (match !directory with
+   | Entering_printed dir ->
+     directory := Set dir;
+     M.print_user_message
+       (User_message.make [ Pp.verbatim (Printf.sprintf "Leaving directory '%s'" dir) ])
+   | Not_set | Set _ -> ());
   M.finish ()
 ;;
 
@@ -117,16 +145,32 @@ module Status_line = struct
 
   let toplevel = Id.gen ()
   let stack = ref []
+  let sections = ref []
+
+  let pp_if_not_nop t =
+    let pp =
+      match t with
+      | Live f -> f ()
+      | Constant x -> x
+    in
+    match Pp.to_ast pp with
+    | Nop -> []
+    | _ -> [ pp ]
+  ;;
 
   let refresh () =
-    match !stack with
-    | [] -> set_status_line None
-    | (_id, t) :: _ ->
-      let pp =
-        match t with
-        | Live f -> f ()
-        | Constant x -> x
+    let pps =
+      let section_pps =
+        List.rev !sections |> List.concat_map ~f:(fun (_id, t) -> pp_if_not_nop t)
       in
+      match !stack with
+      | [] -> section_pps
+      | (_id, t) :: _ -> pp_if_not_nop t @ section_pps
+    in
+    match pps with
+    | [] -> set_status_line None
+    | _ :: _ ->
+      let pp = Pp.concat pps ~sep:(Pp.verbatim " | ") in
       (* Always put the status line inside a horizontal box to force the
          [Format] module to prefer a single line. In particular, it seems that
          [Format.pp_print_text] split the line before the last word, unless it
@@ -155,6 +199,9 @@ module Status_line = struct
   let add_overlay t =
     let id = Id.gen () in
     stack := (id, t) :: !stack;
+    (match t with
+     | Live _ -> ()
+     | Constant pp -> print_if_no_status_line pp);
     refresh ();
     id
   ;;
@@ -167,6 +214,20 @@ module Status_line = struct
   let with_overlay t ~f =
     let id = add_overlay t in
     Exn.protect ~f ~finally:(fun () -> remove_overlay id)
+  ;;
+
+  type section = Id.t
+
+  let add_section t =
+    let id = Id.gen () in
+    sections := (id, t) :: !sections;
+    refresh ();
+    id
+  ;;
+
+  let remove_section id =
+    sections := List.filter !sections ~f:(fun (id', _) -> not (Id.equal id id'));
+    refresh ()
   ;;
 end
 
@@ -184,4 +245,32 @@ let () =
       else Printf.sprintf "%s %s" msg formatted_args
     in
     print [ Pp.verbatim full_msg ])
+;;
+
+let terminal_persistence = ref Terminal_persistence.Preserve
+
+let init (terminal_persistence' : Terminal_persistence.t) =
+  terminal_persistence := terminal_persistence';
+  match !terminal_persistence with
+  | Preserve -> ()
+  | Clear_on_rebuild -> reset ()
+  | Clear_on_rebuild_and_flush_history -> reset_flush_history ()
+;;
+
+let maybe_clear_screen ~details_hum =
+  match Execution_env.inside_dune with
+  | true -> (* Don't print anything here to make tests less verbose *) ()
+  | false ->
+    (match !terminal_persistence with
+     | Clear_on_rebuild -> reset ()
+     | Clear_on_rebuild_and_flush_history -> reset_flush_history ()
+     | Preserve ->
+       let message =
+         sprintf
+           "********** NEW BUILD (%s) **********"
+           (String.concat ~sep:", " details_hum)
+       in
+       print_user_message
+         (User_message.make
+            [ Pp.nop; Pp.tag User_message.Style.Success (Pp.verbatim message); Pp.nop ]))
 ;;

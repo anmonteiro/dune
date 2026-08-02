@@ -5,25 +5,25 @@ module T = struct
     | C
     | Cxx
 
-  let compare x y =
-    match x, y with
-    | C, C -> Eq
-    | C, _ -> Lt
-    | _, C -> Gt
-    | Cxx, Cxx -> Eq
+  let repr =
+    Repr.variant
+      "foreign-language"
+      [ Repr.case0 "C" ~test:(function
+          | C -> true
+          | Cxx -> false)
+      ; Repr.case0 "Cxx" ~test:(function
+          | Cxx -> true
+          | C -> false)
+      ]
   ;;
 
-  let equal x y =
-    match x, y with
-    | C, C -> true
-    | Cxx, Cxx -> true
-    | _, _ -> false
-  ;;
+  include Repr.Poly (struct
+      type nonrec t = t
 
-  let to_dyn = function
-    | C -> Dyn.Variant ("C", [])
-    | Cxx -> Dyn.Variant ("Cxx", [])
-  ;;
+      let repr = repr
+    end)
+
+  let to_dyn = Repr.to_dyn repr
 end
 
 include T
@@ -76,7 +76,7 @@ let source_extensions =
 ;;
 
 let has_foreign_extension ~fn =
-  let ext = Filename.extension fn in
+  let ext = Stdlib.Filename.extension fn |> Filename.Extension.Or_empty.of_string_exn in
   if Filename.Extension.Or_empty.is_empty ext
   then false
   else (

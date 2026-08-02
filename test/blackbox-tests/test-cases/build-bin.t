@@ -1,9 +1,6 @@
 Pform expansion should work in `exec` but also in `build`:
 
-  $ cat > dune-project << EOF
-  > (lang dune 3.10)
-  > (package (name public))
-  > EOF
+  $ make_dune_project_with_package 3.10 public
   $ cat > dune << EOF
   > (executable (public_name public) (modules Public))
   > (executable (name private) (modules Private))
@@ -35,9 +32,6 @@ We also have a subfolder `foo`
 Making Dune build the executables should work without error messages:
 
   $ dune build %{bin:public}
-  Error: File unavailable:
-  $TESTCASE_ROOT/../install/default/bin/public
-  [1]
   $ ls _build/default/public.exe
   _build/default/public.exe
 
@@ -56,8 +50,6 @@ Building the private executable via the env alias should work too:
   $ dune build %{bin:priv}
 
   $ (cd foo && dune build --root .. %{bin:priv}) # should work
-  Entering directory '..'
-  Leaving directory '..'
   $ dune build %{bin:foo} # doesn't work because foo is underneath us
   File "command line", line 1, characters 0-10:
   Error: Program foo not found in the tree or in PATH

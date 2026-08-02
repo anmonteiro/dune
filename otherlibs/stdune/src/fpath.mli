@@ -7,7 +7,7 @@ type mkdir_result =
   | `Missing_parent_directory
   ]
 
-val mkdir : ?perms:int -> string -> mkdir_result
+val mkdir : ?perms:Permissions.Mode.t -> string -> mkdir_result
 
 type mkdir_p_result =
   [ `Already_exists (** The directory already exists. No action was taken. *)
@@ -15,8 +15,12 @@ type mkdir_p_result =
   ]
 
 val dyn_of_mkdir_p_result : mkdir_p_result -> Dyn.t
-val mkdir_p : ?perms:int -> string -> mkdir_p_result
-val mkdir_p_strict : ?perms:int -> string -> [ mkdir_p_result | `Not_a_dir ]
+val mkdir_p : ?perms:Permissions.Mode.t -> string -> mkdir_p_result
+
+val mkdir_p_strict
+  :  ?perms:Permissions.Mode.t
+  -> string
+  -> [ mkdir_p_result | `Not_a_dir ]
 
 (** [link src dst] creates a hardlink from [src] to [dst]. *)
 val link : string -> string -> unit
@@ -26,14 +30,9 @@ type follow_symlink_error =
   | Max_depth_exceeded
   | Unix_error of Unix_error.Detailed.t
 
+(* Resolve a symbolic link recursively until its target is not a link.
+   Does not resolve intermediate path components, just the last one. *)
 val follow_symlink : string -> (string, follow_symlink_error) result
-
-(** [follow_symlinks path] returns a file path that is equivalent to [path], but
-    free of symbolic links. The value [None] is returned if the maximum symbolic
-    link depth is reached (i.e., [follow_symlink] returns the value
-    [Error Max_depth_exceeded] on some intermediate path). *)
-val follow_symlinks : string -> string option
-
 val unlink_exn : ?chmod:bool -> string -> unit
 val unlink_no_err : string -> unit
 
@@ -81,6 +80,7 @@ val traverse
   -> ?enter_dir:(dir:string -> Filename.t -> bool)
   -> ?on_error:
        [ `Ignore | `Raise | `Call of dir:string -> Unix_error.Detailed.t -> 'acc -> 'acc ]
+  -> ?sort_entries:bool
   -> unit
   -> 'acc
 

@@ -4,10 +4,11 @@ module Table = String.Table
 type t = string
 
 let to_string t = t
+let repr = Repr.view Repr.string ~to_:to_string
 let equal = String.equal
 let hash = String.hash
 let compare = String.compare
-let extend_basename t ~suffix = t ^ suffix
+let extend_basename t ~suffix = t ^ Filename.to_string suffix
 
 let of_string t =
   if Filename.is_relative t
@@ -26,13 +27,37 @@ let to_dyn t = Dyn.variant "External" [ Dyn.string t ]
 let relative x y =
   match y with
   | "." -> x
-  | _ -> Filename.concat x y
+  | _ ->
+    let y =
+      if String.length y >= 2 && y.[0] = '.' && is_dir_sep y.[1]
+      then String.drop y 2
+      else y
+    in
+    (match y with
+     | "" | "." -> x
+     | _ ->
+       (* Strip a trailing directory separator from [x] so we don't produce
+          double slashes (e.g. "/root/" + "foo" -> "/root/foo"). We use
+          [is_dir_sep] so that on Windows a trailing '\' is also removed,
+          normalising the join to always use '/'. *)
+       let x =
+         let len = String.length x in
+         if len > 0 && is_dir_sep x.[len - 1] then String.take x (len - 1) else x
+       in
+       String.concat ~sep:"/" [ x; y ])
 ;;
 
+let relative_fname t fn = relative t (Filename.to_string fn)
 let append_local t local = relative t (Local.to_string local)
-let basename t = Filename.basename t
 let root = of_string "/"
 let is_root = equal root
+
+let basename t =
+  if is_root t
+  then Code_error.raise "Path.External.basename called on the root" []
+  else Filename.basename t |> Filename.of_string_exn
+;;
+
 let basename_opt = basename_opt ~is_root ~basename
 let parent t = if is_root t then None else Some (Filename.dirname t)
 
@@ -42,8 +67,12 @@ let parent_exn t =
   | Some p -> p
 ;;
 
-let extension t = Filename.extension t
-let split_extension t = Filename.split_extension t
+let extension t = Stdlib.Filename.extension t |> Filename.Extension.Or_empty.of_string_exn
+
+let split_extension t =
+  let ext = extension t in
+  Filename.Extension.Or_empty.drop_suffix t ext, ext
+;;
 
 let set_extension t ~ext =
   let base, _ = split_extension t in
@@ -57,10 +86,27 @@ let map_extension t ~f =
 
 let cwd () = Sys.getcwd ()
 let initial_cwd = Fpath.initial_cwd
+let as_local t = "." ^ t
 
-let as_local t =
-  let s = t in
-  "." ^ s
+(* Only relativize POSIX-style absolute paths on non-Windows systems. Other
+   absolute syntaxes, such as Windows drive-letter and UNC paths, keep their
+   absolute spelling. *)
+let local_part t =
+  match String.drop_prefix t ~prefix:"/" with
+  | None -> None
+  | Some t when String.starts_with ~prefix:"/" t -> None
+  | Some "" -> Some Local.root
+  | Some t -> Some (Local.of_string t)
+;;
+
+let reach t ~from =
+  (* CR-someday rgrinberg: I couldn't get this to work on Windows. *)
+  if Sys.win32
+  then to_string t
+  else (
+    match local_part t, local_part from with
+    | Some t, Some from -> Local.reach t ~from
+    | _ -> to_string t)
 ;;
 
 let of_filename_relative_to_initial_cwd fn =
@@ -78,7 +124,7 @@ include (
 let to_string_maybe_quoted t = String.maybe_quoted (to_string t)
 
 let is_descendant b ~of_:a =
-  if is_root a then true else String.starts_with ~prefix:(to_string a ^ "/") (to_string b)
+  is_root a || String.starts_with ~prefix:(to_string a ^ "/") (to_string b)
 ;;
 
 module Map = String.Map
@@ -86,5 +132,7 @@ module Map = String.Map
 module Set = struct
   include String.Set
 
-  let of_listing ~dir ~filenames = of_list_map filenames ~f:(fun f -> relative dir f)
+  let of_listing ~dir ~filenames =
+    of_list_map filenames ~f:(fun f -> relative dir (Filename.to_string f))
+  ;;
 end

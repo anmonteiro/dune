@@ -46,44 +46,48 @@ The makefile version of pipe actions uses actual pipes:
   >    (pipe-outputs (run a) (run b) (run c)))))
   > EOF
 
-  $ dune rules -m target
-  _build/default/target: _build/install/default/bin/a \
-    _build/install/default/bin/b _build/install/default/bin/c
-  	mkdir -p _build/default; \
-  	mkdir -p _build/default; \
-  	cd _build/default; \
-  	../install/default/bin/a  2>&1 |  \
-  	  ../install/default/bin/b | ../install/default/bin/c  &> target
+  $ dune rules target
+  ((deps
+    ((File (In_build_dir _build/install/default/bin/a))
+     (File (In_build_dir _build/install/default/bin/b))
+     (File (In_build_dir _build/install/default/bin/c))))
+   (targets ((files (_build/default/target)) (directories ())))
+   (context default)
+   (action
+    (chdir
+     _build/default
+     (with-outputs-to
+      target
+      (pipe-outputs
+       (run ../install/default/bin/a)
+       (run ../install/default/bin/b)
+       (run ../install/default/bin/c))))))
 
   $ cat >dune <<EOF
-  > (executable
-  >  (public_name apl) (name append_to_line) (modules append_to_line))
-  > (executable
-  >  (public_name echo-outputs) (name echo_outputs) (modules echo_outputs))
   > (rule
   >  (action
   >   (with-stderr-to target-stdout.stderr
   >    (with-stdout-to target-stdout.stdout
   >     (pipe-stdout
-  >      (run echo-outputs a)
-  >      (run apl b)
-  >      (run apl c))))))
+  >      (run dune_cmd echo-outputs a)
+  >      (run dune_cmd append-to-lines b)
+  >      (run dune_cmd append-to-lines c))))))
   > (rule
   >  (action
   >   (with-stderr-to target-stderr.stderr
   >    (with-stdout-to target-stderr.stdout
   >     (pipe-stderr
-  >      (run echo-outputs a)
-  >      (run apl b)
-  >      (run apl c))))))
+  >      (run dune_cmd echo-outputs a)
+  >      (run dune_cmd append-to-lines b)
+  >      (run dune_cmd append-to-lines c))))))
   > (rule
   >  (action
   >   (with-stderr-to target-outputs.stderr
   >   (with-stdout-to target-outputs.stdout
   >    (pipe-outputs
-  >     (run echo-outputs a)
-  >     (run apl b)
-  >     (run apl c))))))
+  >     (run dune_cmd echo-outputs a)
+  >     (run dune_cmd append-to-lines b)
+  >     (run dune_cmd append-to-lines c))))))
   > EOF
 
   $ dune build _build/default/target-stdout.stdout _build/default/target-stdout.stderr

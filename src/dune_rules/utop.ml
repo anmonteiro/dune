@@ -2,7 +2,7 @@ open Import
 open Memo.O
 
 let exe_name = "utop"
-let utop_dir_basename = ".utop"
+let utop_dir_basename = Filename.utop_dir_basename
 
 let utop_exe =
   (* Use the [.exe] version. As the utop executable is declared with [(modes
@@ -10,13 +10,13 @@ let utop_exe =
      that so that it works without hassle when generating a utop for a library
      with C stubs. *)
   Filename.concat
-    utop_dir_basename
+    (Filename.to_string utop_dir_basename)
     (exe_name ^ Filename.Extension.to_string (Mode.exe_ext Mode.Byte))
 ;;
 
 let source ~dir =
   Toplevel.Source.make
-    ~dir:(Path.Build.relative dir utop_dir_basename)
+    ~dir:(Path.Build.relative_fname dir utop_dir_basename)
     ~loc:(Loc.in_dir (Path.build dir))
     ~main:"UTop_main.main ();"
     ~name:exe_name
@@ -61,7 +61,7 @@ let add_stanza db ~dir (acc, pps) stanza =
        then (
          match (Lib_info.kind info : Lib_kind.t) with
          | Virtual | Parameter | Dune_file Normal -> Appendable_list.cons lib acc, pps
-         (* CR @maiste or @art-w: the parametrized libraries in utop follows
+         (* CR-someday art-w: the parametrized libraries in utop follows
              the same schema as Normal library but it needs to be verified once
              parametrized libraries are fully supported. *)
          | Dune_file (Ppx_rewriter _ | Ppx_deriver _) ->
@@ -78,7 +78,7 @@ let add_stanza db ~dir (acc, pps) stanza =
         in
         let+ pps =
           Instrumentation.with_instrumentation
-            exes.buildable.preprocess
+            exes.buildable.preprocess.config
             ~instrumentation_backend:(Lib.DB.instrumentation_backend (Scope.libs scope))
           |> Resolve.Memo.read_memo
           >>| Preprocess.Per_module.pps
@@ -103,7 +103,7 @@ let add_stanza db ~dir (acc, pps) stanza =
          let info = Lib.info lib in
          match (Lib_info.kind info : Lib_kind.t) with
          | Virtual | Parameter | Dune_file Normal -> Appendable_list.cons lib acc, pps
-         (* CR @maiste or @art-w: the parametrized libraries in utop follows
+         (* CR-someday art-w: the parametrized libraries in utop follows
              the same schema as Normal library but it needs to be verified once
              parametrized libraries are fully supported. *)
          | Dune_file (Ppx_rewriter _ | Ppx_deriver _) ->
@@ -156,7 +156,9 @@ let utop_dev_tool_lock_dir_exists =
     Fs_memo.dir_exists (Path.Outside_build_dir.External path))
 ;;
 
-let utop_findlib_conf = Filename.concat utop_dir_basename "findlib.conf"
+let utop_findlib_conf =
+  Filename.append (Filename.to_string utop_dir_basename) Filename.findlib_conf
+;;
 
 (* The lib directory of the utop package and of each of its dependencies within
    the _build directory (or the toolchains directory in the case of the OCaml
@@ -245,6 +247,7 @@ let setup sctx ~dir =
       ~opaque:(Explicit false)
       ~requires_link
       ~requires_compile:requires
+      ~user_written_requires:None
       ~flags
       ~js_of_ocaml:(Js_of_ocaml.Mode.Pair.make None)
       ~melange_package_name:None

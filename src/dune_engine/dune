@@ -1,5 +1,6 @@
 (library
  (name dune_engine)
+ (root_module root)
  (libraries
   unix
   csexp
@@ -13,14 +14,12 @@
   dune_scheduler
   dune_glob
   dune_targets
-  chrome_trace
   dune_trace
   dune_action_plugin
   dune_util
   build_path_prefix_map
   dune_rpc
-  dune_rpc_client
-  spawn
+  rpc
   dune_digest
   dune_action_trace)
  (synopsis "Internal Dune library, do not use!"))

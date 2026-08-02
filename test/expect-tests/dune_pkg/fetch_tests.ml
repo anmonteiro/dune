@@ -67,11 +67,10 @@ let download ?(reproducible = true) ~unpack ~port ~filename ~target ?checksum ()
 ;;
 
 let run thunk =
-  let on_event _config _event = () in
   let config : Scheduler.Config.t =
     { concurrency = 1; print_ctrl_c_warning = false; watch_exclusions = [] }
   in
-  Scheduler.Run.go config ~on_event (fun () ->
+  Scheduler.Run.go config (fun () ->
     let open Fiber.O in
     Git_test_utils.git_init_and_config_user (Path.of_string ".") >>> thunk ())
 ;;
@@ -191,6 +190,7 @@ let%expect_test "downloading, tarball with no checksum match" =
     print_endline "------\nfiles in target dir:";
     Dune_engine.No_io.Path.Untracked.readdir_unsorted target
     |> Result.value ~default:[]
+    |> Filename.L.to_string
     |> List.sort ~compare:String.compare
     |> List.iter ~f:print_endline
   in

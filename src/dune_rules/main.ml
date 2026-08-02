@@ -25,16 +25,32 @@ let implicit_default_alias dir =
        Some (Action_builder.ignore (Alias_rec.dep_on_alias_rec default_alias dir)))
 ;;
 
-let execution_parameters =
+let execution_parameters ~sandbox_actions =
+  let source_backed_dir path =
+    match Dpath.Target_dir.of_target path with
+    | Regular (With_context (context, source))
+    | Anonymous_action (With_context (context, source)) ->
+      (match Install.Context.analyze_path context source with
+       | Normal (_, source) -> Some source
+       | Install _ | Invalid -> None)
+    | Regular Root | Anonymous_action Root | Invalid _ -> None
+  in
   let f context path =
-    let path = Path.Build.drop_build_context_exn path in
     let open Memo.O in
     let* ep = Execution_parameters.default in
-    if Context_name.equal context Private_context.t.name
+    let ep =
+      if sandbox_actions then Execution_parameters.set_sandbox_actions true ep else ep
+    in
+    if
+      Context_name.equal context Private_context.t.name
+      || Context_name.equal context Fetch_rules.context.name
     then Memo.return ep
-    else
-      let+ dir = Source_tree.nearest_dir path in
-      Dune_project.update_execution_parameters (Source_tree.Dir.project dir) ep
+    else (
+      match source_backed_dir path with
+      | None -> Memo.return ep
+      | Some path ->
+        let+ dir = Source_tree.nearest_dir path in
+        Dune_project.update_execution_parameters (Source_tree.Dir.project dir) ep)
   in
   let memo =
     let module Input = struct
@@ -54,7 +70,7 @@ let execution_parameters =
   fun context ~dir -> Memo.exec memo (context, dir)
 ;;
 
-let init ~sandboxing_preference () : unit =
+let init ~sandbox_actions ~sandboxing_preference () : unit =
   let promote_source ~chmod ~delete_dst_if_it_is_a_directory ~src ~dst =
     let open Fiber.O in
     let* ctx = Path.Build.parent_exn src |> Context.DB.by_dir |> Memo.run in
@@ -83,7 +99,7 @@ let init ~sandboxing_preference () : unit =
          :: List.map contexts ~f:(fun ctx -> ctx, With_sources)))
     ~rule_generator:(module Gen_rules)
     ~implicit_default_alias
-    ~execution_parameters
+    ~execution_parameters:(execution_parameters ~sandbox_actions)
     ~source_tree:(module Source_tree)
 ;;
 

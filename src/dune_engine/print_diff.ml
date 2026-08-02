@@ -32,7 +32,7 @@ end
 
 type command =
   { dir : Path.t
-  ; metadata : Process.metadata
+  ; metadata : Process_metadata.t
   ; prog : Path.t
   ; args : string list
   }
@@ -79,16 +79,16 @@ end = struct
           ~metadata
       in
       (match code with
-       | 1 -> Fiber.return (Ok { Diff.output; loc = metadata.loc })
+       | 1 -> Fiber.return (Ok { Diff.output; loc = metadata.Process_metadata.loc })
        | _ -> capture { commands; error })
   ;;
 end
 
 let make_metadata ~has_embedded_location promotion loc =
-  Process.create_metadata
+  Process_metadata.create
     ~categories:[ "diff" ]
     ~has_embedded_location
-    ~purpose:Internal_job
+    ~purpose:Process_metadata.Internal_job
     ~loc
     ?promotion
     ()
@@ -177,8 +177,6 @@ let prepare_with_labels
              (Path.to_string_maybe_quoted (Path.drop_optional_sandbox_root path2))
          ])
   in
-  let path1 = noent_to_dev_null path1 in
-  let path2 = noent_to_dev_null path2 in
   match !Clflags.diff_command with
   | Some "-" -> fallback
   | Some cmd ->
@@ -213,17 +211,28 @@ let prepare_with_labels
       | None -> fallback
       | Some diff -> With_fallback.run diff ~fallback
     in
+    let builtin_path1 = noent_to_dev_null path1 in
+    let builtin_path2 = noent_to_dev_null path2 in
     let diff =
-      External.diff ~skip_trailing_cr ~dir promotion loc (label1, path1) (label2, path2)
+      External.diff
+        ~skip_trailing_cr
+        ~dir
+        promotion
+        loc
+        (label1, builtin_path1)
+        (label2, builtin_path2)
     in
     if Execution_env.inside_dune
     then or_fallback ~fallback diff
     else (
       let fallback =
-        Option.first_some (External.git ~skip_trailing_cr promotion loc path1 path2) diff
+        Option.first_some
+          (External.git ~skip_trailing_cr promotion loc builtin_path1 builtin_path2)
+          diff
         |> or_fallback ~fallback
       in
-      External.patdiff ~dir promotion loc path1 path2 |> or_fallback ~fallback)
+      External.patdiff ~dir promotion loc builtin_path1 builtin_path2
+      |> or_fallback ~fallback)
 ;;
 
 let prepare ~skip_trailing_cr promotion path1 path2 =

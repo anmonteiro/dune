@@ -1,36 +1,13 @@
-Melange rules should be sandboxed by default
+Melange rules should honor explicit sandboxing
 
-  $ cat > dune-project <<EOF
-  > (lang dune 3.22)
-  > (using melange 1.0)
-  > EOF
+  $ make_melange_sandbox_project
 
-  $ cat > dune <<EOF
-  > (library
-  >  (name lib)
-  >  (modes melange)
-  >  (modules lib))
-  > (melange.emit
-  >  (target output)
-  >  (alias mel)
-  >  (emit_stdlib false)
-  >  (modules main)
-  >  (libraries lib))
-  > EOF
-
-  $ cat > lib.ml <<EOF
-  > let message = "hello from lib"
-  > EOF
-
-  $ cat > main.ml <<EOF
-  > let () = Js.log Lib.message
-  > EOF
-
-Use default sandbox preference. The test suite sets `DUNE_SANDBOX`, so clear it.
+The test suite sets `DUNE_SANDBOX`, so clear it and use the command-line
+option explicitly.
 
   $ unset DUNE_SANDBOX
   $ rm -rf _build
-  $ dune build @mel --display quiet --trace-file trace.csexp
+  $ dune build @mel --sandbox=symlink --display quiet --trace-file trace.csexp
 
   $ cat > melc_dirs.jq <<EOF
   > select(

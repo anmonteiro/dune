@@ -3,23 +3,23 @@
   (env-vars
    ; We set ocaml to always be colored since it changes the output of
    ; ocamlc error messages. See https://github.com/ocaml/ocaml/issues/14144
-   (OCAML_COLOR always))))
+   (OCAML_COLOR always)
+   (LC_ALL C.UTF-8))))
 
 (library
  (name dune_rpc_e2e)
  (modules dune_rpc_e2e)
  (libraries
-  dune_rpc_client
+  rpc
   dune_rpc
   dune_util
   stdune
-  spawn
   csexp
   fiber
   dune_engine
   dune_scheduler
   dune_rpc_impl
-  csexp_rpc
+  unix
   ;; This is because of the (implicit_transitive_deps false)
   ;; in dune-project
   ppx_expect.config_types
@@ -33,12 +33,13 @@
  (modules dune_rpc_diagnostics)
  (inline_tests
   (deps
-   (package dune)))
+   (package dune)
+   (env_var LC_ALL)))
  (libraries
   fiber
   stdune
   re
-  dune_rpc_client
+  rpc
   dune_rpc_e2e
   dune_rpc
   ;; This is because of the (implicit_transitive_deps false)
@@ -63,6 +64,7 @@
   dune_rpc_impl
   dune_scheduler
   stdune
+  rpc
   fiber
   xdg
   unix
@@ -86,7 +88,7 @@
  (libraries
   fiber
   stdune
-  dune_rpc_client
+  rpc
   dune_rpc_e2e
   dune_rpc
   unix

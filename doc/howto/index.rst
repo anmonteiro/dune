@@ -20,13 +20,16 @@ These guides will help you use Dune's features in your project.
    ../virtual-libraries
    ../tests
    bundle
+   handle-depexts
    toplevel
    rule-generation
    override-default-entrypoint
+   organize-multiple-executables
    release-binaries-with-github-action
    homebrew-package
    use-opam-alongside-dune-package-management
    configure-editors-with-package-management
+   shell-completion
    set-up-ci-with-package-management
    customize-dev-tools-lock-directories
    use-multiple-build-contexts

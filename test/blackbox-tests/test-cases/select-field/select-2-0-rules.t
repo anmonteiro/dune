@@ -1,4 +1,6 @@
-  $ echo "(lang dune 2.0)" > dune-project
+Rejects invalid select branch filenames in Dune 2.0.
+
+  $ make_dune_project 2.0
   $ cat > dune <<EOF
   > (library (name foo) (libraries (select foo.ml from (!bar -> f.ml))))
   > EOF

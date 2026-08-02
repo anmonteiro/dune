@@ -1,6 +1,5 @@
 (rule
- (mode promote)
- (targets libs.ml)
+ (targets libs.ml.gen)
  (deps
   ../bin/main.exe
   ../dune-file
@@ -11,24 +10,35 @@
   (source_tree ../vendor))
  (action
   (with-stdout-to
-   libs.ml
-   (run
-    %{dep:../bin/main.exe}
-    internal
-    bootstrap-info
-    --no-print-directory
-    --root
-    %{env:PWD=.}
-    --profile
-    %{profile}))))
+   libs.ml.gen
+   (chdir
+    %{project_root}
+    (progn
+     ;; ugly renaming needed to prevent the inner dune being confused
+     ;; that it's already built
+     (bash "mv bin/main.exe bin/foo.exe")
+     (no-infer
+      (run
+       ./bin/foo.exe
+       internal
+       bootstrap-info
+       --no-print-directory
+       --root
+       .
+       --profile
+       dev)))))))
 
 (alias
  (name runtest)
- (deps libs.ml))
+ (deps
+  (alias check)))
 
-(alias
- (name check)
- (deps libs.ml))
+(rule
+ (alias check)
+ (action
+  (diff libs.ml libs.ml.gen)))
+
+(ocamllex pps)
 
 (executable
  (name duneboot)

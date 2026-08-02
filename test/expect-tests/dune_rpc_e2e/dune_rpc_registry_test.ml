@@ -3,7 +3,7 @@ open Fiber.O
 open Dune_scheduler
 module Where = Dune_rpc.Private.Where
 module Registry = Dune_rpc.Private.Registry
-module Poll_active = Dune_rpc_impl.Poll_active
+module Poll_active = Rpc.Poll_active
 open Dune_rpc_e2e
 
 let try_ ~times ~delay_seconds ~f =
@@ -22,7 +22,7 @@ let try_ ~times ~delay_seconds ~f =
 
 let run =
   let cwd = Sys.getcwd () in
-  Dune_engine.Clflags.display := Quiet;
+  Clflags.display := Quiet;
   let config =
     { Scheduler.Config.concurrency = 1
     ; print_ctrl_c_warning = false
@@ -41,8 +41,71 @@ let run =
       ~finally:(fun () -> Sys.chdir cwd)
       ~f:(fun () ->
         Sys.chdir (Path.to_string dir);
-        Scheduler.Run.go config run ~timeout:(Time.Span.of_secs 5.0) ~on_event:(fun _ _ ->
-          ()))
+        Scheduler.Run.go config run ~timeout:(Time.Span.of_secs 5.0))
+;;
+
+let%expect_test "poll skips scans after the registry mtime changes" =
+  let module IO = struct
+    let mtime = ref 0.0
+    let file : Registry.File.t option ref = ref None
+    let scans = ref 0
+    let stat _ = Fiber.return (Ok (`Mtime !mtime))
+
+    let scandir _ =
+      incr scans;
+      let files =
+        match !file with
+        | None -> []
+        | Some { Registry.File.path; _ } -> [ Filename.basename path ]
+      in
+      Fiber.return (Ok files)
+    ;;
+
+    let read_file path =
+      match !file with
+      | Some { Registry.File.path = registered_path; contents }
+        when String.equal path registered_path -> Fiber.return (Ok contents)
+      | None | Some _ -> Fiber.return (Error (Failure path))
+    ;;
+  end
+  in
+  let module Poll = Registry.Poll (Fiber) (IO) in
+  let case () =
+    let config =
+      Registry.Config.create
+        (Xdg.create
+           ~env:(function
+             | "XDG_RUNTIME_DIR" -> Some "."
+             | _ -> None)
+           ())
+    in
+    let registry = Registry.create config in
+    let poll description =
+      let+ result = Poll.poll registry in
+      match result with
+      | Error exn -> raise exn
+      | Ok refresh ->
+        printfn
+          "%s: scans=%d added=%d current=%d"
+          description
+          !IO.scans
+          (List.length (Registry.Refresh.added refresh))
+          (List.length (Registry.current registry))
+    in
+    let* () = poll "initial" in
+    let dune = Registry.Dune.create ~where:(`Unix "rpc") ~root:"." ~pid:1 in
+    let (`Caller_should_write file) = Registry.Config.register config dune in
+    IO.file := Some file;
+    IO.mtime := 1.0;
+    let* () = poll "after change" in
+    poll "subsequent poll"
+  in
+  run case;
+  [%expect
+    {|
+    initial: scans=1 added=0 current=0
+    after change: scans=2 added=1 current=1
+    subsequent poll: scans=2 added=0 current=1 |}]
 ;;
 
 let%expect_test "turn on dune watch and wait until the connection is listed" =

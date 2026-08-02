@@ -2,17 +2,19 @@
  (name dune_unit_tests)
  (libraries
   ocaml_config
-  spawn
   dune_tests_common
   stdune
   dune_util
   dune_engine
   dune_scheduler
+  dune_threaded_console
   dune_rules
   fiber
   dune_lang
+  ocaml
   memo
   unix
+  threads.posix
   ;; This is because of the (implicit_transitive_deps false)
   ;; in dune-project
   ppx_expect.config

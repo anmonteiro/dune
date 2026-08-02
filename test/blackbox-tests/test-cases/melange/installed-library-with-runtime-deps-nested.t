@@ -27,17 +27,15 @@ nested more than the dune-project file
   > EOF
 
   $ dune build --root lib
-  Entering directory 'lib'
-  Leaving directory 'lib'
 
   $ cat lib/_build/default/foo.install
   lib: [
     "_build/install/default/lib/foo/META"
     "_build/install/default/lib/foo/dune-package"
-    "_build/install/default/lib/foo/foo.ml"
     "_build/install/default/lib/foo/melange/foo.cmi" {"melange/foo.cmi"}
     "_build/install/default/lib/foo/melange/foo.cmj" {"melange/foo.cmj"}
     "_build/install/default/lib/foo/melange/foo.cmt" {"melange/foo.cmt"}
+    "_build/install/default/lib/foo/melange/foo.ml" {"melange/foo.ml"}
     "_build/install/default/lib/foo/runtime.js"
   ]
 
@@ -64,8 +62,6 @@ nested more than the dune-project file
   > EOF
 
   $ OCAMLPATH=$PWD/prefix/lib/:$OCAMLPATH dune build --root app @melange
-  Entering directory 'app'
-  Leaving directory 'app'
 
 File exists in output dir
 

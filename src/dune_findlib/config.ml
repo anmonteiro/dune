@@ -9,9 +9,12 @@ module File = struct
     ; preds : Ps.t
     }
 
-  let to_dyn { vars; preds } =
-    let open Dyn in
-    record [ "vars", Vars.to_dyn vars; "preds", Ps.to_dyn preds ]
+  let repr =
+    Repr.record
+      "findlib-config-file"
+      [ Repr.field "vars" (Repr.abstract Vars.to_dyn) ~get:(fun t -> t.vars)
+      ; Repr.field "preds" (Repr.abstract Ps.to_dyn) ~get:(fun t -> t.preds)
+      ]
   ;;
 
   let load config_file =
@@ -26,7 +29,11 @@ module File = struct
         | true -> load config_file
         | false -> Memo.return Vars.empty
       in
-      let config_dir = Path.Outside_build_dir.extend_basename config_file ~suffix:".d" in
+      let config_dir =
+        Path.Outside_build_dir.extend_basename
+          config_file
+          ~suffix:(Filename.Extension.to_filename Filename.Extension.d)
+      in
       Fs_memo.is_directory config_dir
       >>= function
       | Ok false | Error (_ : Unix.error * _ * _) -> Memo.return vars
@@ -38,7 +45,9 @@ module File = struct
              Memo.parallel_map
                (Fs_memo.Dir_contents.to_list dir_contents)
                ~f:(fun (p, _kind) ->
-                 let p = Path.Outside_build_dir.relative config_dir p in
+                 let p =
+                   Path.Outside_build_dir.relative config_dir (Filename.to_string p)
+                 in
                  load p)
            in
            List.fold_left all_vars ~init:vars ~f:(fun acc vars ->
@@ -55,14 +64,19 @@ end
 type t =
   { config : File.t
   ; ocamlpath : Path.t list Memo.t
-  ; which : string -> Path.t option Memo.t
+  ; which : Filename.t -> Path.t option Memo.t
   ; toolchain : string option
   }
 
-let to_dyn { config; ocamlpath = _; toolchain; which = _ } =
-  let open Dyn in
-  record [ "config", File.to_dyn config; "toolchain", option string toolchain ]
+let repr =
+  Repr.record
+    "findlib-config"
+    [ Repr.field "config" File.repr ~get:(fun t -> t.config)
+    ; Repr.field "toolchain" Repr.(option string) ~get:(fun t -> t.toolchain)
+    ]
 ;;
+
+let to_dyn = Repr.to_dyn repr
 
 let ocamlpath_sep =
   if Sys.cygwin
@@ -98,7 +112,7 @@ let tool t ~prog =
   | None -> Memo.return None
   | Some s ->
     (match Filename.analyze_program_name s with
-     | In_path -> t.which s
+     | In_path -> t.which (Filename.of_string_exn s)
      | Relative_to_current_dir ->
        User_error.raise
          [ Pp.textf
@@ -132,7 +146,7 @@ let ocamlfind_config_path ~env ~which ~findlib_toolchain =
             compilation *)
          Memo.return None
        | Some _ ->
-         which "ocamlfind"
+         which Filename.ocamlfind
          >>= (function
           | None -> Memo.return None
           | Some fn ->

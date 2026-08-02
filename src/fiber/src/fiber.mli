@@ -103,6 +103,33 @@ val parallel_iter : 'a list -> f:('a -> unit t) -> unit t
 val parallel_iter_seq : 'a Seq.t -> f:('a -> unit t) -> unit t
 val sequential_iter_seq : 'a Seq.t -> f:('a -> unit t) -> unit t
 
+(** [map_reduce_seq xs ~f ~empty ~combine] runs [f] on every element of
+    [xs] in parallel and combines the returned values with [combine], starting
+    with [empty]. If [xs] is empty, [empty] is returned. [empty] should be an
+    identity for [combine].
+
+    Results are combined as the fibers finish, so the order is
+    nondeterministic. Therefore [combine] should be associative and
+    commutative (or otherwise insensitive to ordering), or callers must be
+    prepared to tolerate the nondeterminism. *)
+val map_reduce_seq
+  :  'a Seq.t
+  -> f:('a -> 'b t)
+  -> empty:'b
+  -> combine:('b -> 'b -> 'b)
+  -> 'b t
+
+(** Like [map_reduce_seq], for arrays. *)
+val map_reduce_array
+  :  'a array
+  -> f:('a -> 'b t)
+  -> empty:'b
+  -> combine:('b -> 'b -> 'b)
+  -> 'b t
+
+(** Like [map_reduce_seq], for lists. *)
+val map_reduce : 'a list -> f:('a -> 'b t) -> empty:'b -> combine:('b -> 'b -> 'b) -> 'b t
+
 (** Provide an efficient parallel map function for maps. *)
 module Make_parallel_map (S : sig
     type 'a t
@@ -144,6 +171,24 @@ module Var : sig
   (** [update var ~f fiber] runs [fiber] with [var] updated by applying [f] to its current
       value. Warning: do not use a lot of stack space in [f]. *)
   val update : 'a t -> f:('a -> 'a) -> (unit -> 'b fiber) -> 'b fiber
+
+  (** The [*_apply] combinators below behave like [get]/[set]/[update] but take a separate
+      argument [x] that is threaded into the continuation. This lets callers on hot paths
+      pass a hoisted (closure-free) function instead of allocating a fresh
+      [unit -> _ fiber] thunk on every call. *)
+
+  (** [get_apply var f x] reads [var] and continues with [f value x]. *)
+  val get_apply : 'a t -> ('a -> 'b -> 'c fiber) -> 'b -> 'c fiber
+
+  (** Like [get_apply] but [f] returns a plain value rather than a fiber. *)
+  val get_apply_map : 'a t -> ('a -> 'b -> 'c) -> 'b -> 'c fiber
+
+  (** [set_apply var value f x] sets [var] to [value] during the execution of [f x]. *)
+  val set_apply : 'a t -> 'a -> ('b -> 'c fiber) -> 'b -> 'c fiber
+
+  (** [update_apply var ~f g x] runs [g x] with [var] updated by applying [f] to its
+      current value. Warning: do not use a lot of stack space in [f]. *)
+  val update_apply : 'a t -> f:('a -> 'a) -> ('b -> 'c fiber) -> 'b -> 'c fiber
 end
 
 (** {1 Error handling} *)
@@ -187,6 +232,9 @@ module Ivar : sig
   (** Create a new empty ivar. *)
   val create : unit -> 'a t
 
+  (** Create a new empty ivar. *)
+  val create_full : 'a -> 'a t
+
   (** Read the contents of the ivar. *)
   val read : 'a t -> 'a fiber
 
@@ -194,8 +242,8 @@ module Ivar : sig
       given ivar. *)
   val fill : 'a t -> 'a -> unit fiber
 
-  (** Return [Some x] is [fill t x] has been called previously. *)
-  val peek : 'a t -> 'a option fiber
+  (** Return [Some x] if [fill t x] has been called previously. *)
+  val peek : 'a t -> 'a option
 end
 
 (** Mailbox variables *)
@@ -390,6 +438,10 @@ module Pool : sig
   (** Create a new pool. *)
   val create : unit -> t
 
+  (** [with_ f] runs [f pool] with a fresh pool. Tasks submitted to [pool] run
+      in parallel, and [pool] is closed when [f pool] terminates. *)
+  val with_ : (t -> 'a fiber) -> 'a fiber
+
   (** [running pool] returns whether it's possible to submit tasks to [pool] *)
   val running : t -> bool fiber
 
@@ -423,6 +475,23 @@ type fill = Fill : 'a Ivar.t * 'a -> fill
     the scheduler, it should block waiting for an event and return at least one
     ivar to fill. *)
 val run : 'a t -> iter:(unit -> fill list) -> 'a
+
+module Trigger : sig
+  (** Conceptually, a [unit Ivar.t] that can be filled idempotently. Ivars
+      cannot, in general, have idempotent fill operations, since the second fill
+      might have different data in it than the first. Since this type only
+      contains unit data, we can be sure that every fill will be (). *)
+  type t
+
+  val create : unit -> t
+  val trigger : t -> unit fiber
+
+  (** Version of [trigger] that is suitable to call from the [iter] callback of
+      [Fiber.run]. *)
+  val trigger' : t -> fill list
+
+  val wait : t -> unit fiber
+end
 
 (** Advanced fiber execution *)
 module Scheduler : sig

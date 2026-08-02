@@ -32,14 +32,6 @@ documentation for each command is available through ``dune COMMAND --help``.
 
       Execute a Rocq toplevel with the local configuration.
 
-.. describe:: dune coq
-
-   Command group related to Coq.
-
-   .. describe:: dune coq top
-
-      Execute a Coq toplevel with the local configuration.
-
 .. describe:: dune describe
 
    Describe the workspace.
@@ -79,7 +71,9 @@ documentation for each command is available through ``dune COMMAND --help``.
 
    .. describe:: dune describe targets
 
-      Print targets in a given directory. Works similarly to ls.
+      Print targets in a given directory. Works similarly to ls. The directory
+      may be a path in the source tree, or a build-only directory under
+      ``_build/`` (such as ``_build/default/.lib.objs``).
 
    .. describe:: dune describe workspace
 
@@ -94,6 +88,20 @@ documentation for each command is available through ``dune COMMAND --help``.
 .. describe:: dune exec
 
    Execute a command in a similar environment as if installation was performed.
+
+   Dune's options and the executed program's options share the same command
+   line. If an argument to the program starts with ``-``, separate it from
+   Dune's options with ``--``:
+
+   .. code:: console
+
+      $ dune exec ./tool.exe -- --program-option
+
+   Equivalently, put the separator before the whole command:
+
+   .. code:: console
+
+      $ dune exec -- ./tool.exe --program-option
 
 .. describe:: dune fmt
 
@@ -220,6 +228,34 @@ documentation for each command is available through ``dune COMMAND --help``.
 .. describe:: dune subst
 
    Substitute watermarks in source files.
+
+.. describe:: dune tools
+
+   .. versionadded:: 3.17
+
+   Command group for managing developer tools. See :doc:`dune-tools` for
+   details.
+
+   .. warning::
+
+      The ``dune tools`` command group is **experimental**. Its subcommands,
+      flags, and behavior may change in future versions of Dune without notice.
+
+   .. describe:: dune tools exec
+
+      Run a developer tool, automatically building it if needed.
+
+   .. describe:: dune tools install
+
+      Install a developer tool without running it.
+
+   .. describe:: dune tools which
+
+      Print the path to a developer tool's executable.
+
+   .. describe:: dune tools env
+
+      Print a command to add developer tool directories to your ``PATH``.
 
 .. describe:: dune top
 

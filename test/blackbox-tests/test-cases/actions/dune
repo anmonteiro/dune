@@ -1,5 +1,14 @@
 (cram
- (deps bin/sub_process.exe))
+ (applies_to stray-process)
+ (enabled_if
+  (<> %{system} macosx)))
+
+(cram
+ (applies_to subreaper)
+ (deps
+  (source_tree bin))
+ (enabled_if
+  (= %{system} linux)))
 
 (cram
  (applies_to concurrent)

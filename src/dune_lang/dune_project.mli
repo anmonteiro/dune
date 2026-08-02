@@ -32,7 +32,7 @@ val use_standard_c_and_cxx_flags : t -> bool option
 val dialects : t -> Dialect.DB.t
 val explicit_js_mode : t -> bool
 val format_config : t -> Format_config.t
-val subst_config : t -> Loc.t * Config.Toggle.t
+val subst_config : t -> Loc.t * Toggle.t
 val equal : t -> t -> bool
 val hash : t -> int
 
@@ -82,7 +82,12 @@ module Extension : sig
   val register_simple : Syntax.t -> Stanza.Parser.t list Decoder.t -> unit
 
   (** Register experimental extensions that were deleted *)
-  val register_deleted : name:Syntax.Name.t -> deleted_in:Syntax.Version.t -> unit
+  val register_deleted
+    :  name:Syntax.Name.t
+    -> ?hints:User_message.Style.t Pp.t list
+    -> deleted_in:Syntax.Version.t
+    -> unit
+    -> unit
 
   (** An instantiated extension with captured arguments *)
   type instance
@@ -155,7 +160,7 @@ end
 
 val load
   :  dir:Path.Source.t
-  -> files:Filename.Set.t
+  -> files:Filename.Array.Set.t
   -> infer_from_opam_files:bool
   -> load_opam_file_with_contents:
        (contents:string -> Path.Source.t -> Package_name.t -> Package.t)
@@ -164,7 +169,7 @@ val load
 val gen_load
   :  read:(Path.Source.t -> string Memo.t)
   -> dir:Path.Source.t
-  -> files:Filename.Set.t
+  -> files:Filename.Array.Set.t
   -> infer_from_opam_files:bool
   -> load_opam_file_with_contents:
        (contents:string -> Path.Source.t -> Package_name.t -> Package.t)

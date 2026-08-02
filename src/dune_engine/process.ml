@@ -1,9 +1,6 @@
 open Import
 open Fiber.O
-module Json = Chrome_trace.Json
-module Event = Chrome_trace.Event
-module Timestamp = Event.Timestamp
-module Action_output_on_success = Execution_parameters.Action_output_on_success
+open Action_types
 module Action_output_limit = Execution_parameters.Action_output_limit
 
 let limit_output output ~n =
@@ -81,7 +78,10 @@ module Io = struct
     | Out : output mode
 
   type kind =
-    | File of Path.t
+    | File of
+        { path : Path.t
+        ; perm : Permissions.Mode.t
+        }
     | Null
       (* This argument make no sense for inputs, but it seems annoying to
          change, especially as this code is meant to change again in #4435. *)
@@ -100,13 +100,14 @@ module Io = struct
     | In_chan : in_channel -> input channel
     | Out_chan : out_channel -> output channel
 
-  let descr_of_channel : type a. a channel -> _ = function
-    | In_chan ic -> Unix.descr_of_in_channel ic
-    | Out_chan oc -> Unix.descr_of_out_channel oc
+  let descr_of_channel : type a. a channel -> Fd.t = function
+    | In_chan ic -> Fd.unsafe_of_unix_file_descr (Unix.descr_of_in_channel ic)
+    | Out_chan oc -> Fd.unsafe_of_unix_file_descr (Unix.descr_of_out_channel oc)
   ;;
 
-  let channel_of_descr : type a. _ -> a mode -> a channel =
+  let channel_of_descr : type a. Fd.t -> a mode -> a channel =
     fun fd mode ->
+    let fd = Fd.unsafe_to_unix_file_descr fd in
     match mode with
     | In -> In_chan (Unix.in_channel_of_descr fd)
     | Out -> Out_chan (Unix.out_channel_of_descr fd)
@@ -119,7 +120,7 @@ module Io = struct
 
   type 'a t =
     { kind : kind
-    ; fd : Unix.file_descr Lazy.t
+    ; fd : Fd.t Lazy.t
     ; channel : 'a channel Lazy.t
     ; mutable status : status
     }
@@ -154,16 +155,17 @@ module Io = struct
 
   let null (type a) (mode : a mode) : a t =
     let fd =
-      match mode with
-      | In -> Dev_null.in_
-      | Out -> Dev_null.out
+      lazy
+        (match mode with
+         | In -> Lazy.force Dev_null.in_
+         | Out -> Lazy.force Dev_null.out)
     in
     let channel = lazy (channel_of_descr (Lazy.force fd) mode) in
     { kind = Null; fd; channel; status = Keep_open }
   ;;
 
-  let file : type a. _ -> ?perm:int -> a mode -> a t =
-    fun fn ?(perm = 0o666) mode ->
+  let file : type a. _ -> ?perm:Permissions.Mode.t -> a mode -> a t =
+    fun fn ?(perm = Permissions.Mode.default_file) mode ->
     let fd =
       lazy
         (let flags =
@@ -171,10 +173,14 @@ module Io = struct
            | Out -> [ Unix.O_WRONLY; O_CREAT; O_TRUNC ]
            | In -> [ O_RDONLY ]
          in
-         Unix.openfile (Path.to_string fn) (O_CLOEXEC :: O_SHARE_DELETE :: flags) perm)
+         Unix.openfile
+           (Path.to_string fn)
+           (O_CLOEXEC :: O_SHARE_DELETE :: flags)
+           (Permissions.Mode.to_int perm)
+         |> Fd.unsafe_of_unix_file_descr)
     in
     let channel = lazy (channel_of_descr (Lazy.force fd) mode) in
-    { kind = File fn; fd; channel; status = Close_after_exec }
+    { kind = File { path = fn; perm }; fd; channel; status = Close_after_exec }
   ;;
 
   let flush : type a. a t -> unit =
@@ -203,7 +209,7 @@ module Io = struct
       t.status <- Closed;
       if Lazy.is_val t.channel
       then close_channel (Lazy.force t.channel)
-      else Unix.close (Lazy.force t.fd)
+      else Fd.close (Lazy.force t.fd)
   ;;
 
   let multi_use t = { t with status = Keep_open }
@@ -221,49 +227,43 @@ module Io = struct
   ;;
 end
 
-type purpose =
-  | Internal_job
-  | Build_job of Targets.Validated.t option
+module Build = struct
+  type t =
+    { run_id : Run_id.t
+    ; cancellation : Fiber.Cancel.t
+    ; action_runner : Action_runner.t option
+    }
 
-type metadata =
-  { loc : Loc.t option
-  ; compound : User_message.Compound.t list
-  ; name : string option
-  ; categories : string list
-  ; purpose : purpose
-  ; has_embedded_location : bool
-  ; promotion : User_message.Diff_annot.t option
-  }
+  let create ~action_runner ~run_id ~cancellation =
+    { run_id; cancellation; action_runner }
+  ;;
 
-let default_metadata =
-  { loc = None
-  ; compound = []
-  ; purpose = Internal_job
-  ; categories = []
-  ; name = None
-  ; has_embedded_location = false
-  ; promotion = None
-  }
-;;
+  let run_id t = t.run_id
+  let cancellation t = t.cancellation
+  let action_runner t = t.action_runner
+  let current : t option ref = ref None
+  let get () = !current
 
-let create_metadata
-      ?loc
-      ?(compound = default_metadata.compound)
-      ?(has_embedded_location = false)
-      ?name
-      ?(categories = default_metadata.categories)
-      ?(purpose = Internal_job)
-      ?promotion
-      ()
-  =
-  { loc; compound; name; categories; purpose; has_embedded_location; promotion }
-;;
+  let with_ t f =
+    let previous = !current in
+    current := Some t;
+    Fiber.finalize f ~finally:(fun () ->
+      current := previous;
+      Fiber.return ())
+  ;;
+
+  let cancel_current () =
+    match !current with
+    | None -> Fiber.return ()
+    | Some { cancellation; _ } -> Fiber.Cancel.fire cancellation
+  ;;
+end
 
 let io_to_redirection_path (kind : Io.kind) =
   match kind with
   | Terminal _ -> None
   | Null -> Some (Path.to_string Dev_null.path)
-  | File fn -> Some (Path.to_string fn)
+  | File { path; _ } -> Some (Path.to_string path)
   | External -> None
 ;;
 
@@ -282,7 +282,7 @@ let command_line_enclosers
   let suffix =
     match stdin_from.kind with
     | Null | Terminal _ | External -> suffix
-    | File fn -> suffix ^ " < " ^ quote fn
+    | File { path; _ } -> suffix ^ " < " ^ quote path
   in
   let suffix =
     match
@@ -394,20 +394,10 @@ end
 module Exit_status = Dune_trace.Event.Exit_status
 
 (* Implemt the rendering for [--display short] *)
-module Short_display : sig
-  val pp_ok : prog:string -> purpose:purpose -> User_message.Style.t Pp.t
-
-  val pp_error
-    :  prog:string
-    -> purpose:purpose
-    -> has_unexpected_stdout:bool
-    -> has_unexpected_stderr:bool
-    -> error:Exit_status.error
-    -> User_message.Style.t Pp.t
-end = struct
+module Short_display = struct
   let pp_purpose = function
-    | Internal_job -> Pp.verbatim "(internal)"
-    | Build_job targets ->
+    | Process_metadata.Internal_job -> Pp.verbatim "(internal)"
+    | Process_metadata.Build_job targets ->
       let rec split_paths targets_acc ctxs_acc = function
         | [] -> List.rev targets_acc, Context_name.Set.to_list ctxs_acc
         | path :: rest ->
@@ -445,7 +435,10 @@ end = struct
         split_paths [] Context_name.Set.empty targets
       in
       let targets =
-        List.map target_names ~f:Filename.split_extension_after_dot
+        List.map target_names ~f:(fun fn ->
+          match Stdlib.Filename.extension fn with
+          | "" -> fn, ""
+          | s -> String.split_n fn (String.length fn - String.length s + 1))
         |> String.Map.of_list_multi
         |> String.Map.to_list_map ~f:(fun prefix suffixes ->
           match suffixes with
@@ -519,30 +512,7 @@ let pp_id id =
   ++ Pp.char ']'
 ;;
 
-module Handle_exit_status : sig
-  open Exit_status
-
-  val verbose
-    :  ('a, error) result
-    -> id:Running_jobs.Id.t
-    -> metadata:metadata
-    -> output:string
-    -> command_line:User_message.Style.t Pp.t
-    -> dir:Path.t option
-    -> 'a
-
-  val non_verbose
-    :  ('a, error) result
-    -> verbosity:Display.t
-    -> metadata:metadata
-    -> output:string
-    -> prog:string
-    -> command_line:string
-    -> dir:Path.t option
-    -> has_unexpected_stdout:bool
-    -> has_unexpected_stderr:bool
-    -> 'a
-end = struct
+module Handle_exit_status = struct
   open Exit_status
 
   type output =
@@ -571,7 +541,9 @@ end = struct
   ;;
 
   let get_loc_compound_and_dir ~dir ~metadata ~output =
-    let { loc; compound; promotion; _ } = metadata in
+    let loc = metadata.Process_metadata.loc in
+    let compound = metadata.Process_metadata.compound in
+    let promotion = metadata.Process_metadata.promotion in
     let dir = Option.value dir ~default:Path.root in
     let compound, has_embedded_location =
       match output with
@@ -666,10 +638,12 @@ end = struct
     in
     let add_command_line paragraphs =
       if show_command
-      then Pp.tag User_message.Style.Details (Pp.verbatim command_line) :: paragraphs
+      then
+        Pp.tag User_message.Style.Details (Pp.verbatim (Lazy.force command_line))
+        :: paragraphs
       else paragraphs
     in
-    let purpose = metadata.purpose in
+    let purpose = metadata.Process_metadata.purpose in
     match t with
     | Ok n ->
       let paragraphs =
@@ -679,7 +653,8 @@ end = struct
       in
       let paragraphs =
         match verbosity, purpose, output with
-        | Short, Build_job _, _ | Short, Internal_job, Has_output _ ->
+        | Short, Process_metadata.Build_job _, _
+        | Short, Process_metadata.Internal_job, Has_output _ ->
           Short_display.pp_ok ~prog ~purpose :: paragraphs
         | _ -> paragraphs
       in
@@ -842,7 +817,15 @@ module Result = struct
   ;;
 end
 
+let targets_of_purpose (purpose : Process_metadata.purpose) =
+  match purpose with
+  | Process_metadata.Internal_job -> None
+  | Build_job None -> None
+  | Build_job (Some { dirs; files; root }) -> Some { Dune_trace.Event.root; dirs; files }
+;;
+
 let report_process_finished
+      ?(extra_args = [])
       ~metadata
       ~dir
       ~prog
@@ -854,21 +837,15 @@ let report_process_finished
       ~stderr
       (times : Proc.Times.t)
   =
-  let targets =
-    match metadata.purpose with
-    | Internal_job -> None
-    | Build_job None -> None
-    | Build_job (Some { dirs; files; root }) ->
-      Some { Dune_trace.Event.root; dirs; files }
-  in
-  let stdout = Result.Out.get stdout in
-  let stderr = Result.Out.get stderr in
   Dune_trace.emit Process (fun () ->
+    let stdout = Result.Out.get stdout in
+    let stderr = Result.Out.get stderr in
     Dune_trace.Event.process
-      ~name:metadata.name
+      ~extra_args
+      ~name:metadata.Process_metadata.name
       ~started_at
-      ~targets
-      ~categories:metadata.categories
+      ~targets:(targets_of_purpose metadata.purpose)
+      ~categories:metadata.Process_metadata.categories
       ~pid
       ~exit:exit_status
       ~prog
@@ -879,28 +856,18 @@ let report_process_finished
       ~(times : Proc.Times.t))
 ;;
 
-let await ~timeout { response_file; pid; is_process_group_leader; _ } =
-  let+ process_info, termination_reason =
-    Scheduler.wait_for_build_process ?timeout pid ~is_process_group_leader
-  in
-  Option.iter response_file ~f:(fun path -> path |> Path.to_string |> Fpath.unlink_exn);
-  process_info, termination_reason
-;;
+type prepared_outputs =
+  { stdout_on_success : Action_output_on_success.t
+  ; stderr_on_success : Action_output_on_success.t
+  ; stdout_limit : Action_output_limit.t
+  ; stderr_limit : Action_output_limit.t
+  ; stdout_capture : Path.t option
+  ; stderr_capture : Path.t option
+  ; stdout : Io.output Io.t
+  ; stderr : Io.output Io.t
+  }
 
-let spawn
-      ?dir
-      ?(env = Env.initial)
-      ~(stdout : _ Io.t)
-      ~(stderr : _ Io.t)
-      ~(stdin : _ Io.t)
-      ~queued
-      ~setpgid
-      ~prog
-      ~args
-      ~metadata
-      ~timeout
-      ()
-  =
+let prepare_outputs ~(stdout : _ Io.t) ~(stderr : _ Io.t) =
   let stdout_on_success = Io.output_on_success stdout
   and stderr_on_success = Io.output_on_success stderr in
   let stdout_limit = Io.output_limit stdout
@@ -941,7 +908,60 @@ let spawn
       (stdout_capture, stdout), stderr
     | _ -> (None, stdout), (None, stderr)
   in
+  { stdout_on_success
+  ; stderr_on_success
+  ; stdout_limit
+  ; stderr_limit
+  ; stdout_capture
+  ; stderr_capture
+  ; stdout
+  ; stderr
+  }
+;;
+
+let await ?cancellation ~timeout { response_file; pid; is_process_group_leader; _ } =
+  let+ process_info, termination_reason =
+    Scheduler.wait_for_build_process ?cancellation ?timeout pid ~is_process_group_leader
+  in
+  Option.iter response_file ~f:(fun path -> path |> Path.to_string |> Fpath.unlink_exn);
+  process_info, termination_reason
+;;
+
+let spawn
+      ?dir
+      ?(env = Env.initial)
+      ?(emit_trace = true)
+      ~(prepared_outputs : prepared_outputs)
+      ~(stdin : _ Io.t)
+      ~queued
+      ~setpgid
+      ~prog
+      ~args
+      ~metadata
+      ~timeout
+      ()
+  =
+  let { stdout_on_success
+      ; stderr_on_success
+      ; stdout_limit
+      ; stderr_limit
+      ; stdout_capture
+      ; stderr_capture
+      ; stdout
+      ; stderr
+      }
+    =
+    prepared_outputs
+  in
   let prog_str = Path.reach_for_running ?from:dir prog in
+  (* Normalise to backslashes on Windows. Dune's path representation uses '/'
+     across platforms for consistency, but some Windows programs (notably
+     cmd.exe, which scans argv[0] for '/c') misparse mixed separators.
+     Backslashes are the native form on Windows, so we normalise here at the
+     boundary between Dune's path representation and the OS. *)
+  let prog_str =
+    if Sys.win32 then String.replace_char prog_str ~from:'/' ~to_:'\\' else prog_str
+  in
   let args, response_file =
     if Sys.win32 && cmdline_approximate_length prog_str args >= 1024
     then (
@@ -966,9 +986,9 @@ let spawn
       let env = Dtemp.add_to_env env in
       Env.to_unix env |> Spawn.Env.of_list
     in
-    let stdout = Io.fd stdout in
-    let stderr = Io.fd stderr in
-    let stdin = Io.fd stdin in
+    let stdout = Io.fd stdout |> Fd.unsafe_to_unix_file_descr in
+    let stderr = Io.fd stderr |> Fd.unsafe_to_unix_file_descr in
+    let stdin = Io.fd stdin |> Fd.unsafe_to_unix_file_descr in
     let argv = prog_str :: args in
     Spawn.spawn
       ()
@@ -983,27 +1003,22 @@ let spawn
         (match dir with
          | None -> Inherit
          | Some dir -> Path (Path.to_string dir))
-    |> Pid.of_int
   in
-  Dune_trace.emit Process (fun () ->
-    let targets =
-      match metadata.purpose with
-      | Internal_job -> None
-      | Build_job None -> None
-      | Build_job (Some { dirs; files; root }) ->
-        Some { Dune_trace.Event.root; dirs; files }
-    in
-    Dune_trace.Event.process_start
-      ~targets
-      ~pid
-      ~dir
-      ~prog:prog_str
-      ~args
-      ~timeout
-      ~name:metadata.name
-      ~categories:metadata.categories
-      ~started_at
-      ~queued);
+  if emit_trace
+  then
+    Dune_trace.emit Process (fun () ->
+      Dune_trace.Event.process_start
+        ~extra_args:[]
+        ~targets:(targets_of_purpose metadata.purpose)
+        ~pid
+        ~dir
+        ~prog:prog_str
+        ~args
+        ~timeout
+        ~name:metadata.Process_metadata.name
+        ~categories:metadata.Process_metadata.categories
+        ~started_at
+        ~queued);
   Io.release stdout;
   Io.release stderr;
   { started_at
@@ -1019,6 +1034,163 @@ let spawn
   }
 ;;
 
+let runner_input_of_io (io : Io.input Io.t) =
+  match io.kind with
+  | Null -> Some Process_runner.Input.Null
+  | Terminal _ -> Some Process_runner.Input.Terminal
+  | File { path; _ } -> Some (Process_runner.Input.File path)
+  | External -> None
+;;
+
+let runner_output_of_io (io : Io.output Io.t) =
+  match io.kind with
+  | Null -> Some Process_runner.Output.Null
+  | Terminal _ -> Some Process_runner.Output.Terminal
+  | File { path; perm } -> Some (Process_runner.Output.File { path; perm })
+  | External -> None
+;;
+
+let runner_request
+      ~dir
+      ~env
+      ~metadata
+      ~prog
+      ~args
+      ~(stdin_from : Io.input Io.t)
+      ~(stdout_to : Io.output Io.t)
+      ~(stderr_to : Io.output Io.t)
+      ~setpgid
+      ~timeout
+      ~queued
+  =
+  if not metadata.Process_metadata.can_run_in_action_runner
+  then None
+  else (
+    match
+      ( runner_input_of_io stdin_from
+      , runner_output_of_io stdout_to
+      , Stdlib.( == ) stdout_to stderr_to )
+    with
+    | Some stdin_from, Some stdout_to, true ->
+      Some
+        { Process_runner.dir
+        ; env
+        ; metadata
+        ; prog
+        ; args
+        ; stdin_from
+        ; stdout_to
+        ; stderr_to = Process_runner.Stderr.Same_as_stdout
+        ; create_process_group = Option.is_some setpgid
+        ; timeout
+        ; queued
+        }
+    | Some stdin_from, Some stdout_to, false ->
+      (match runner_output_of_io stderr_to with
+       | None -> None
+       | Some stderr_to ->
+         Some
+           { Process_runner.dir
+           ; env
+           ; metadata
+           ; prog
+           ; args
+           ; stdin_from
+           ; stdout_to
+           ; stderr_to = Process_runner.Stderr.Output stderr_to
+           ; create_process_group = Option.is_some setpgid
+           ; timeout
+           ; queued
+           })
+    | None, _, _ | _, None, _ -> None)
+;;
+
+let exec_locally
+      ~build
+      ({ Process_runner.dir
+       ; env
+       ; metadata
+       ; prog
+       ; args
+       ; stdin_from
+       ; stdout_to
+       ; stderr_to
+       ; create_process_group
+       ; timeout
+       ; queued
+       } :
+        Process_runner.request)
+  =
+  let stdin =
+    match stdin_from with
+    | Null -> Io.null Io.In
+    | Terminal -> Io.stdin
+    | File path -> Io.file path Io.In
+  in
+  let stdout =
+    match stdout_to with
+    | Null -> Io.null Io.Out
+    | Terminal -> Io.stdout
+    | File { path; perm } -> Io.file path Io.Out ~perm
+  in
+  let stderr =
+    let stderr_to : Process_runner.Stderr.t = stderr_to in
+    let open Process_runner.Stderr in
+    match stderr_to with
+    | Same_as_stdout -> stdout
+    | Output (out : Process_runner.Output.t) ->
+      (match out with
+       | Null -> Io.null Io.Out
+       | Terminal -> Io.stderr
+       | File { path; perm } -> Io.file path Io.Out ~perm)
+  in
+  let prepared_outputs =
+    { stdout_on_success = Io.output_on_success stdout
+    ; stderr_on_success = Io.output_on_success stderr
+    ; stdout_limit = Io.output_limit stdout
+    ; stderr_limit = Io.output_limit stderr
+    ; stdout_capture = None
+    ; stderr_capture = None
+    ; stdout
+    ; stderr
+    }
+  in
+  Fiber.finalize
+    (fun () ->
+       let t =
+         spawn
+           ?dir
+           ~env
+           ~emit_trace:false
+           ~prepared_outputs
+           ~stdin
+           ~queued
+           ~setpgid:
+             (if create_process_group then Some Spawn.Pgid.new_process_group else None)
+           ~prog
+           ~args
+           ~metadata
+           ~timeout
+           ()
+       in
+       let { Build.cancellation; _ } = build in
+       let+ process_info, termination_reason = await ~cancellation ~timeout t in
+       let times =
+         { Proc.Times.elapsed_time = Time.diff process_info.end_time t.started_at
+         ; resource_usage = process_info.resource_usage
+         }
+       in
+       { Process_runner.started_at = t.started_at
+       ; process_info
+       ; termination_reason
+       ; times
+       ; trace_args = []
+       })
+    ~finally:(fun () ->
+      Io.release stdin;
+      Fiber.return ())
+;;
+
 let run_internal
       ?dir
       ~(display : Display.t)
@@ -1026,14 +1198,23 @@ let run_internal
       ?(stderr_to = Io.stderr)
       ?(stdin_from = Io.null In)
       ?env
-      ?(metadata = default_metadata)
+      ?(metadata = Process_metadata.default)
       ?(setpgid = Some Spawn.Pgid.new_process_group)
+      ?build
       fail_mode
       prog
       args
   =
   let start = Time.now () in
-  Scheduler.with_job_slot (fun _cancel (_config : Scheduler.Config.t) ->
+  let build =
+    match build with
+    | Some _ -> build
+    | None -> Build.get ()
+  in
+  let cancellation =
+    Option.map build ~f:(fun { Build.cancellation; _ } -> cancellation)
+  in
+  Scheduler.with_job_slot ?cancellation (fun () ->
     let queued = Time.diff (Time.now ()) start in
     let dir =
       match dir with
@@ -1043,7 +1224,7 @@ let run_internal
     let id = Running_jobs.Id.gen () in
     let prog_str = Path.reach_for_running ?from:dir prog in
     let command_line =
-      command_line ~prog:prog_str ~args ~dir ~stdout_to ~stderr_to ~stdin_from
+      lazy (command_line ~prog:prog_str ~args ~dir ~stdout_to ~stderr_to ~stdin_from)
     in
     let fancy_command_line =
       match display with
@@ -1063,96 +1244,207 @@ let run_internal
       | _ -> Pp.nop
     in
     let timeout = Failure_mode.timeout fail_mode in
-    let (t : t) =
-      spawn
-        ?dir
-        ?env
-        ~queued
-        ~stdout:stdout_to
-        ~stderr:stderr_to
-        ~stdin:stdin_from
-        ~setpgid
-        ~prog
-        ~args
-        ~metadata
-        ~timeout
-        ()
-    in
-    let* () =
-      let description =
-        (* CR-soon amokhov: What happens with actions attached to aliases? Do they go into
-           [Build_job None] category? Can produce more informative description for them? *)
-        match metadata.purpose with
-        | Internal_job -> Pp.text "(internal)"
-        | Build_job None -> Pp.text "(no targets)"
-        | Build_job (Some target) ->
-          Targets.Validated.head target
-          |> Path.Build.to_string_maybe_quoted
-          |> Pp.verbatim
+    let prepared_outputs = prepare_outputs ~stdout:stdout_to ~stderr:stderr_to in
+    let env = Option.value env ~default:Env.initial in
+    let local () =
+      let t =
+        spawn
+          ?dir
+          ~env
+          ~prepared_outputs
+          ~stdin:stdin_from
+          ~queued
+          ~setpgid
+          ~prog
+          ~args
+          ~metadata
+          ~timeout
+          ()
       in
-      Running_jobs.start id t.pid ~description ~started_at:t.started_at
+      let* () =
+        let description =
+          match metadata.Process_metadata.purpose with
+          | Process_metadata.Internal_job -> Pp.text "(internal)"
+          | Process_metadata.Build_job None -> Pp.text "(no targets)"
+          | Process_metadata.Build_job (Some target) ->
+            Targets.Validated.head target
+            |> Path.Build.to_string_maybe_quoted
+            |> Pp.verbatim
+        in
+        Running_jobs.start id t.pid ~description ~started_at:t.started_at
+      in
+      let* process_info, termination_reason = await ?cancellation ~timeout t in
+      let+ () = Running_jobs.stop id in
+      let times =
+        { Proc.Times.elapsed_time = Time.diff process_info.end_time t.started_at
+        ; resource_usage = process_info.resource_usage
+        }
+      in
+      t, process_info, termination_reason, times, None, []
     in
-    let* process_info, termination_reason = await ~timeout t in
-    let+ () = Running_jobs.stop id in
+    let* t, process_info, termination_reason, times, remote_started_at, trace_args =
+      match
+        runner_request
+          ~dir
+          ~env
+          ~metadata
+          ~prog
+          ~args
+          ~stdin_from
+          ~stdout_to:prepared_outputs.stdout
+          ~stderr_to:prepared_outputs.stderr
+          ~setpgid
+          ~timeout
+          ~queued
+      with
+      | Some request ->
+        (match build with
+         | Some build ->
+           (match Build.action_runner build with
+            | None -> local ()
+            | Some action_runner ->
+              Io.release prepared_outputs.stdout;
+              Io.release prepared_outputs.stderr;
+              let+ { Process_runner.started_at
+                   ; process_info
+                   ; termination_reason
+                   ; times
+                   ; trace_args
+                   }
+                =
+                Action_runner.exec_process
+                  action_runner
+                  ~run_id:(Build.run_id build)
+                  ~cancellation:(Build.cancellation build)
+                  request
+              in
+              let dummy_process =
+                { started_at
+                ; pid = process_info.pid
+                ; is_process_group_leader = Option.is_some setpgid
+                ; response_file = None
+                ; stdout = prepared_outputs.stdout_capture
+                ; stderr = prepared_outputs.stderr_capture
+                ; stdout_on_success = prepared_outputs.stdout_on_success
+                ; stderr_on_success = prepared_outputs.stderr_on_success
+                ; stdout_limit = prepared_outputs.stdout_limit
+                ; stderr_limit = prepared_outputs.stderr_limit
+                }
+              in
+              ( dummy_process
+              , process_info
+              , termination_reason
+              , times
+              , Some started_at
+              , trace_args ))
+         | None -> local ())
+      | None -> local ()
+    in
+    Option.iter build ~f:(fun (_ : Build.t) ->
+      let user_cpu_time, system_cpu_time =
+        match times.resource_usage with
+        | None -> None, None
+        | Some { Proc.Resource_usage.user_cpu_time; system_cpu_time; _ } ->
+          Some user_cpu_time, Some system_cpu_time
+      in
+      Metrics.Build.add_process_times
+        ~elapsed_time:times.elapsed_time
+        ~user_cpu_time
+        ~system_cpu_time);
     let result = Result.make t process_info fail_mode in
-    let times =
-      { Proc.Times.elapsed_time = Time.diff process_info.end_time t.started_at
-      ; resource_usage = process_info.resource_usage
-      }
-    in
-    report_process_finished
-      ~metadata
-      ~dir
-      ~prog:prog_str
-      ~pid:t.pid
-      ~args
-      ~started_at:t.started_at
-      ~exit_status:result.exit_status
-      ~stdout:result.stdout
-      ~stderr:result.stderr
-      times;
-    match termination_reason with
-    | Cancel ->
-      (* if the cancellation token was fired, then we:
+    (match remote_started_at with
+     | None ->
+       report_process_finished
+         ~metadata
+         ~dir
+         ~prog:prog_str
+         ~pid:t.pid
+         ~args
+         ~started_at:t.started_at
+         ~exit_status:result.exit_status
+         ~stdout:result.stdout
+         ~stderr:result.stderr
+         times
+     | Some started_at ->
+       Dune_trace.emit Process (fun () ->
+         Dune_trace.Event.process_start
+           ~extra_args:trace_args
+           ~targets:(targets_of_purpose metadata.purpose)
+           ~pid:process_info.pid
+           ~dir
+           ~prog:prog_str
+           ~args
+           ~timeout
+           ~name:metadata.Process_metadata.name
+           ~categories:metadata.Process_metadata.categories
+           ~started_at
+           ~queued);
+       report_process_finished
+         ~extra_args:trace_args
+         ~metadata
+         ~dir
+         ~prog:prog_str
+         ~pid:process_info.pid
+         ~args
+         ~started_at
+         ~exit_status:result.exit_status
+         ~stdout:result.stdout
+         ~stderr:result.stderr
+         times);
+    Fiber.return
+      (match termination_reason with
+       | Cancel ->
+         (* if the cancellation token was fired, then we:
 
-         1) aren't interested in printing the output from the cancelled job
+            1) aren't interested in printing the output from the cancelled job
 
-         2) allowing callers to continue work with the already stale value
-         we're about to return. *)
-      Result.close result;
-      raise (Memo.Non_reproducible Scheduler.Run.Build_cancelled)
-    | Timeout -> `Timeout, times
-    | Normal ->
-      let output = Result.Out.get result.stdout ^ Result.Out.get result.stderr in
-      Log.command ~command_line ~output ~exit_status:process_info.status;
-      let res =
-        match display, result.exit_status, output with
-        | Quiet, Ok n, "" -> n (* Optimisation for the common case *)
-        | Verbose, _, _ ->
-          Handle_exit_status.verbose
-            result.exit_status
-            ~id
-            ~metadata
-            ~dir
-            ~command_line:fancy_command_line
-            ~output
-        | _ ->
-          Handle_exit_status.non_verbose
-            result.exit_status
-            ~prog:prog_str
-            ~dir
-            ~command_line
-            ~output
-            ~metadata
-            ~verbosity:display
-            ~has_unexpected_stdout:result.stdout.unexpected_output
-            ~has_unexpected_stderr:result.stderr.unexpected_output
-      in
-      Result.close result;
-      `Finished res, times)
+            2) allowing callers to continue work with the already stale value
+            we're about to return. *)
+         Result.close result;
+         raise (Memo.Non_reproducible Scheduler.Run.Build_cancelled)
+       | Timeout -> `Timeout, times
+       | Normal ->
+         let output = Result.Out.get result.stdout ^ Result.Out.get result.stderr in
+         Log.command ~command_line ~output ~exit_status:process_info.status;
+         let res =
+           match display, result.exit_status, output with
+           | Quiet, Ok n, "" -> n (* Optimisation for the common case *)
+           | Verbose, _, _ ->
+             Handle_exit_status.verbose
+               result.exit_status
+               ~id
+               ~metadata
+               ~dir
+               ~command_line:fancy_command_line
+               ~output
+           | _ ->
+             Handle_exit_status.non_verbose
+               result.exit_status
+               ~prog:prog_str
+               ~dir
+               ~command_line
+               ~output
+               ~metadata
+               ~verbosity:display
+               ~has_unexpected_stdout:result.stdout.unexpected_output
+               ~has_unexpected_stderr:result.stderr.unexpected_output
+         in
+         Result.close result;
+         `Finished res, times))
 ;;
 
-let run ?dir ~display ?stdout_to ?stderr_to ?stdin_from ?env ?metadata fail_mode prog args
+let run
+      ?dir
+      ~display
+      ?stdout_to
+      ?stderr_to
+      ?stdin_from
+      ?env
+      ?metadata
+      ?build
+      fail_mode
+      prog
+      args
   =
   let+ run, _ =
     run_internal
@@ -1163,6 +1455,7 @@ let run ?dir ~display ?stdout_to ?stderr_to ?stdin_from ?env ?metadata fail_mode
       ?stdin_from
       ?env
       ?metadata
+      ?build
       fail_mode
       prog
       args
@@ -1178,6 +1471,7 @@ let run_with_times
       ?stdin_from
       ?env
       ?metadata
+      ?build
       fail_mode
       prog
       args
@@ -1191,6 +1485,7 @@ let run_with_times
       ?stdin_from
       ?env
       ?metadata
+      ?build
       fail_mode
       prog
       args
@@ -1205,6 +1500,7 @@ let run_capture_gen
       ?stdin_from
       ?env
       ?metadata
+      ?build
       fail_mode
       prog
       args
@@ -1220,6 +1516,7 @@ let run_capture_gen
       ?stdin_from
       ?env
       ?metadata
+      ?build
       fail_mode
       prog
       args
@@ -1241,6 +1538,7 @@ let run_capture_line
       ?stdin_from
       ?env
       ?metadata
+      ?build
       fail_mode
       prog
       args
@@ -1252,6 +1550,7 @@ let run_capture_line
     ?stdin_from
     ?env
     ?metadata
+    ?build
     fail_mode
     prog
     args
@@ -1266,7 +1565,9 @@ let run_capture_line
           | None -> prog_display
           | Some dir -> sprintf "cd %s && %s" (Path.to_string dir) prog_display
         in
-        let { loc; compound; _ } = Option.value metadata ~default:default_metadata in
+        let metadata = Option.value metadata ~default:Process_metadata.default in
+        let loc = metadata.Process_metadata.loc in
+        let compound = metadata.Process_metadata.compound in
         (match l with
          | [] ->
            User_error.raise

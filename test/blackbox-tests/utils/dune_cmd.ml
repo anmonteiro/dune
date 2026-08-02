@@ -74,13 +74,7 @@ module NativePath = struct
         | None -> User_error.raise [ Pp.text "Unable to find cygpath in PATH" ]
         | Some cygpath ->
           let cygpath = Path.to_string cygpath in
-          ignore
-            (Unix.create_process
-               cygpath
-               [| cygpath; "-wl"; fn |]
-               Unix.stdin
-               Unix.stdout
-               Unix.stderr)
+          ignore (Spawn.spawn ~prog:cygpath ~argv:[ cygpath; "-wl"; fn ] ())
   ;;
 
   let of_args = function
@@ -272,6 +266,197 @@ module Count_lines = struct
   let () = register name of_args run
 end
 
+module Exit_code = struct
+  let name = "exit-code"
+
+  let of_args = function
+    | [ code ] ->
+      (match int_of_string_opt code with
+       | Some code -> code
+       | None -> raise (Arg.Bad "exit code must be an integer"))
+    | _ -> raise (Arg.Bad "Usage: dune_cmd exit-code <code>")
+  ;;
+
+  let run code = exit code
+  let () = register name of_args run
+end
+
+module Count_args = struct
+  let name = "count-args"
+  let of_args args = args
+  let run args = Printf.printf "Number of args: %d\n%!" (List.length args)
+  let () = register name of_args run
+end
+
+module Printenv = struct
+  let name = "printenv"
+
+  let of_args = function
+    | [] -> raise (Arg.Bad "Usage: dune_cmd printenv <var>...")
+    | vars -> vars
+  ;;
+
+  let print_var var =
+    match Sys.getenv var with
+    | value -> Printf.printf "%s=%s\n%!" var value
+    | exception Not_found -> Printf.printf "%s is not set\n%!" var
+  ;;
+
+  let run vars = List.iter vars ~f:print_var
+  let () = register name of_args run
+end
+
+module Echo_outputs = struct
+  let name = "echo-outputs"
+
+  let of_args = function
+    | [ arg ] -> arg
+    | _ -> raise (Arg.Bad "Usage: dune_cmd echo-outputs <arg>")
+  ;;
+
+  let run arg =
+    Printf.printf "o %s\n%!" arg;
+    Printf.eprintf "e %s\n%!" arg
+  ;;
+
+  let () = register name of_args run
+end
+
+module Append_to_lines = struct
+  let name = "append-to-lines"
+
+  let of_args = function
+    | [ arg ] -> arg
+    | _ -> raise (Arg.Bad "Usage: dune_cmd append-to-lines <arg>")
+  ;;
+
+  let run arg =
+    let rec loop () =
+      match read_line () with
+      | exception End_of_file -> ()
+      | line ->
+        Printf.printf "%s | o %s\n%!" line arg;
+        Printf.eprintf "%s | e %s\n%!" line arg;
+        loop ()
+    in
+    loop ()
+  ;;
+
+  let () = register name of_args run
+end
+
+module Make_dir_with_files = struct
+  let name = "make-dir-with-files"
+
+  let of_args = function
+    | [ dir ] -> dir
+    | _ -> raise (Arg.Bad "Usage: dune_cmd make-dir-with-files <dir>")
+  ;;
+
+  let write dir file =
+    let path = Filename.concat dir file in
+    Io.String_path.write_file path (file ^ " contents\n")
+  ;;
+
+  let run dir =
+    Unix.mkdir dir 0o777;
+    write dir "foo";
+    write dir "bar"
+  ;;
+
+  let () = register name of_args run
+end
+
+module Cat_dir = struct
+  let name = "cat-dir"
+
+  let of_args = function
+    | [ dir ] -> dir
+    | _ -> raise (Arg.Bad "Usage: dune_cmd cat-dir <dir>")
+  ;;
+
+  let run dir =
+    Sys.readdir dir
+    |> Array.to_list
+    |> List.sort ~compare:String.compare
+    |> List.iter ~f:(fun file ->
+      let contents = Io.String_path.read_file (Filename.concat dir file) in
+      Printf.printf "%s:\n%s\n" file contents)
+  ;;
+
+  let () = register name of_args run
+end
+
+module Make_fakenode_modules = struct
+  let name = "make-fakenode-modules"
+
+  let of_args = function
+    | [] -> ()
+    | _ -> raise (Arg.Bad "Usage: dune_cmd make-fakenode-modules")
+  ;;
+
+  let run () =
+    Unix.mkdir "fakenode_modules" 0o777;
+    Unix.mkdir "fakenode_modules/foo" 0o777;
+    Io.String_path.write_file "fakenode_modules/foo/file" "";
+    Unix.symlink "file" "./fakenode_modules/foo/bar"
+  ;;
+
+  let () = register name of_args run
+end
+
+module Spawn_stray_process = struct
+  let name = "spawn-stray-process"
+
+  let of_args = function
+    | [] -> `Parent
+    | [ "sub" ] -> `Child
+    | _ -> raise (Arg.Bad "Usage: dune_cmd spawn-stray-process")
+  ;;
+
+  let run = function
+    | `Parent ->
+      let command = Stdlib.Filename.quote_command Sys.executable_name [ name; "sub" ] in
+      exit (Sys.command command)
+    | `Child ->
+      let oc = open_out (Sys.getenv "BEACON_FILE") in
+      Fun.protect
+        ~finally:(fun () -> close_out_noerr oc)
+        (fun () -> Printf.fprintf oc "%d" (Unix.getpid ()));
+      Unix.sleep max_int
+  ;;
+
+  let () = register name of_args run
+end
+
+module Sigterm_cleanup_sleeper = struct
+  let name = "sigterm-cleanup-sleeper"
+
+  let of_args = function
+    | [] -> ()
+    | _ -> raise (Arg.Bad "Usage: dune_cmd sigterm-cleanup-sleeper")
+  ;;
+
+  let touch dir file contents =
+    let path = Filename.concat dir file in
+    Io.String_path.write_file path contents
+  ;;
+
+  let run () =
+    let dir = Sys.getenv "TEST_DIR" in
+    Sys.set_signal Sys.sigint Sys.Signal_ignore;
+    Sys.set_signal
+      Sys.sigterm
+      (Sys.Signal_handle (fun _ -> touch dir "cleanup_ran" "cleanup ran\n"));
+    touch dir "ready" "";
+    while true do
+      Unix.sleepf 0.1
+    done
+  ;;
+
+  let () = register name of_args run
+end
+
 module Override_on = struct
   module Configurator = Configurator.V1
 
@@ -404,6 +589,37 @@ module Mksocket = struct
   let () = register name of_args run
 end
 
+module Hold_rpc_client = struct
+  type t =
+    { socket_path : string
+    ; connected_file : string
+    }
+
+  let name = "hold-rpc-client"
+  let usage = "Usage: dune_cmd hold-rpc-client <socket> <connected-file>"
+
+  let of_args = function
+    | [ socket_path; connected_file ] -> { socket_path; connected_file }
+    | _ -> raise (Arg.Bad usage)
+  ;;
+
+  let run { socket_path; connected_file } =
+    let socket = Unix.socket Unix.PF_UNIX Unix.SOCK_STREAM 0 in
+    match Unix.connect socket (Unix.ADDR_UNIX socket_path) with
+    | exception exn ->
+      Unix.close socket;
+      raise exn
+    | () ->
+      let (_ : int) = Unix.write_substring socket "(" 0 1 in
+      Io.String_path.write_file connected_file "";
+      while true do
+        Unix.sleep 3600
+      done
+  ;;
+
+  let () = register name of_args run
+end
+
 (* implements `exec -a` in a portable way *)
 module Exec_a = struct
   type t =
@@ -437,6 +653,10 @@ module Sed = struct
         { rex : Re.re
         ; replacement : string
         }
+    | Subst_unique of
+        { rex : Re.re
+        ; replacement : string
+        }
     | Delete of Re.re
     | Delete_between of
         { from : Re.re
@@ -458,6 +678,12 @@ module Sed = struct
   let subst ?file ~rex ~replacement () =
     let io = io file in
     let action = Subst { rex; replacement } in
+    { io; action }
+  ;;
+
+  let subst_unique ?file ~rex ~replacement () =
+    let io = io file in
+    let action = Subst_unique { rex; replacement } in
     { io; action }
   ;;
 
@@ -493,6 +719,35 @@ module Sed = struct
     | Subst { rex; replacement } ->
       List.map inputs ~f:(fun line ->
         Re.Pcre.substitute ~rex ~subst:(fun _ -> replacement) line)
+    | Subst_unique { rex; replacement } ->
+      let tbl = Table.create (module String) 16 in
+      let count =
+        List.fold_left inputs ~init:0 ~f:(fun counter line ->
+          List.fold_left
+            (Re.Pcre.full_split ~rex line)
+            ~init:counter
+            ~f:(fun counter token ->
+              match token with
+              | Re.Pcre.Delim matched ->
+                (match Table.find tbl matched with
+                 | Some _ -> counter
+                 | None ->
+                   let n = counter + 1 in
+                   Table.set tbl matched n;
+                   n)
+              | _ -> counter))
+      in
+      List.map inputs ~f:(fun line ->
+        Re.Pcre.full_split ~rex line
+        |> List.map ~f:(fun token ->
+          match token with
+          | Re.Pcre.Text s -> s
+          | Re.Pcre.Delim matched ->
+            let n = Table.find_exn tbl matched in
+            if count <= 1 then replacement else Printf.sprintf "%s%d" replacement n
+          | Re.Pcre.Group (_, s) -> s
+          | Re.Pcre.NoGroup -> "")
+        |> String.concat ~sep:"")
     | Delete rex -> List.filter inputs ~f:(fun line -> not @@ Re.Pcre.pmatch ~rex line)
     | Delete_between { from; to' } ->
       inputs
@@ -584,6 +839,23 @@ module Subst = Run_sed (struct
           | _ :: _ :: _ -> raise (Arg.Bad "Too many arguments")
         in
         Sed.subst ?file ~rex ~replacement ()
+      | _ -> raise (Arg.Bad "Required arguments are <pattern> <replacement> [file]")
+    ;;
+  end)
+
+module Subst_unique = Run_sed (struct
+    let name = "subst-unique"
+
+    let of_args = function
+      | pattern :: replacement :: optional ->
+        let rex = Re.Pcre.regexp pattern in
+        let file =
+          match optional with
+          | [] -> None
+          | [ filename ] -> Some (Path.of_filename_relative_to_initial_cwd filename)
+          | _ :: _ :: _ -> raise (Arg.Bad "Too many arguments")
+        in
+        Sed.subst_unique ?file ~rex ~replacement ()
       | _ -> raise (Arg.Bad "Required arguments are <pattern> <replacement> [file]")
     ;;
   end)

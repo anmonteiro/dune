@@ -1,0 +1,7 @@
+(rule
+ (alias runtest)
+ (action
+  (progn
+   (with-stdout-to output.expected (echo "MESSAGE\n"))
+   (with-stdout-to output.actual (echo "MESSAGE\n"))
+   (diff? output.expected output.actual))))

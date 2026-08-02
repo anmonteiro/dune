@@ -2,8 +2,6 @@
   $ cp dune dune-project a.opam a
 
   $ dune build --root=a
-  Entering directory 'a'
-  Leaving directory 'a'
   $ dune_cmd cat a/_build/install/default/lib/a/dune-package | sed "s/(lang dune .*)/(lang dune <version>)/" | dune_cmd sanitize
   (lang dune <version>)
   (name a)
@@ -118,8 +116,6 @@
 
 Build with "--store-orig-source-dir" profile
   $ dune build --root=a --store-orig-source-dir
-  Entering directory 'a'
-  Leaving directory 'a'
   $ dune_cmd cat a/_build/install/default/lib/a/dune-package | grep -A 1 '(orig_src_dir'
    (orig_src_dir
     $TESTCASE_ROOT/a)
@@ -132,8 +128,6 @@ Build with "--store-orig-source-dir" profile
 
 Build with "DUNE_STORE_ORIG_SOURCE_DIR=true" profile
   $ DUNE_STORE_ORIG_SOURCE_DIR=true dune build --root=a
-  Entering directory 'a'
-  Leaving directory 'a'
   $ dune_cmd cat a/_build/install/default/lib/a/dune-package | grep -A 1 '(orig_src_dir'
    (orig_src_dir
     $TESTCASE_ROOT/a)
@@ -185,3 +179,34 @@ Install as opam does
 
   $ dune_cmd cat "a/_build/install/default/lib/a/dune-package" | grep -e 'lib [.]' -e 'share [.]'
   (sections (lib .) (libexec .) (share ../../share/a))
+
+Install with an absolute build directory outside the workspace
+
+  $ mkdir external-build-dir external-prefix external-project
+  $ cd external-project
+  $ cat > dune-project <<EOF
+  > (lang dune 3.24)
+  > (package (name ext))
+  > EOF
+  $ cat > ext.opam <<EOF
+  > opam-version: "2.0"
+  > EOF
+  $ cat > dune <<EOF
+  > (library (public_name ext))
+  > EOF
+  $ echo 'let x = 1' > ext.ml
+
+  $ DUNE_BUILD_DIR="$PWD/../external-build-dir" dune build -p ext @install
+  $ DUNE_BUILD_DIR="$PWD/../external-build-dir" \
+  > DUNE_INSTALL_PREFIX="$PWD/../external-prefix" \
+  > dune install ext
+
+  $ grep -e external-build-dir ../external-prefix/lib/ext/dune-package
+  [1]
+  $ dune_cmd cat ../external-prefix/lib/ext/dune-package \
+  > | grep -e 'archives' -e 'plugins' -e 'native_archives' -e 'impl (path' \
+  > | sed 's/^ *//'
+  (archives (byte ext.cma) (native ext.cmxa))
+  (plugins (byte ext.cma) (native ext.cmxs))
+  (native_archives ext.a)
+  (source (path Ext) (impl (path ext.ml))))))

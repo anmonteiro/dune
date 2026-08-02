@@ -214,16 +214,36 @@ let package_fields package ~project =
 
 let dune_name = Package.Name.of_string "dune"
 let odoc_name = Package.Name.of_string "odoc"
+let menhir_name = Package.Name.of_string "menhir"
+
+let merge_dune_constraints lang_constraint user_constraint =
+  match lang_constraint, user_constraint with
+  | ( Package_constraint.Uop (Gte, String_literal lang_v)
+    , Package_constraint.Uop (Gte, String_literal user_v) ) ->
+    if OpamVersionCompare.compare lang_v user_v <= 0
+    then user_constraint
+    else (
+      User_warning.emit
+        [ Pp.textf
+            "The lower bound >= %s on dune in the depends field is less than the dune \
+             language version %s. The generated opam file will use >= %s instead."
+            user_v
+            lang_v
+            lang_v
+        ];
+      lang_constraint)
+  | _ -> And [ lang_constraint; user_constraint ]
+;;
 
 let insert_dune_dep depends dune_version =
-  let constraint_ : Package_constraint.t =
+  let lang_constraint : Package_constraint.t =
     let dune_version = Dune_lang.Syntax.Version.to_string dune_version in
     Uop (Gte, String_literal dune_version)
   in
   let rec loop acc = function
     | [] ->
       let dune_dep =
-        { Package_dependency.name = dune_name; constraint_ = Some constraint_ }
+        { Package_dependency.name = dune_name; constraint_ = Some lang_constraint }
       in
       dune_dep :: List.rev acc
     | (dep : Package_dependency.t) :: rest ->
@@ -237,8 +257,11 @@ let insert_dune_dep depends dune_version =
               constraint_ =
                 Some
                   (match dep.constraint_ with
-                   | None -> constraint_
-                   | Some c -> And [ constraint_; c ])
+                   | None -> lang_constraint
+                   | Some user_constraint ->
+                     if dune_version >= (3, 23)
+                     then merge_dune_constraints lang_constraint user_constraint
+                     else And [ lang_constraint; user_constraint ])
             }
         in
         List.rev_append acc (dep :: rest))
@@ -275,6 +298,26 @@ let insert_odoc_dep depends =
   loop [] depends
 ;;
 
+(* Menhir 20180523 added --infer-write-query and --infer-read-reply,
+   which dune's menhir rules rely on unconditionally. *)
+let menhir_constraint : Package_constraint.t = Uop (Gte, String_literal "20180523")
+
+(* If the package's [(depends ...)] field already lists [menhir]
+   without a constraint, fill in the lower bound. Existing user-
+   written constraints (whether version bounds, [{with-test}], or
+   anything else) are preserved verbatim. We do not add menhir as a
+   new dependency: doing so unconditionally is the over-injection
+   bug reported in #14428. *)
+let upgrade_menhir_constraint depends =
+  List.map depends ~f:(fun (dep : Package_dependency.t) ->
+    if Package.Name.equal dep.name menhir_name
+    then
+      { dep with
+        constraint_ = Some (Option.value dep.constraint_ ~default:menhir_constraint)
+      }
+    else dep)
+;;
+
 let maintenance_intent dune_version info =
   if dune_version < (3, 18)
   then None
@@ -297,6 +340,11 @@ let opam_fields project (package : Package.t) =
     if dune_version < (2, 7) || Package.Name.equal package_name odoc_name
     then package
     else Package.map_depends package ~f:insert_odoc_dep
+  in
+  let package =
+    match Dune_project.find_extension_version project Dune_lang.Menhir.syntax with
+    | None -> package
+    | Some _ -> Package.map_depends package ~f:upgrade_menhir_constraint
   in
   let package_fields = package_fields package ~project in
   let open Opam_file.Create in
@@ -335,7 +383,14 @@ let opam_fields project (package : Package.t) =
   if dune_version < (1, 11) then fields else Opam_file.Create.normalise_field_order fields
 ;;
 
-let template_file = Path.extend_basename ~suffix:".template"
+let template_file = Path.extend_basename ~suffix:Filename.template
+
+let build_path ~build_dir pkg =
+  let opam_path = Path.Build.append_source build_dir (Package.opam_file pkg) in
+  match Package.has_opam_file pkg with
+  | Generated_with_diff -> Path.Build.extend_basename opam_path ~suffix:Filename.generated
+  | Exists _ | Generated -> opam_path
+;;
 
 let opam_template ~opam_path =
   let open Action_builder.O in
@@ -374,35 +429,69 @@ let generate project pkg ~template =
      | Some (_, s) -> s)
 ;;
 
-let add_alias_rule (ctx : Build_context.t) ~project ~pkg =
+let add_alias_rule (ctx : Build_context.t) ~profile ~project ~pkg =
   let build_dir = ctx.build_dir in
   let dir = Path.Build.append_source build_dir (Dune_project.root project) in
+  let source_opam_path = Package.opam_file pkg |> Path.source in
   let opam_path = Path.Build.append_source build_dir (Package.opam_file pkg) in
-  let aliases =
-    [ Alias.make Alias0.install ~dir
-    ; Alias.make Alias0.runtest ~dir
-    ; Alias.make Alias0.check ~dir (* check doesn't pick up the promote target? *)
-    ]
+  let generated_opam_path = build_path ~build_dir pkg in
+  let opam_alias = Alias.make Alias0.opam ~dir in
+  let* use_source_opam =
+    if Profile.is_release profile
+    then Build_system.file_exists source_opam_path
+    else Memo.return false
   in
-  let deps = Path.Set.singleton (Path.build opam_path) in
+  let aliases = [ Alias.make Alias0.install ~dir; Alias.make Alias0.runtest ~dir ] in
+  let* () =
+    let deps =
+      if use_source_opam
+      then Action_builder.return ()
+      else Action_builder.path (Path.build generated_opam_path)
+    in
+    Rules.Produce.Alias.add_deps opam_alias deps
+  in
+  let* () =
+    match Package.has_opam_file pkg with
+    | Generated_with_diff when not use_source_opam ->
+      Rules.Produce.Alias.add_action
+        opam_alias
+        ~loc:(Loc.in_file source_opam_path)
+        (let open Action_builder.O in
+         let+ () = Action_builder.path (Path.build generated_opam_path)
+         and+ () =
+           Action_builder.if_file_exists
+             source_opam_path
+             ~then_:(Action_builder.path (Path.build opam_path))
+             ~else_:(Action_builder.return ())
+         in
+         Action.Full.make (Action.diff (Path.build opam_path) generated_opam_path))
+    | Exists _ | Generated | Generated_with_diff -> Memo.return ()
+  in
   Memo.parallel_iter aliases ~f:(fun alias ->
-    (* TODO slow. we should be calling these functions only once, rather than
-       once per package *)
-    Rules.Produce.Alias.add_deps alias (Action_builder.path_set deps))
+    Rules.Produce.Alias.add_deps alias (Action_builder.dep (Dep.alias opam_alias)))
 ;;
 
 let add_opam_file_rule sctx ~project ~pkg =
-  let open Action_builder.O in
   let build_dir = Super_context.context sctx |> Context.build_dir in
   let opam_path = Path.Build.append_source build_dir (Package.opam_file pkg) in
+  let generated_opam_path = build_path ~build_dir pkg in
   let opam_rule =
+    let open Action_builder.O in
     (let+ template = opam_template ~opam_path:(Path.build opam_path) in
      generate project pkg ~template)
-    |> Action_builder.write_file_dyn opam_path
+    |> Action_builder.write_file_dyn generated_opam_path
   in
   let dir = Path.Build.append_source build_dir (Dune_project.root project) in
-  let mode = Rule.Mode.Promote { lifetime = Unlimited; into = None; only = None } in
-  Super_context.add_rule sctx ~mode ~dir opam_rule
+  match Package.has_opam_file pkg with
+  | Generated_with_diff ->
+    let* () = Super_context.add_rule sctx ~dir opam_rule in
+    let visible_opam_rule =
+      Action_builder.copy ~src:(Path.build generated_opam_path) ~dst:opam_path
+    in
+    Super_context.add_rule sctx ~mode:Fallback ~dir visible_opam_rule
+  | Exists _ | Generated ->
+    let mode = Rule.Mode.Promote { lifetime = Unlimited; into = None; only = None } in
+    Super_context.add_rule sctx ~mode ~dir opam_rule
 ;;
 
 let add_opam_file_rules sctx project =
@@ -422,6 +511,7 @@ let add_rules sctx project =
         let* () =
           add_alias_rule
             (Context.build_context (Super_context.context sctx))
+            ~profile:(Context.profile (Super_context.context sctx))
             ~project
             ~pkg
         in
@@ -456,7 +546,8 @@ let gen_rules sctx ~dir ~nearest_src_dir ~src_dir =
        else (
          let allowed_subdirs =
            match opam_file_location with
-           | `Inside_opam_directory when project_rules -> Filename.Set.singleton opam_dir
+           | `Inside_opam_directory when project_rules ->
+             Filename.Set.singleton Filename.opam
            | `Relative_to_project | `Inside_opam_directory -> Filename.Set.empty
          in
          let rules =

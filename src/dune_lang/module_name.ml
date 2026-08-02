@@ -13,6 +13,7 @@ include Site.Modulelike (struct
 
 let equal = String.equal
 let compare = String.compare
+let repr = Repr.view Repr.string ~to_:to_string
 let add_suffix = ( ^ )
 let uncapitalize = String.uncapitalize
 let pp_quote fmt x = Format.fprintf fmt "%S" x
@@ -86,6 +87,12 @@ module Per_item = struct
   include Per_item.Make (String)
   open Decoder
 
+  let repr value_repr =
+    Repr.view
+      Repr.(pair (list (pair String.repr Int.repr)) (list value_repr))
+      ~to_:enumerate
+  ;;
+
   let decode ~default a =
     peek_exn
     >>= function
@@ -150,7 +157,7 @@ module Unique = struct
   ;;
 
   let of_path_assuming_needs_no_mangling_allow_invalid path =
-    let fn = Path.basename path in
+    let fn = Path.basename path |> Filename.to_string in
     let loc = Loc.in_file path in
     let name =
       match String.index fn '.' with

@@ -1,0 +1,3 @@
+(rule
+ (alias runtest)
+ (action (echo %{env:DUNE_FOO=FAIL})))

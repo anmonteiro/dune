@@ -47,17 +47,17 @@ opam-var-unsupported.t
        (run echo %{toplevel})
        (run echo %{stublibs}))))))
 
-  $ build_pkg testpkg 2>&1 | dune_cmd subst '.*.sandbox/[^/]+' '.sandbox/$SANDBOX'
+  $ build_pkg testpkg 2>&1 | censor
   dune
-  .sandbox/$SANDBOX/_private/default/.pkg/testpkg.0.0.1-8a78b4e4b2a5a90d80622925984eacbc/source
-  .sandbox/$SANDBOX/_private/default/.pkg/testpkg.0.0.1-8a78b4e4b2a5a90d80622925984eacbc/target
-  .sandbox/$SANDBOX/_private/default/.pkg/testpkg.0.0.1-8a78b4e4b2a5a90d80622925984eacbc/target/lib
-  .sandbox/$SANDBOX/_private/default/.pkg/testpkg.0.0.1-8a78b4e4b2a5a90d80622925984eacbc/target/lib
-  .sandbox/$SANDBOX/_private/default/.pkg/testpkg.0.0.1-8a78b4e4b2a5a90d80622925984eacbc/target/bin
-  .sandbox/$SANDBOX/_private/default/.pkg/testpkg.0.0.1-8a78b4e4b2a5a90d80622925984eacbc/target/sbin
-  .sandbox/$SANDBOX/_private/default/.pkg/testpkg.0.0.1-8a78b4e4b2a5a90d80622925984eacbc/target/share
-  .sandbox/$SANDBOX/_private/default/.pkg/testpkg.0.0.1-8a78b4e4b2a5a90d80622925984eacbc/target/doc
-  .sandbox/$SANDBOX/_private/default/.pkg/testpkg.0.0.1-8a78b4e4b2a5a90d80622925984eacbc/target/etc
-  .sandbox/$SANDBOX/_private/default/.pkg/testpkg.0.0.1-8a78b4e4b2a5a90d80622925984eacbc/target/man
-  .sandbox/$SANDBOX/_private/default/.pkg/testpkg.0.0.1-8a78b4e4b2a5a90d80622925984eacbc/target/lib/toplevel
-  .sandbox/$SANDBOX/_private/default/.pkg/testpkg.0.0.1-8a78b4e4b2a5a90d80622925984eacbc/target/lib/stublibs
+  $PWD/_build/.sandbox/$DIGEST1/_private/default/.pkg/testpkg.0.0.1-$DIGEST2/source
+  $PWD/_build/.sandbox/$DIGEST1/_private/default/.pkg/testpkg.0.0.1-$DIGEST2/target
+  $PWD/_build/.sandbox/$DIGEST1/_private/default/.pkg/testpkg.0.0.1-$DIGEST2/target/lib
+  $PWD/_build/.sandbox/$DIGEST1/_private/default/.pkg/testpkg.0.0.1-$DIGEST2/target/lib
+  $PWD/_build/.sandbox/$DIGEST1/_private/default/.pkg/testpkg.0.0.1-$DIGEST2/target/bin
+  $PWD/_build/.sandbox/$DIGEST1/_private/default/.pkg/testpkg.0.0.1-$DIGEST2/target/sbin
+  $PWD/_build/.sandbox/$DIGEST1/_private/default/.pkg/testpkg.0.0.1-$DIGEST2/target/share
+  $PWD/_build/.sandbox/$DIGEST1/_private/default/.pkg/testpkg.0.0.1-$DIGEST2/target/doc
+  $PWD/_build/.sandbox/$DIGEST1/_private/default/.pkg/testpkg.0.0.1-$DIGEST2/target/etc
+  $PWD/_build/.sandbox/$DIGEST1/_private/default/.pkg/testpkg.0.0.1-$DIGEST2/target/man
+  $PWD/_build/.sandbox/$DIGEST1/_private/default/.pkg/testpkg.0.0.1-$DIGEST2/target/lib/toplevel
+  $PWD/_build/.sandbox/$DIGEST1/_private/default/.pkg/testpkg.0.0.1-$DIGEST2/target/lib/stublibs

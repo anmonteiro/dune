@@ -1,6 +1,31 @@
 open Import
+open Stdune.Action_types
 
 let sandbox_dir = Path.Build.relative Path.Build.root ".sandbox"
+let max_live_sandboxes = 250
+let live_sandbox_throttle = lazy (Fiber.Throttle.create max_live_sandboxes)
+let with_live_sandbox_slot ~f = Fiber.Throttle.run (Lazy.force live_sandbox_throttle) ~f
+
+module Pending_targets = struct
+  (* All file and directory targets of non-sandboxed actions that are currently
+     being executed. On exit, we need to delete them as they might contain
+     garbage. *)
+
+  let t = ref Targets.empty
+  let remove targets = t := Targets.diff !t (Targets.Validated.unvalidate targets)
+  let add targets = t := Targets.combine !t (Targets.Validated.unvalidate targets)
+
+  let cleanup () =
+    let targets = !t in
+    t := Targets.empty;
+    Targets.iter
+      targets
+      ~file:(fun p -> p |> Path.Build.to_string |> Fpath.unlink_no_err)
+      ~dir:(fun p -> Path.rm_rf (Path.build p))
+  ;;
+end
+
+let cleanup_pending_targets = Pending_targets.cleanup
 
 let maybe_async f =
   (* It would be nice to do this check only once and return a function, but the
@@ -44,7 +69,7 @@ let init =
 
 type snapshot = [ `Dir | `File of Stat.t ] Path.Map.t
 
-type t =
+type real =
   { dir : Path.Build.t
   ; snapshot : snapshot option
   ; corrections : Corrections.t
@@ -52,8 +77,22 @@ type t =
   ; loc : Loc.t
   }
 
-let dir t = t.dir
-let map_path t p = Path.Build.append t.dir p
+type t =
+  | Sandboxed of real
+  | No_sandbox of { targets : Targets.Validated.t }
+
+let is_sandboxed = function
+  | Sandboxed _ -> true
+  | No_sandbox _ -> false
+;;
+
+let map_real_path t p = Path.Build.append t.dir p
+
+let map_path t p =
+  match t with
+  | Sandboxed t -> map_real_path t p
+  | No_sandbox _ -> p
+;;
 
 let copy_recursively =
   let chmod_file = Permissions.add Permissions.write in
@@ -71,40 +110,40 @@ let copy_recursively =
           (File_kind.to_string_hum kind)
       ]
   in
+  let resolve_symlink_kind ~src =
+    match Unix.stat (Path.to_string src) with
+    | { Unix.st_kind; _ } -> Some st_kind
+    | exception Unix.Unix_error (Unix.ENOENT, _, _) ->
+      User_error.raise
+        ~hints:
+          [ Pp.text
+              "Re-run Dune to delete the stale artifact, or manually delete this file"
+          ]
+        [ Pp.textf
+            "Failed to copy file %s because it is a broken symbolic link while creating \
+             a copy sandbox"
+            (Path.to_string_maybe_quoted src)
+        ]
+  in
   let copy_file ~src ~dst = Io.copy_file ~chmod:chmod_file ~src ~dst () in
   let mkdir_with_perms ~src ~dst =
-    let perms = (Unix.stat (Path.to_string src)).st_perm |> chmod_dir in
+    let perms =
+      (Unix.stat (Path.to_string src)).st_perm |> Permissions.Mode.of_int |> chmod_dir
+    in
     Path.mkdir_p ~perms dst
   in
   fun ~src ~dst ->
-    let { Unix.st_kind; st_perm; _ } = Unix.stat (Path.to_string src) in
-    match st_kind with
-    | S_REG -> copy_file ~src ~dst
-    | S_DIR ->
-      Path.mkdir_p ~perms:(chmod_dir st_perm) dst;
-      Fpath.traverse
-        ~dir:(Path.to_string src)
-        ~init:()
-        ~on_file:(fun ~dir fname () ->
-          let rel = Filename.concat dir fname in
-          let src = Path.relative src rel in
-          let dst = Path.relative dst rel in
-          copy_file ~src ~dst)
-        ~on_dir:(fun ~dir fname () ->
-          let rel = Filename.concat dir fname in
-          let src = Path.relative src rel in
-          let dst = Path.relative dst rel in
-          mkdir_with_perms ~src ~dst)
-        ~on_other:
-          (`Call
-              (fun ~dir fname kind () ->
-                let src = Path.relative src (Filename.concat dir fname) in
-                raise_other_kind ~src kind))
-        ()
-    | kind -> raise_other_kind ~src kind
+    Tree_copy.copy
+      ~src
+      ~dst
+      ~copy_file
+      ~mkdir:mkdir_with_perms
+      ~on_unsupported:raise_other_kind
+      ~on_symlink:(`Call resolve_symlink_kind)
+      ()
 ;;
 
-let create_dir t dir = Path.mkdir_p (Path.build (map_path t dir))
+let create_dir t dir = Path.mkdir_p (Path.build (map_real_path t dir))
 
 let create_dirs t ~dirs ~rule_dir =
   create_dir t rule_dir;
@@ -149,7 +188,7 @@ let link_deps t ~mode ~deps =
           "Action depends on source tree. All actions should depend on the copies in the \
            build directory instead."
           [ "path", Path.to_dyn path ]
-    | Some p -> link path (Path.build (map_path t p)))
+    | Some p -> link path (Path.build (map_real_path t p)))
 ;;
 
 let snapshot t =
@@ -160,10 +199,10 @@ let snapshot t =
       ~dir:(Path.to_string root)
       ~init:Path.Map.empty
       ~on_dir:(fun ~dir fname acc ->
-        let path = Path.relative root (Filename.concat dir fname) in
+        let path = Path.relative root (Filename.append dir fname) in
         Path.Map.add_exn acc path `Dir)
       ~on_file:(fun ~dir fname acc ->
-        let p = Path.relative root (Filename.concat dir fname) in
+        let p = Path.relative root (Filename.append dir fname) in
         let stats = Stat.stat (Path.to_string p) in
         Path.Map.add_exn acc p (`File stats))
       ~on_other:`Ignore
@@ -176,7 +215,7 @@ let snapshot t =
   snapshot
 ;;
 
-let find_corrected_files (t : t) ~deps =
+let find_corrected_files (t : real) ~deps =
   (* CR-someday rgrinberg: fuse this step with deletion *)
   let start = Time.now () in
   let corrected =
@@ -185,11 +224,12 @@ let find_corrected_files (t : t) ~deps =
       ~init:[]
       ~on_dir:(fun ~dir:_ _ acc -> acc)
       ~enter_dir:(fun ~dir:_ fname ->
+        let fname = Filename.to_string fname in
         (* We don't want to traverse the corrections produced by a nested dune *)
         not (String.equal fname ".sandbox" || String.equal fname "_build"))
       ~on_file:(fun ~dir fname acc ->
         match
-          let path = Path.Build.relative t.dir (Filename.concat dir fname) in
+          let path = Path.Build.relative t.dir (Filename.append dir fname) in
           if
             let extension = Filename.extension fname in
             Filename.Extension.Or_empty.check extension Filename.Extension.corrected
@@ -222,7 +262,7 @@ let build_path_without_corrected_suffix path =
   assert (Filename.Extension.Or_empty.check extension Filename.Extension.corrected);
   let basename = Filename.remove_extension basename in
   let parent = Path.Build.parent_exn path in
-  Path.Build.relative parent basename
+  Path.Build.relative_fname parent basename
 ;;
 
 let register_corrected_file_promotions t ~deps =
@@ -235,15 +275,10 @@ let register_corrected_file_promotions t ~deps =
     Diff_action.exec
       ~patch_back:(Some (Path.build t.dir))
       t.loc
-      { Dune_util.Action.Diff.file1
-      ; file2
-      ; optional = false
-      ; mode = Text
-      ; directory_diffs = false
-      })
+      { Diff.file1; file2; optional = false; mode = Text; directory_diffs = false })
 ;;
 
-let create
+let create_real
       ~mode
       (corrections : Corrections.t)
       ~rule_loc
@@ -310,7 +345,7 @@ let register_snapshot_promotion t (targets : Targets.Validated.t) ~old_snapshot 
   let add_copy_file p = diffs := p :: !diffs in
   let deletes = ref [] in
   let add_delete what file = deletes := (what, in_source_tree file) :: !deletes in
-  let target_root_in_sandbox = map_path t targets.root in
+  let target_root_in_sandbox = map_real_path t targets.root in
   let () =
     Path.Map.iter2 old_snapshot new_snapshot ~f:(fun p before after ->
       if
@@ -349,7 +384,7 @@ let register_snapshot_promotion t (targets : Targets.Validated.t) ~old_snapshot 
          Diff_action.exec
            ~patch_back:(Some (Path.build t.dir))
            t.loc
-           { Dune_util.Action.Diff.file1 = source
+           { Diff.file1 = source
            ; file2 = Path.as_in_build_dir_exn path
            ; optional = true
            ; mode = Text
@@ -378,7 +413,7 @@ let hint_delete_dir =
   ]
 ;;
 
-let move_targets_to_build_dir t ~should_be_skipped ~(targets : Targets.Validated.t)
+let move_real_targets_to_build_dir t ~should_be_skipped ~(targets : Targets.Validated.t)
   : unit Fiber.t
   =
   let open Fiber.O in
@@ -400,9 +435,9 @@ let move_targets_to_build_dir t ~should_be_skipped ~(targets : Targets.Validated
       targets
       ~file:(fun target ->
         if not (should_be_skipped target)
-        then rename_optional_file ~src:(map_path t target) ~dst:target)
+        then rename_optional_file ~src:(map_real_path t target) ~dst:target)
       ~dir:(fun target ->
-        let src_dir = map_path t target in
+        let src_dir = map_real_path t target in
         (match Path.Untracked.stat (Path.build target) with
          | Error (Unix.ENOENT, _, _) -> ()
          | Error e ->
@@ -431,6 +466,12 @@ let move_targets_to_build_dir t ~should_be_skipped ~(targets : Targets.Validated
     Dune_trace.Event.sandbox `Extract ~start ~stop ~queued:None t.loc ~dir:t.dir)
 ;;
 
+let move_targets_to_build_dir t ~should_be_skipped ~(targets : Targets.Validated.t) =
+  match t with
+  | No_sandbox _ -> Fiber.return ()
+  | Sandboxed t -> move_real_targets_to_build_dir t ~should_be_skipped ~targets
+;;
+
 let failed_to_delete_sandbox dir reason =
   User_error.raise
     [ Pp.textf "failed to delete sandbox in %s" (Path.Build.to_string_maybe_quoted dir)
@@ -438,17 +479,41 @@ let failed_to_delete_sandbox dir reason =
     ]
 ;;
 
-let destroy t =
-  let open Fiber.O in
-  let+ start, stop, queued =
-    maybe_async (fun () ->
-      try Path.rm_rf ~chmod:true (Path.build t.dir) with
-      | Sys_error e -> failed_to_delete_sandbox t.dir (Pp.verbatim e)
-      | Unix.Unix_error (error, syscall, arg) ->
-        failed_to_delete_sandbox
-          t.dir
-          (Unix_error.Detailed.pp (Unix_error.Detailed.create error ~syscall ~arg)))
-  in
-  Dune_trace.emit ~buffered:true Sandbox (fun () ->
-    Dune_trace.Event.sandbox `Destroy ~start ~stop ~queued t.loc ~dir:t.dir)
+let destroy = function
+  | No_sandbox { targets } ->
+    Pending_targets.remove targets;
+    Fiber.return ()
+  | Sandboxed t ->
+    let open Fiber.O in
+    let+ start, stop, queued =
+      maybe_async (fun () ->
+        try Path.rm_rf ~chmod:true (Path.build t.dir) with
+        | Sys_error e -> failed_to_delete_sandbox t.dir (Pp.verbatim e)
+        | Unix.Unix_error (error, syscall, arg) ->
+          failed_to_delete_sandbox
+            t.dir
+            (Unix_error.Detailed.pp (Unix_error.Detailed.create error ~syscall ~arg)))
+    in
+    Dune_trace.emit ~buffered:true Sandbox (fun () ->
+      Dune_trace.Event.sandbox `Destroy ~start ~stop ~queued t.loc ~dir:t.dir)
+;;
+
+let with_ ~mode corrections ~rule_loc ~dirs ~deps ~rule_dir ~rule_digest ~targets ~f =
+  match mode with
+  | None ->
+    Pending_targets.add targets;
+    let sandbox = No_sandbox { targets } in
+    Fiber.finalize ~finally:(fun () -> destroy sandbox) (fun () -> f sandbox)
+  | Some mode ->
+    with_live_sandbox_slot ~f:(fun () ->
+      let open Fiber.O in
+      let* sandbox =
+        create_real ~mode corrections ~rule_loc ~dirs ~deps ~rule_dir ~rule_digest
+      in
+      let sandbox = Sandboxed sandbox in
+      (* CR-someday rgrinberg: Dynamic actions may discover dependencies
+         while this slot is held. If all sandbox slots are held by such
+         actions, sandboxed rules for the discovered dependencies cannot start.
+      *)
+      Fiber.finalize ~finally:(fun () -> destroy sandbox) (fun () -> f sandbox))
 ;;

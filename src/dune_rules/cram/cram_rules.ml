@@ -7,7 +7,8 @@ module Spec = struct
     ; test_name_alias : Alias.Name.t
     ; extra_aliases : Alias.Name.Set.t
     ; deps : unit Action_builder.t list
-    ; sandbox : Sandbox_config.t
+    ; sandbox : Sandbox_config.t Action_builder.t
+    ; env : Env.t Action_builder.t
     ; enabled_if : (Expander.t * Blang.t) list
     ; locks : Path.Set.t Action_builder.t
     ; packages : Package.Name.Set.t
@@ -24,7 +25,8 @@ module Spec = struct
     ; enabled_if = []
     ; locks = Action_builder.return Path.Set.empty
     ; deps = []
-    ; sandbox = Sandbox_config.needs_sandboxing
+    ; sandbox = Action_builder.return Sandbox_config.needs_sandboxing
+    ; env = Action_builder.return Env.empty
     ; packages = Package.Name.Set.empty
     ; timeout = None
     ; conflict_markers = Ignore
@@ -62,6 +64,7 @@ let test_rule
        ; deps
        ; locks
        ; sandbox
+       ; env
        ; packages = _
        ; timeout
        ; conflict_markers
@@ -106,7 +109,7 @@ let test_rule
            | Dir d -> d.dir
          in
          let dir = Path.Source.parent_exn path in
-         let basename = Path.Source.basename path in
+         let basename = Path.Source.basename path |> Filename.to_string in
          Path.Source.relative dir (".cram." ^ basename))
     in
     let script_sh = Path.Build.relative base_path "cram.sh" in
@@ -137,6 +140,8 @@ let test_rule
            let+ (_ : Path.Set.t) = Action_builder.dyn_memo_deps deps in
            ()
        and+ () = Action_builder.paths setup_scripts
+       and+ sandbox
+       and+ env
        and+ locks = locks >>| Path.Set.to_list in
        Cram_exec.run
          ~src:(Path.build script)
@@ -150,7 +155,8 @@ let test_rule
          ~timeout
          ~setup_scripts
          shell
-       |> Action.Full.make ~locks ~sandbox)
+       |> Action.Full.make ~locks ~sandbox
+       |> Action.Full.add_env env)
       |> Action_builder.with_file_targets ~file_targets:[ output ]
       |> Super_context.add_rule sctx ~dir ~loc
     in
@@ -164,7 +170,7 @@ let test_rule
           ~optional:true
           ~mode:Text
           (Path.build script)
-          (Path.Build.extend_basename script ~suffix:".corrected")
+          (Path.Build.extend_basename script ~suffix:Filename.corrected)
       ]
     |> Action.Full.make
 ;;
@@ -241,7 +247,7 @@ let rules ~sctx ~dir tests project =
       in
       let test_name_alias = Alias.Name.of_string name in
       let init = None, Spec.make_empty ~test_name_alias in
-      let+ runtest_alias, acc =
+      let* runtest_alias, acc =
         Memo.List.fold_left
           stanzas
           ~init
@@ -255,17 +261,29 @@ let rules ~sctx ~dir tests project =
             | false -> Memo.return (runtest_alias, acc)
             | true ->
               let+ expander = Super_context.expander sctx ~dir in
-              let deps, sandbox =
+              let deps, sandbox, env =
                 match stanza.deps with
-                | None -> acc.deps, acc.sandbox
+                | None -> acc.deps, acc.sandbox, acc.env
                 | Some deps ->
-                  let (deps : unit Action_builder.t), _, sandbox =
+                  let env, _, sandbox =
                     Dep_conf_eval.named
                       ~expander
                       Sandbox_config.no_special_requirements
                       deps
                   in
-                  deps :: acc.deps, Sandbox_config.inter acc.sandbox sandbox
+                  let sandbox =
+                    let open Action_builder.O in
+                    let+ acc = acc.sandbox
+                    and+ sandbox = sandbox in
+                    Sandbox_config.inter acc sandbox
+                  in
+                  let env =
+                    let open Action_builder.O in
+                    let+ acc = acc.env
+                    and+ env in
+                    Install.Roots.extend_env_concat_path_vars acc env
+                  in
+                  acc.deps, sandbox, env
               in
               let locks =
                 let open Action_builder.O in
@@ -279,8 +297,8 @@ let rules ~sctx ~dir tests project =
                 | None -> None
                 | Some (loc, set) ->
                   (match runtest_alias with
-                   | None -> Some (loc, set)
-                   | Some (loc', _) ->
+                   | None -> Some (loc, expander, set)
+                   | Some (loc', _, _) ->
                      let main_message =
                        [ Pp.text
                            "enabling or disabling the runtest alias for a cram test may \
@@ -348,17 +366,21 @@ let rules ~sctx ~dir tests project =
                 ; extra_aliases
                 ; packages
                 ; sandbox
+                ; env
                 ; timeout
                 ; conflict_markers
                 ; setup_scripts
                 ; shell
                 } ))
       in
-      let extra_aliases =
-        let to_add =
-          match runtest_alias with
-          | None | Some (_, true) -> Alias.Name.Set.singleton Alias0.runtest
-          | Some (_, false) -> Alias.Name.Set.empty
+      let+ extra_aliases =
+        let+ to_add =
+          (match runtest_alias with
+           | None -> Memo.return true
+           | Some (_, expander, set) -> Expander.eval_blang expander set)
+          >>| function
+          | true -> Alias.Name.Set.singleton Alias0.runtest
+          | false -> Alias.Name.Set.empty
         in
         Alias.Name.Set.union to_add acc.extra_aliases
       in
@@ -374,15 +396,15 @@ let cram_tests dir =
     let path = Source_tree.Dir.path dir in
     let file_tests =
       Source_tree.Dir.filenames dir
-      |> Filename.Set.to_list
+      |> Filename.Array.Set.to_list
       |> List.filter_map ~f:(fun s ->
         if Cram_test.is_cram_suffix s
-        then Some (Ok (Cram_test.File (Path.Source.relative path s)))
+        then Some (Ok (Cram_test.File (Path.Source.relative_fname path s)))
         else None)
     in
     let+ dir_tests =
       Source_tree.Dir.sub_dirs dir
-      |> Filename.Map.to_list
+      |> Filename.Array.Map.to_list
       |> Memo.parallel_map ~f:(fun (name, sub_dir) ->
         match Cram_test.is_cram_suffix name with
         | false -> Memo.return None
@@ -391,15 +413,15 @@ let cram_tests dir =
           let fname = Cram_test.fname_in_dir_test in
           let test =
             let dir = Source_tree.Dir.path sub_dir in
-            let file = Path.Source.relative dir fname in
+            let file = Path.Source.relative_fname dir fname in
             Cram_test.Dir { file; dir }
           in
           let files = Source_tree.Dir.filenames sub_dir in
-          if Filename.Set.is_empty files
+          if Filename.Array.Set.is_empty files
           then None
           else
             Some
-              (if Filename.Set.mem files fname
+              (if Filename.Array.Set.mem files fname
                then Ok test
                else Error (Missing_run_t test)))
       >>| List.filter_opt

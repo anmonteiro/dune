@@ -49,9 +49,11 @@ let local_library
     ]
 ;;
 
+let for_ = Compilation_mode.Ocaml
+
 let include_subdirs dir_contents =
   let open Memo.O in
-  Dir_contents.ocaml dir_contents
+  Dir_contents.ml dir_contents ~for_
   >>| Ml_sources.include_subdirs
   >>| function
   | Import.Include_subdirs.No -> Include_subdirs.No
@@ -59,12 +61,10 @@ let include_subdirs dir_contents =
   | Include Unqualified -> Unqualified
 ;;
 
-let for_ = Compilation_mode.Ocaml
-
 let make_root_module sctx ~name compile_info =
   let open Action_builder.O in
   let+ entries =
-    let requires_compile = Lib.Compile.direct_requires compile_info ~for_ in
+    let requires_compile = Lib.Compile.user_written_requires_no_loc compile_info ~for_ in
     Root_module.entries sctx ~requires_compile ~for_
   in
   { Root_module_data.name; entries }

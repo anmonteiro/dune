@@ -8,7 +8,6 @@ include struct
   module Checksum = Checksum
   module Source = Source
   module Build_command = Lock_dir.Build_command
-  module Display = Dune_engine.Display
   module Pkg_info = Lock_dir.Pkg_info
   module Depexts = Lock_dir.Depexts
   module Digest_feed = Dune_digest.Feed
@@ -23,13 +22,22 @@ module Variable = struct
 
   type t = Package_variable_name.t * value
 
-  let dyn_of_value : value -> Dyn.t =
-    let open Dyn in
-    function
-    | B b -> variant "Bool" [ bool b ]
-    | S s -> variant "String" [ string s ]
-    | L xs -> variant "Strings" [ list string xs ]
+  let value_repr =
+    Repr.variant
+      "package-variable-value"
+      [ Repr.case "Bool" Repr.bool ~proj:(function
+          | B b -> Some b
+          | _ -> None)
+      ; Repr.case "String" Repr.string ~proj:(function
+          | S s -> Some s
+          | _ -> None)
+      ; Repr.case "Strings" (Repr.list Repr.string) ~proj:(function
+          | L xs -> Some xs
+          | _ -> None)
+      ]
   ;;
+
+  let repr = Repr.pair Package_variable_name.repr value_repr
 
   let dune_value : value -> Value.t list = function
     | B b -> [ String (Bool.to_string b) ]
@@ -42,10 +50,6 @@ module Variable = struct
     match List.map xs ~f:(Value.to_string ~dir) with
     | [ x ] -> S x
     | xs -> L xs
-  ;;
-
-  let to_dyn (name, value) =
-    Dyn.(pair Package_variable_name.to_dyn dyn_of_value (name, value))
   ;;
 end
 
@@ -297,9 +301,12 @@ module Install_cookie = struct
       ; variables : Variable.t list
       }
 
-    let to_dyn f { files; variables } =
-      let open Dyn in
-      record [ "files", f files; "variables", list Variable.to_dyn variables ]
+    let repr files_repr =
+      Repr.record
+        "install-cookie"
+        [ Repr.field "files" files_repr ~get:(fun t -> t.files)
+        ; Repr.field "variables" (Repr.list Variable.repr) ~get:(fun t -> t.variables)
+        ]
     ;;
   end
 
@@ -311,11 +318,7 @@ module Install_cookie = struct
       let sharing = false
       let name = "INSTALL-COOKIE"
       let version = 4
-
-      let to_dyn =
-        let open Dyn in
-        Gen.to_dyn (list (pair Section.to_dyn (list Path.to_dyn)))
-      ;;
+      let repr = Gen.repr (Repr.list (Repr.pair Section.repr (Repr.list Path.repr)))
     end)
 
   let load_exn f =
@@ -498,20 +501,18 @@ module Pkg = struct
           let contents = Fs_memo.Dir_contents.to_list contents in
           List.rev_filter_partition_map contents ~f:(fun (name, kind) ->
             (* TODO handle links and cycles correctly *)
+            let name_s = Filename.to_string name in
+            let relative = Path.Local.relative_fname path name in
             match kind with
-            | S_DIR -> if skip_dir name then Skip else Right name
-            | _ -> if skip_file name then Skip else Left name)
+            | S_DIR -> if skip_dir name_s then Skip else Right relative
+            | _ -> if skip_file name_s then Skip else Left relative)
         in
-        let acc =
-          Path.Local.Set.of_list_map files ~f:(Path.Local.relative path)
-          |> Path.Local.Set.union acc
-        in
-        let+ dirs =
-          Memo.parallel_map dirs ~f:(fun dir ->
-            let dir = Path.Local.relative path dir in
-            loop root Path.Local.Set.empty dir)
-        in
-        Path.Local.Set.union_all (acc :: dirs)
+        let acc = Path.Local.Set.of_list files |> Path.Local.Set.union acc in
+        Memo.map_reduce
+          dirs
+          ~f:(fun dir -> loop root Path.Local.Set.empty dir)
+          ~empty:acc
+          ~combine:Path.Local.Set.union
     in
     (match t.info.source with
      | None -> Memo.return None
@@ -660,18 +661,55 @@ module Substitute = struct
       }
 
     let name = "substitute"
-    let version = 3
+    let version = 4
+    let runs_process = false
+    let can_run_in_action_runner = false
     let bimap t f g = { t with src = f t.src; dst = g t.dst }
     let is_useful_to ~memoize = memoize
+
+    let variable_value_repr =
+      Repr.variant
+        "pkg-variable-value"
+        [ Repr.case "B" Bool.repr ~proj:(function
+            | Variable.B x -> Some x
+            | _ -> None)
+        ; Repr.case "S" String.repr ~proj:(function
+            | Variable.S x -> Some x
+            | _ -> None)
+        ; Repr.case
+            "L"
+            Repr.(list String.repr)
+            ~proj:(function
+              | Variable.L x -> Some x
+              | _ -> None)
+        ]
+    ;;
+
+    let variable_map_repr =
+      Repr.view
+        Repr.(list (pair Package_variable_name.repr variable_value_repr))
+        ~to_:Package_variable_name.Map.to_list
+    ;;
+
+    let paths_repr = Repr.T3.repr Path.repr Path.repr Package.Name.repr
+
+    let hash_input_repr =
+      Repr.T4.repr
+        paths_repr
+        Repr.(list (pair Filename.repr Path.repr))
+        Repr.(list (pair variable_map_repr paths_repr))
+        Package_version.repr
+    ;;
 
     let encode { expander; depends; artifacts; src; dst } input output : Sexp.t =
       let e =
         let paths (p : Path.t Paths.t) = p.source_dir, p.target_dir, p.name in
-        ( paths expander.paths
-        , String.Map.to_list artifacts
-        , Package.Name.Map.to_list_map depends ~f:(fun _ (m, p) -> m, paths p)
-        , expander.version )
-        |> Digest.generic
+        Digest.repr
+          hash_input_repr
+          ( paths expander.paths
+          , Filename.Map.to_list artifacts
+          , Package.Name.Map.to_list_map depends ~f:(fun _ (m, p) -> m, paths p)
+          , expander.version )
         |> Digest.to_string_raw
       in
       List [ Atom e; input src; output dst ]
@@ -943,6 +981,7 @@ module Action_expander = struct
                 let dune = Path.of_string Sys.executable_name in
                 Memo.return @@ Ok dune
               | program ->
+                let program = Filename.of_string_exn program in
                 let* artifacts = t.artifacts in
                 (match Filename.Map.find artifacts program with
                  | Some s -> Memo.return @@ Ok s
@@ -1020,9 +1059,10 @@ module Action_expander = struct
       let+ args = Memo.parallel_map t ~f:(expand ~expander) in
       Action.Progn args
     | System arg ->
-      Expander.expand_pform_gen ~mode:Single expander arg
-      >>| Value.to_string ~dir
-      >>| System.action
+      let+ arg =
+        Expander.expand_pform_gen ~mode:Single expander arg >>| Value.to_string ~dir
+      in
+      Action.System arg
     | Patch p ->
       let+ patch =
         Expander.expand_pform_gen ~mode:Single expander p >>| Value.to_path ~dir
@@ -1118,14 +1158,11 @@ module Action_expander = struct
             let binaries =
               Section.Map.Multi.find cookie.files Bin
               |> List.fold_left ~init:binaries ~f:(fun acc bin ->
-                let name = Path.basename bin in
-                (* CR-soon Alizter: share .exe stripping logic with artifacts.ml *)
-                let name =
-                  if Sys.win32
-                  then Option.value ~default:name (String.drop_suffix name ~suffix:".exe")
-                  else name
-                in
-                Filename.Map.set acc name bin)
+                Filename.Map.set
+                  acc
+                  (Filename.of_string_exn
+                     (Bin.strip_exe (Path.basename bin |> Filename.to_string)))
+                  bin)
             in
             let dep_info =
               let variables =
@@ -1187,10 +1224,11 @@ module Action_expander = struct
   ;;
 
   let dune_exe context =
-    Which.which ~path:(Env_path.path Env.initial) "dune"
+    Which.which ~path:(Env_path.path Env.initial) Filename.dune
     >>| function
     | Some s -> Ok s
-    | None -> Error (Action.Prog.Not_found.create ~loc:None ~context ~program:"dune" ())
+    | None ->
+      Error (Action.Prog.Not_found.create ~loc:None ~context ~program:Filename.dune ())
   ;;
 
   let build_command context (pkg : Pkg.t) =
@@ -1370,29 +1408,12 @@ module DB = struct
     { id : Id.t
     ; pkg_digest_table : Pkg_table.t
     ; system_provided : Package.Name.Set.t
-    ; is_relocatable_compiler_context : bool
     }
 
   let equal x y = Id.equal x.id y.id
 
-  let create =
-    (* A compiler is relocatable if the solution contains the
-       "relocatable-compiler" meta-package (from dra27's overlay repo) or
-       the "relocatable" virtual package (from upstream opam-repository). *)
-    let is_relocatable_meta_package name =
-      Package.Name.equal name (Package.Name.of_string "relocatable-compiler")
-      || Package.Name.equal name (Package.Name.of_string "relocatable")
-    in
-    fun ~pkg_digest_table ~system_provided ->
-      { id = Id.gen ()
-      ; pkg_digest_table
-      ; system_provided
-      ; is_relocatable_compiler_context =
-          Pkg_digest.Map.existsi
-            pkg_digest_table
-            ~f:(fun _ { Pkg_table.pkg = { info = { name; _ }; _ }; _ } ->
-              is_relocatable_meta_package name)
-      }
+  let create ~pkg_digest_table ~system_provided =
+    { id = Id.gen (); pkg_digest_table; system_provided }
   ;;
 
   let pkg_digest_of_name lock_dir platform pkg_name ~system_provided =
@@ -1521,6 +1542,27 @@ end = struct
     | Action a -> Build_command.Action (relocate a)
   ;;
 
+  let is_relocatable_compiler_marker name =
+    let relocatable_compiler = Package.Name.of_string "relocatable-compiler" in
+    let relocatable = Package.Name.of_string "relocatable" in
+    Package.Name.equal name relocatable_compiler || Package.Name.equal name relocatable
+  ;;
+
+  let has_relocatable_compiler_marker (info : Pkg_info.t) depends =
+    is_relocatable_compiler_marker info.name
+    || Pkg.top_closure depends
+       |> List.exists ~f:(fun (pkg : Pkg.t) ->
+         is_relocatable_compiler_marker pkg.info.name)
+  ;;
+
+  let is_compiler_version_relocatable (info : Pkg_info.t) =
+    Pkg_toolchain.is_compiler_package_with_toolchains_enabled info.name
+    &&
+    match Package_version.compare info.version (Package_version.of_string "5.5.0") with
+    | Lt -> false
+    | Eq | Gt -> true
+  ;;
+
   let resolve_impl { Input.db; pkg_digest; universe = package_universe } =
     match Pkg_digest.Map.find db.pkg_digest_table pkg_digest with
     | None -> Memo.return None
@@ -1578,8 +1620,9 @@ end = struct
       let paths =
         let paths = Paths.map_path write_paths ~f:Path.build in
         if
-          db.is_relocatable_compiler_context
-          || not (Pkg_toolchain.is_compiler_package_with_toolchains_enabled info.name)
+          (not (Pkg_toolchain.is_compiler_package_with_toolchains_enabled info.name))
+          || is_compiler_version_relocatable info
+          || has_relocatable_compiler_marker info depends
         then paths
         else (
           (* Modify the environment as well as build and install commands for
@@ -1682,6 +1725,8 @@ module Install_action = struct
 
     let name = "install-file-run"
     let version = 1
+    let runs_process = false
+    let can_run_in_action_runner = false
 
     let bimap
           ({ install_file
@@ -1740,6 +1785,7 @@ module Install_action = struct
           let package =
             Path.basename install_file
             |> Filename.remove_extension
+            |> Filename.to_string
             |> Package.Name.of_string
           in
           let roots =
@@ -1756,7 +1802,7 @@ module Install_action = struct
 
     let collect_files ~root ~skip_dirs =
       List.iter skip_dirs ~f:(fun s -> assert (Path.equal root (Path.parent_exn s)));
-      let path_of ~dir fname = Path.relative root (Filename.concat dir fname) in
+      let path_of ~dir fname = Path.relative root (Filename.append dir fname) in
       Fpath.traverse
         ~dir:(Path.to_string root)
         ~init:[]
@@ -1777,7 +1823,7 @@ module Install_action = struct
       | Some (sandbox, source) ->
         let ctx =
           let name = Path.basename sandbox in
-          Path.relative (Path.build Path.Build.root) name
+          Path.relative_fname (Path.build Path.Build.root) name
         in
         Path.append_source ctx source
     ;;
@@ -1807,7 +1853,9 @@ module Install_action = struct
             with
             | None -> section
             | Some section' ->
-              let perm = (Unix.stat (Path.to_string file)).st_perm in
+              let perm =
+                (Unix.stat (Path.to_string file)).st_perm |> Permissions.Mode.of_int
+              in
               if Permissions.(test execute perm) then section' else section
           in
           section, maybe_drop_sandbox_dir file))
@@ -1820,8 +1868,8 @@ module Install_action = struct
       | true ->
         let dst = Path.to_string dst in
         let permission =
-          let perm = (Unix.stat dst).st_perm in
-          Permissions.(add execute) perm
+          let perm = (Unix.stat dst).st_perm |> Permissions.Mode.of_int in
+          Permissions.(add execute) perm |> Permissions.Mode.to_int
         in
         Unix.chmod dst permission
     ;;
@@ -1865,7 +1913,11 @@ module Install_action = struct
                  to be deleted, so we don't be able to fetch the part of the
                  file that's bad *)
               let open Pp.O in
-              let error = Pp.textf "Error parsing %s" (Path.basename config_file) in
+              let error =
+                Pp.textf
+                  "Error parsing %s"
+                  (Path.basename config_file |> Filename.to_string)
+              in
               match loc with
               | None -> error
               | Some loc ->
@@ -1891,8 +1943,7 @@ module Install_action = struct
       | None -> src, entry
       | Some src_exe_str ->
         ( Path.of_string src_exe_str
-        , Install.Entry.map_dst entry ~f:(fun dst ->
-            Install.Entry.Dst.explicit (Bin.add_exe (Install.Entry.Dst.to_string dst))) )
+        , Install.Entry.map_dst entry ~f:Install.Entry.Dst.maybe_add_exe )
     ;;
 
     let install_entry
@@ -1928,37 +1979,38 @@ module Install_action = struct
         Some (entry.section, dst)
     ;;
 
-    let rec resolve_symlinks_in dir =
-      match Readdir.read_directory_with_kinds dir with
-      | Error e -> Unix_error.Detailed.raise e
-      | Ok entries ->
-        List.iter entries ~f:(fun (fname, kind) ->
-          let path = Filename.concat dir fname in
-          match (kind : Unix.file_kind) with
-          | S_DIR -> resolve_symlinks_in path
-          | S_LNK ->
-            (match Fpath.follow_symlink path with
-             | Error (Unix_error e) -> Unix_error.Detailed.raise e
-             | Error Not_a_symlink ->
-               Code_error.raise
-                 "resolve_symlinks_in: not a symlink"
-                 [ "path", Dyn.string path ]
-             | Error Max_depth_exceeded ->
-               User_error.raise
-                 [ Pp.textf
-                     "Unable to resolve symlink %s: too many levels of symbolic links"
-                     path
-                 ]
-             | Ok resolved ->
-               (match Unix.lstat resolved with
-                | { Unix.st_kind = S_REG; _ } ->
-                  (* CR-someday rgrinberg: pass chmod:true here? *)
-                  Fpath.unlink_exn path;
-                  Io.portable_hardlink
-                    ~src:(Path.of_string resolved)
-                    ~dst:(Path.of_string path)
-                | _ -> ()))
-          | _ -> ())
+    let resolve_symlinks_in root =
+      let on_symlink ~dir fname () =
+        let path = Filename.concat root (Filename.append dir fname) in
+        match Fpath.follow_symlink path with
+        | Error (Unix_error e) -> Unix_error.Detailed.raise e
+        | Error Not_a_symlink ->
+          Code_error.raise
+            "resolve_symlinks_in: not a symlink"
+            [ "path", Dyn.string path ]
+        | Error Max_depth_exceeded ->
+          User_error.raise
+            [ Pp.textf
+                "Unable to resolve symlink %s: too many levels of symbolic links"
+                path
+            ]
+        | Ok resolved ->
+          (match Unix.lstat resolved with
+           | { Unix.st_kind = S_REG; _ } ->
+             (* CR-someday rgrinberg: pass chmod:true here? *)
+             Fpath.unlink_exn path;
+             Io.portable_hardlink
+               ~src:(Path.of_string resolved)
+               ~dst:(Path.of_string path)
+           | _ -> ());
+          (), None
+      in
+      Fpath.traverse
+        ~dir:root
+        ~init:()
+        ~on_other:`Ignore
+        ~on_symlink:(`Call on_symlink)
+        ()
     ;;
 
     let action
@@ -2122,8 +2174,8 @@ let source_rules (pkg : Pkg.t) =
                   directories. Packages whose source is extracted from an
                   archive (possibly fetched over the web) have broken symlinks
                   explicitly deleted immediately after the archive is
-                  extracted. This logic is implemented in the "source-fetch"
-                  action spec in [Fetch_rules]. *)
+                  extracted. This logic is implemented in
+                  [Fetch.resolve_directory_symlinks]. *)
                source_files, rules
              else (
                let dst = Path.Build.append_local pkg.write_paths.source_dir file in
@@ -2451,7 +2503,10 @@ let setup_rules ~components ~dir ctx =
   | true, ".dev-tool" :: _ :: _ :: _ ->
     Memo.return @@ Gen_rules.redirect_to_parent Gen_rules.Rules.empty
   | is_default, [] ->
-    let sub_dirs = ".pkg" :: (if is_default then [ ".dev-tool" ] else []) in
+    let sub_dirs =
+      Filename.pkg_dir_basename
+      :: (if is_default then [ Filename.dev_tool_dir_basename ] else [])
+    in
     let build_dir_only_sub_dirs =
       Gen_rules.Build_only_sub_dirs.singleton ~dir @@ Subdir_set.of_list sub_dirs
     in
@@ -2581,6 +2636,39 @@ let find_package ctx pkg =
       (let open Action_builder.O in
        let+ _cookie = (Pkg_installed.of_paths pkg.paths).cookie in
        ())
+;;
+
+let resolve_installed_file ~loc ~context_name ~pkg_name ~section ~file =
+  let open Action_builder.O in
+  let* { paths; _ } =
+    Action_builder.of_memo (resolve_pkg_dep context_name (loc, pkg_name))
+  in
+  let* { files; _ } = (Pkg_installed.of_paths paths).cookie in
+  let section_dir =
+    let install_paths = Lazy.force paths.install_paths in
+    Install.Paths.get install_paths section
+  in
+  let path = Path.append_local section_dir file in
+  let installed = Section.Map.find files section |> Option.value ~default:[] in
+  match List.exists installed ~f:(Path.equal path) with
+  | true ->
+    let+ () = Action_builder.path path in
+    path
+  | false ->
+    let file_str = Path.Local.to_string file in
+    let candidates =
+      List.filter_map installed ~f:(Path.drop_prefix ~prefix:section_dir)
+      |> List.map ~f:Path.Local.to_string
+    in
+    User_error.raise
+      ~loc
+      ~hints:(User_message.did_you_mean file_str ~candidates)
+      [ Pp.textf
+          "File %s not found in section %s of package %s"
+          file_str
+          (Section.to_string section)
+          (Package.Name.to_string pkg_name)
+      ]
 ;;
 
 let all_filtered_depexts context =

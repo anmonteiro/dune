@@ -7,6 +7,7 @@ let man =
   ; `P
       {|Dump Dune rules for the given targets.
            If no targets are given, dump all the rules.|}
+  ; `P {|With $(b,--deps), only print the dependencies of the matching rules.|}
   ; `P
       {|By default the output is a list of S-expressions,
            one S-expression per rule. Each S-expression is of the form:|}
@@ -21,39 +22,22 @@ let man =
   ; `P
       {|$(b,<action>) is the action following the same syntax as user actions,
            as described in the manual.|}
+  ; `P {|Use $(b,--format=json) to dump the same data as JSON.|}
   ; `Blocks Common.help_secs
   ]
 ;;
 
 let info = Cmd.info "rules" ~doc ~man
 
-let print_rule_makefile ppf (rule : Dune_engine.Reflection.Rule.t) =
-  let action =
-    Action.For_shell.Progn
-      [ Mkdir (Path.to_string (Path.build rule.targets.root))
-      ; Action.for_shell rule.action
-      ]
-  in
-  (* Makefiles seem to allow directory targets, so we include them. *)
-  let targets =
-    Filename.Set.union rule.targets.files rule.targets.dirs
-    |> Filename.Set.to_list_map ~f:(fun basename ->
-      Path.Build.relative rule.targets.root basename |> Path.build)
-  in
-  Format.fprintf
-    ppf
-    "@[<hov 2>@{<makefile-stuff>%a:%t@}@]@,@<0>\t@{<makefile-action>%a@}\n"
-    (Format.pp_print_list ~pp_sep:Format.pp_print_space (fun ppf p ->
-       Format.pp_print_string ppf (Path.to_string p)))
-    targets
-    (fun ppf ->
-       Path.Set.iter rule.expanded_deps ~f:(fun dep ->
-         Format.fprintf ppf "@ %s" (Path.to_string dep)))
-    Pp.to_fmt
-    (Action_to_sh.pp action)
-;;
+module Output_format = struct
+  type t =
+    | Sexp
+    | Json
 
-let rec encode : Action.For_shell.t -> Dune_lang.t =
+  let all = [ "sexp", Sexp; "json", Json ]
+end
+
+let rec encode_action : Action.For_shell.t -> Dune_lang.t =
   let module Outputs = Dune_lang.Action.Outputs in
   let module File_perm = Dune_lang.Action.File_perm in
   let module Inputs = Dune_lang.Action.Inputs in
@@ -63,41 +47,47 @@ let rec encode : Action.For_shell.t -> Dune_lang.t =
   let path = Encoder.string in
   let target = Encoder.string in
   function
-  | Run (a, xs) ->
-    List (atom "run" :: program a :: List.map (Array.Immutable.to_list xs) ~f:string)
+  | Run { prog; args; can_run_in_action_runner = _ } ->
+    List (atom "run" :: program prog :: List.map (Appendable_list.to_list args) ~f:string)
   | With_accepted_exit_codes (pred, t) ->
     List
       [ atom "with-accepted-exit-codes"
       ; Predicate_lang.encode Dune_sexp.Encoder.int pred
-      ; encode t
+      ; encode_action t
       ]
-  | Chdir (a, r) -> List [ atom "chdir"; path a; encode r ]
-  | Setenv (k, v, r) -> List [ atom "setenv"; string k; string v; encode r ]
+  | Chdir (a, r) -> List [ atom "chdir"; path a; encode_action r ]
+  | Setenv (k, v, r) -> List [ atom "setenv"; string k; string v; encode_action r ]
   | Redirect_out (outputs, fn, perm, r) ->
     List
       [ atom (sprintf "with-%s-to%s" (Outputs.to_string outputs) (File_perm.suffix perm))
       ; target fn
-      ; encode r
+      ; encode_action r
       ]
   | Redirect_in (inputs, fn, r) ->
-    List [ atom (sprintf "with-%s-from" (Inputs.to_string inputs)); path fn; encode r ]
+    List
+      [ atom (sprintf "with-%s-from" (Inputs.to_string inputs))
+      ; path fn
+      ; encode_action r
+      ]
   | Ignore (outputs, r) ->
-    List [ atom (sprintf "ignore-%s" (Outputs.to_string outputs)); encode r ]
-  | Progn l -> List (atom "progn" :: List.map l ~f:encode)
-  | Concurrent l -> List (atom "concurrent" :: List.map l ~f:encode)
+    List [ atom (sprintf "ignore-%s" (Outputs.to_string outputs)); encode_action r ]
+  | Progn l -> List (atom "progn" :: List.map l ~f:encode_action)
+  | Concurrent l -> List (atom "concurrent" :: List.map l ~f:encode_action)
   | Echo xs -> List (atom "echo" :: List.map xs ~f:string)
   | Cat xs -> List (atom "cat" :: List.map xs ~f:path)
   | Copy (x, y) -> List [ atom "copy"; path x; target y ]
   | Symlink (x, y) -> List [ atom "symlink"; path x; target y ]
   | Hardlink (x, y) -> List [ atom "hardlink"; path x; target y ]
-  | Bash x -> List [ atom "bash"; string x ]
+  | System x -> List [ atom "system"; string x ]
+  | Bash { script; can_run_in_action_runner = _ } -> List [ atom "bash"; string script ]
   | Write_file (x, perm, y) ->
     List [ atom ("write-file" ^ File_perm.suffix perm); target x; string y ]
   | Rename (x, y) -> List [ atom "rename"; target x; target y ]
   | Remove_tree x -> List [ atom "remove-tree"; target x ]
   | Mkdir x -> List [ atom "mkdir"; target x ]
   | Pipe (outputs, l) ->
-    List (atom (sprintf "pipe-%s" (Outputs.to_string outputs)) :: List.map l ~f:encode)
+    List
+      (atom (sprintf "pipe-%s" (Outputs.to_string outputs)) :: List.map l ~f:encode_action)
   | Diff { optional; file1; file2; mode = Binary; directory_diffs = _ } ->
     assert (not optional);
     List [ atom "cmp"; path file1; target file2 ]
@@ -119,93 +109,10 @@ let encode_path p =
   | External p -> make "External" (Path.External.to_string p)
 ;;
 
-let encode_file_selector file_selector =
-  let open Dune_sexp.Encoder in
-  let module File_selector = Dune_engine.File_selector in
-  let dir = File_selector.dir file_selector in
-  let predicate = File_selector.predicate file_selector in
-  let only_generated_files = File_selector.only_generated_files file_selector in
-  record
-    [ "dir", encode_path dir
-    ; "predicate", Predicate_lang.Glob.encode predicate
-    ; "only_generated_files", bool only_generated_files
-    ]
-;;
-
-let encode_alias alias =
-  let open Dune_sexp.Encoder in
-  let dir = Dune_engine.Alias.dir alias in
-  let name = Dune_engine.Alias.name alias in
-  record
-    [ "dir", encode_path (Path.build dir)
-    ; "name", Dune_sexp.atom_or_quoted_string (Alias_name.to_string name)
-    ]
-;;
-
-let encode_dep_set deps =
-  Dune_sexp.List
-    (Dep.Set.to_list_map
-       deps
-       ~f:
-         (let open Dune_sexp.Encoder in
-          function
-          | File_selector g -> pair string encode_file_selector ("glob", g)
-          | Env e -> pair string string ("Env", e)
-          | File f -> pair string encode_path ("File", f)
-          | Alias a -> pair string encode_alias ("Alias", a)
-          | Universe -> string "Universe"))
-;;
-
-let print_rule_sexp ppf (rule : Dune_engine.Reflection.Rule.t) =
-  let sexp_of_action action = Action.for_shell action |> encode in
-  let paths ps =
-    Dune_sexp.Encoder.list
-      (fun p ->
-         Path.Build.relative rule.targets.root p
-         |> Path.Build.to_string
-         |> Dune_sexp.atom_or_quoted_string)
-      (Filename.Set.to_list ps)
-  in
-  let sexp =
-    Dune_sexp.Encoder.record
-      (List.concat
-         [ [ "deps", encode_dep_set rule.deps
-           ; ( "targets"
-             , Dune_sexp.Encoder.record
-                 [ "files", paths rule.targets.files
-                 ; "directories", paths rule.targets.dirs
-                 ] )
-           ]
-         ; (match Path.Build.extract_build_context rule.targets.root with
-            | None -> []
-            | Some (c, _) -> [ "context", Dune_sexp.atom_or_quoted_string c ])
-         ; [ "action", sexp_of_action rule.action ]
-         ])
-  in
-  Format.fprintf ppf "%a@," Pp.to_fmt (Dune_lang.pp sexp)
-;;
-
 module Syntax = struct
-  type t =
-    | Makefile
-    | Sexp
+  type formatter_state = In_atom
 
-  let term =
-    let doc = "Output the rules in Makefile syntax." in
-    let+ makefile = Arg.(value & flag & info [ "m"; "makefile" ] ~doc:(Some doc)) in
-    if makefile then Makefile else Sexp
-  ;;
-
-  let print_rule = function
-    | Makefile -> print_rule_makefile
-    | Sexp -> print_rule_sexp
-  ;;
-
-  type formatter_state =
-    | In_atom
-    | In_makefile_action
-    | In_makefile_stuff
-
+  (* CR-someday rgrinberg: what is all of this? consider deleting *)
   let prepare_formatter ppf =
     let state = ref [] in
     Format.pp_set_mark_tags ppf true;
@@ -219,18 +126,10 @@ module Syntax = struct
             | Format.String_tag "atom" ->
               state := In_atom :: !state;
               ""
-            | Format.String_tag "makefile-action" ->
-              state := In_makefile_action :: !state;
-              ""
-            | Format.String_tag "makefile-stuff" ->
-              state := In_makefile_stuff :: !state;
-              ""
             | s -> tfuncs.mark_open_stag s)
       ; mark_close_stag =
           (function
-            | Format.String_tag "atom"
-            | Format.String_tag "makefile-action"
-            | Format.String_tag "makefile-stuff" ->
+            | Format.String_tag "atom" ->
               state := List.tl !state;
               ""
             | s -> tfuncs.mark_close_stag s)
@@ -241,10 +140,7 @@ module Syntax = struct
         out_newline =
           (fun () ->
             match !state with
-            | [ In_atom; In_makefile_action ] -> ofuncs.out_string "\\\n\t" 0 3
             | [ In_atom ] -> ofuncs.out_string "\\\n" 0 2
-            | [ In_makefile_action ] -> ofuncs.out_string " \\\n\t" 0 4
-            | [ In_makefile_stuff ] -> ofuncs.out_string " \\\n" 0 3
             | [] -> ofuncs.out_string "\n" 0 1
             | _ -> assert false)
       ; out_spaces =
@@ -255,14 +151,163 @@ module Syntax = struct
                | _ -> n))
       }
   ;;
-
-  let print_rules syntax ppf rules =
-    prepare_formatter ppf;
-    Format.pp_open_vbox ppf 0;
-    Format.pp_print_list (print_rule syntax) ppf rules;
-    Format.pp_print_flush ppf ()
-  ;;
 end
+
+let syntax_repr = Repr.abstract Dune_sexp.to_dyn
+let path_repr = Repr.view syntax_repr ~to_:encode_path
+let predicate_repr = Repr.view syntax_repr ~to_:Predicate_lang.Glob.encode
+
+let alias_repr =
+  Repr.record
+    "alias"
+    [ Repr.field "dir" path_repr ~get:(fun alias ->
+        Path.build (Dune_engine.Alias.dir alias))
+    ; Repr.field "name" Repr.string ~get:(fun alias ->
+        Alias_name.to_string (Dune_engine.Alias.name alias))
+    ]
+;;
+
+let file_selector_repr =
+  Repr.record
+    "file-selector"
+    [ Repr.field "dir" path_repr ~get:Dune_engine.File_selector.dir
+    ; Repr.field "predicate" predicate_repr ~get:Dune_engine.File_selector.predicate
+    ; Repr.field
+        "only_generated_files"
+        Repr.bool
+        ~get:Dune_engine.File_selector.only_generated_files
+    ]
+;;
+
+let dep_repr =
+  Repr.variant
+    "dep"
+    [ Repr.case "glob" file_selector_repr ~proj:(function
+        | Dep.File_selector selector -> Some selector
+        | Dep.Env _ | Dep.File _ | Dep.Alias _ | Dep.Universe -> None)
+    ; Repr.case "Env" Repr.string ~proj:(function
+        | Dep.Env var -> Some var
+        | Dep.File_selector _ | Dep.File _ | Dep.Alias _ | Dep.Universe -> None)
+    ; Repr.case "File" path_repr ~proj:(function
+        | Dep.File path -> Some path
+        | Dep.File_selector _ | Dep.Env _ | Dep.Alias _ | Dep.Universe -> None)
+    ; Repr.case "Alias" alias_repr ~proj:(function
+        | Dep.Alias alias -> Some alias
+        | Dep.File_selector _ | Dep.Env _ | Dep.File _ | Dep.Universe -> None)
+    ; Repr.case0 "Universe" ~test:(function
+        | Dep.Universe -> true
+        | Dep.File_selector _ | Dep.Env _ | Dep.File _ | Dep.Alias _ -> false)
+    ]
+;;
+
+let deps_repr = Repr.view (Repr.list dep_repr) ~to_:Dep.Set.to_list
+
+let action_repr =
+  Repr.view syntax_repr ~to_:(fun action -> Action.for_shell action |> encode_action)
+;;
+
+let target_names ~root names =
+  Filename.Set.to_list_map names ~f:(fun name ->
+    Path.Build.relative_fname root name |> Path.Build.to_string)
+;;
+
+let targets_repr =
+  Repr.record
+    "targets"
+    [ Repr.field "files" (Repr.list Repr.string) ~get:(fun targets ->
+        target_names ~root:targets.Targets.Validated.root targets.files)
+    ; Repr.field "directories" (Repr.list Repr.string) ~get:(fun targets ->
+        target_names ~root:targets.Targets.Validated.root targets.dirs)
+    ]
+;;
+
+let rule_context (rule : Dune_engine.Reflection.Rule.t) =
+  match Path.Build.extract_build_context rule.targets.Targets.Validated.root with
+  | None -> None
+  | Some (context, _) -> Some (Filename.to_string context)
+;;
+
+let rule_repr =
+  Repr.record
+    "rule"
+    [ Repr.field "deps" deps_repr ~get:(fun rule -> rule.Dune_engine.Reflection.Rule.deps)
+    ; Repr.field "targets" targets_repr ~get:(fun rule ->
+        rule.Dune_engine.Reflection.Rule.targets)
+    ; Repr.field "context" (Repr.option Repr.string) ~get:rule_context
+    ; Repr.field "action" action_repr ~get:(fun rule ->
+        rule.Dune_engine.Reflection.Rule.action)
+    ]
+;;
+
+let rules_repr = Repr.list rule_repr
+let deps_only_repr = Repr.list deps_repr
+
+let dep_sets_of_rules rules =
+  List.map rules ~f:(fun rule -> rule.Dune_engine.Reflection.Rule.deps)
+;;
+
+let rec normalize_dyn : Dyn.t -> Dyn.t = function
+  | Option None -> Option None
+  | Option (Some value) -> normalize_dyn value
+  | List values -> List (List.map values ~f:normalize_dyn)
+  | Array values -> Array (Array.map values ~f:normalize_dyn)
+  | Tuple values -> Tuple (List.map values ~f:normalize_dyn)
+  | Record fields ->
+    Record
+      (List.filter_map fields ~f:(fun (name, value) ->
+         match normalize_dyn value with
+         | Option None -> None
+         | value -> Some (name, value)))
+  | Variant (name, values) -> Variant (name, List.map values ~f:normalize_dyn)
+  | Map values ->
+    Map (List.map values ~f:(fun (key, value) -> normalize_dyn key, normalize_dyn value))
+  | Set values -> Set (List.map values ~f:normalize_dyn)
+  | ( Opaque
+    | Unit
+    | Int _
+    | Int32 _
+    | Int64 _
+    | Nativeint _
+    | Bool _
+    | String _
+    | Bytes _
+    | Char _
+    | Float _ ) as value -> value
+;;
+
+let dyn_of_repr repr value = normalize_dyn (Repr.to_dyn repr value)
+
+let rec dune_lang_of_sexp : Sexp.t -> Dune_lang.t = function
+  | Atom value -> Dune_lang.atom_or_quoted_string value
+  | List values -> List (List.map values ~f:dune_lang_of_sexp)
+;;
+
+let print_sexp_repr ppf repr value =
+  let sexp = dyn_of_repr repr value |> Sexp.of_dyn |> dune_lang_of_sexp in
+  Format.fprintf ppf "%a@," Pp.to_fmt (Dune_lang.pp sexp)
+;;
+
+let print_json oc json =
+  output_string oc (Json.to_string json);
+  output_char oc '\n'
+;;
+
+let print_rules_sexp ppf rules =
+  Syntax.prepare_formatter ppf;
+  Format.pp_open_vbox ppf 0;
+  Format.pp_print_list (fun ppf rule -> print_sexp_repr ppf rule_repr rule) ppf rules;
+  Format.pp_print_flush ppf ()
+;;
+
+let print_rule_deps_only_sexp ppf rules =
+  Syntax.prepare_formatter ppf;
+  Format.pp_open_vbox ppf 0;
+  Format.pp_print_list
+    (fun ppf rule -> print_sexp_repr ppf deps_repr rule.Dune_engine.Reflection.Rule.deps)
+    ppf
+    rules;
+  Format.pp_print_flush ppf ()
+;;
 
 let term =
   let+ builder = Common.Builder.term
@@ -281,17 +326,25 @@ let term =
             (Some
                "Print all rules needed to build the transitive dependencies of the given \
                 targets."))
-  and+ syntax = Syntax.term
+  and+ deps_only =
+    Arg.(
+      value
+      & flag
+      & info [ "deps" ] ~doc:(Some "Only print the dependencies of matching rules."))
+  and+ format =
+    let doc = Printf.sprintf "$(docv) must be %s" (Arg.doc_alts_enum Output_format.all) in
+    Arg.(
+      value
+      & opt (enum Output_format.all) Output_format.Sexp
+      & info [ "format" ] ~docv:"FORMAT" ~doc:(Some doc))
   (* CR-someday Alizter: document this option *)
   and+ targets = Arg.(value & pos_all dep [] & Arg.info [] ~docv:"TARGET" ~doc:None) in
   let common, config = Common.init builder in
   let out = Option.map ~f:Path.of_string out in
   Scheduler_setup.go_with_rpc_server ~common ~config (fun () ->
-    let open Fiber.O in
-    let* setup = Util.setup () in
     Build.build_memo_exn (fun () ->
       let open Memo.O in
-      let* setup = setup in
+      let* setup = Util.setup () in
       let* request =
         match targets with
         | [] ->
@@ -303,7 +356,14 @@ let term =
       let+ rules = Dune_engine.Reflection.eval ~request ~recursive in
       let print oc =
         let ppf = Format.formatter_of_out_channel oc in
-        Syntax.print_rules syntax ppf rules
+        match format, deps_only with
+        | Output_format.Sexp, false -> print_rules_sexp ppf rules
+        | Output_format.Sexp, true -> print_rule_deps_only_sexp ppf rules
+        | Json, false -> print_json oc (Json.of_dyn (dyn_of_repr rules_repr rules))
+        | Json, true ->
+          print_json
+            oc
+            (Json.of_dyn (dyn_of_repr deps_only_repr (dep_sets_of_rules rules)))
       in
       match out with
       | None -> print stdout

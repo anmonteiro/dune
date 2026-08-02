@@ -131,10 +131,12 @@ Same test for wasm:
 
 We can check the separate jsoo compilation with the different flags used:
 
-  $ ls _build/default/.parameterised/*/lib/lib!impl/.instance.objs/jsoo/*/
-  _build/default/.parameterised/dc92a2af50ca3cf185f22c258336dc33/lib/lib!impl/.instance.objs/jsoo/default/:
+  $ ls _build/default/.parameterised/*/lib/lib!impl/.instance.objs/jsoo/*/ | censor
+  _build/default/.parameterised/$DIGEST/lib/lib!impl/.instance.objs/jsoo/effects=disabled+toplevel=false+use-js-string=false/:
   archive.cma.js
-  archive.wasma
   
-  _build/default/.parameterised/dc92a2af50ca3cf185f22c258336dc33/lib/lib!impl/.instance.objs/jsoo/use-js-string+effects=double-translation/:
+  _build/default/.parameterised/$DIGEST/lib/lib!impl/.instance.objs/jsoo/effects=double-translation+toplevel=false+use-js-string=true/:
   archive.cma.js
+  
+  _build/default/.parameterised/$DIGEST/lib/lib!impl/.instance.objs/jsoo/effects=jspi+toplevel=false+use-js-string=false/:
+  archive.wasma

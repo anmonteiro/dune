@@ -1,5 +1,5 @@
 open Import
-include Dune_util.Action
+open Stdune.Action_types
 module Ext = Action_intf.Ext
 
 module type T = sig
@@ -24,7 +24,10 @@ module Make
 struct
   include Ast
 
-  let run prog args = Run (prog, Array.Immutable.of_list args)
+  let run prog args =
+    Run { prog; args = Appendable_list.of_list args; can_run_in_action_runner = true }
+  ;;
+
   let chdir path t = Chdir (path, t)
   let setenv var value t = Setenv (var, value, t)
 
@@ -50,7 +53,8 @@ struct
   let cat ps = Cat ps
   let copy a b = Copy (a, b)
   let symlink a b = Symlink (a, b)
-  let bash s = Bash s
+  let system s = System s
+  let bash script = Bash { script; can_run_in_action_runner = true }
   let write_file ?(perm = File_perm.Normal) p s = Write_file (p, perm, s)
   let rename a b = Rename (a, b)
   let remove_tree path = Remove_tree path
@@ -71,7 +75,7 @@ module Prog = struct
   module Not_found = struct
     type t =
       { context : Context_name.t
-      ; program : string
+      ; program : Filename.t
       ; hint : string option
       ; loc : Loc.t option
       }
@@ -79,14 +83,14 @@ module Prog = struct
     let create ?hint ~context ~program ~loc () = { hint; context; program; loc }
 
     let raise { context; program; hint; loc } =
-      Utils.program_not_found ?hint ~loc ~context program
+      Utils.program_not_found ?hint ~loc ~context (Filename.to_string program)
     ;;
 
     let to_dyn { context; program; hint; loc = _ } =
       let open Dyn in
       record
         [ "context", Context_name.to_dyn context
-        ; "program", string program
+        ; "program", Filename.to_dyn program
         ; "hint", option string hint
         ]
     ;;
@@ -180,7 +184,132 @@ let for_shell t =
     ~f_program:(fun ~dir x ->
       match x with
       | Ok p -> Path.reach p ~from:dir
-      | Error e -> e.program)
+      | Error e -> Filename.to_string e.program)
+;;
+
+let digest =
+  let open Dune_digest.Manual in
+  let digest_outputs d outputs = repr d Outputs.repr outputs in
+  let digest_inputs d inputs = repr d Inputs.repr inputs in
+  let digest_file_perm d perm = repr d File_perm.repr perm in
+  let digest_mode d mode = repr d Diff.Mode.repr mode in
+  let digest_program d ~dir (program : Prog.t) =
+    match program with
+    | Ok p -> string d (Path.reach p ~from:dir)
+    | Error e -> string d (Filename.to_string e.program)
+  in
+  let digest_path d ~dir path = string d (Path.reach path ~from:dir) in
+  let digest_target d ~dir target = string d (Path.reach (Path.build target) ~from:dir) in
+  let digest_ext d ~dir ((module A) : Encode_ext.t) =
+    repr
+      d
+      Sexp.repr
+      (A.Spec.encode
+         A.v
+         (fun p -> Sexp.Atom (Path.reach p ~from:dir))
+         (fun p -> Sexp.Atom (Path.reach (Path.build p) ~from:dir)))
+  in
+  let rec loop d t ~dir =
+    match t with
+    | Run { prog; args; can_run_in_action_runner = _ } ->
+      int d 0;
+      digest_program d ~dir prog;
+      int d (Appendable_list.length args);
+      Appendable_list.iter args ~f:(string d)
+    | With_accepted_exit_codes (pred, t) ->
+      int d 1;
+      repr d (Predicate_lang.repr Repr.int) pred;
+      loop d t ~dir
+    | Chdir (path, t) ->
+      int d 2;
+      digest_path d ~dir path;
+      loop d t ~dir:path
+    | Setenv (var, value, t) ->
+      int d 3;
+      string d var;
+      string d value;
+      loop d t ~dir
+    | Redirect_out (outputs, target, perm, t) ->
+      int d 4;
+      digest_outputs d outputs;
+      digest_target d ~dir target;
+      digest_file_perm d perm;
+      loop d t ~dir
+    | Redirect_in (inputs, path, t) ->
+      int d 5;
+      digest_inputs d inputs;
+      digest_path d ~dir path;
+      loop d t ~dir
+    | Ignore (outputs, t) ->
+      int d 6;
+      digest_outputs d outputs;
+      loop d t ~dir
+    | Progn ts ->
+      int d 7;
+      list d ts ~f:(fun d t -> loop d t ~dir)
+    | Concurrent ts ->
+      int d 8;
+      list d ts ~f:(fun d t -> loop d t ~dir)
+    | Echo xs ->
+      int d 9;
+      list d xs ~f:string
+    | Cat paths ->
+      int d 10;
+      list d paths ~f:(fun d path -> digest_path d ~dir path)
+    | Copy (src, dst) ->
+      int d 11;
+      digest_path d ~dir src;
+      digest_target d ~dir dst
+    | Symlink (src, dst) ->
+      int d 12;
+      let src =
+        match Path.Build.parent dst with
+        | None -> Path.to_string src
+        | Some from -> Path.reach ~from:(Path.build from) src
+      in
+      string d src;
+      digest_target d ~dir dst
+    | Hardlink (src, dst) ->
+      int d 13;
+      digest_path d ~dir src;
+      digest_target d ~dir dst
+    | Bash { script; can_run_in_action_runner = _ } ->
+      int d 14;
+      string d script
+    | Write_file (target, perm, contents) ->
+      int d 15;
+      digest_target d ~dir target;
+      digest_file_perm d perm;
+      string d contents
+    | Rename (src, dst) ->
+      int d 16;
+      digest_target d ~dir src;
+      digest_target d ~dir dst
+    | Remove_tree target ->
+      int d 17;
+      digest_target d ~dir target
+    | Mkdir target ->
+      int d 18;
+      digest_target d ~dir target
+    | Pipe (outputs, ts) ->
+      int d 19;
+      digest_outputs d outputs;
+      list d ts ~f:(fun d t -> loop d t ~dir)
+    | Diff { optional; mode; directory_diffs; file1; file2 } ->
+      int d 20;
+      bool d optional;
+      digest_mode d mode;
+      bool d directory_diffs;
+      digest_path d ~dir file1;
+      digest_target d ~dir file2
+    | Extension ext ->
+      int d 21;
+      digest_ext d ~dir ext
+    | System command ->
+      int d 22;
+      string d command
+  in
+  fun d t -> loop d t ~dir:Path.root
 ;;
 
 let fold_one_step t ~init:acc ~f =
@@ -198,6 +327,7 @@ let fold_one_step t ~init:acc ~f =
   | Copy _
   | Symlink _
   | Hardlink _
+  | System _
   | Bash _
   | Write_file _
   | Rename _
@@ -238,6 +368,7 @@ let rec is_dynamic = function
   | With_accepted_exit_codes (_, t) -> is_dynamic t
   | Progn l | Pipe (_, l) | Concurrent l -> List.exists l ~f:is_dynamic
   | Run _
+  | System _
   | Bash _
   | Echo _
   | Cat _
@@ -250,6 +381,27 @@ let rec is_dynamic = function
   | Diff _
   | Mkdir _ -> false
   | Extension (module A) -> A.Spec.is_dynamic
+;;
+
+let rec runs_process = function
+  | Chdir (_, t)
+  | Setenv (_, _, t)
+  | Redirect_out (_, _, _, t)
+  | Redirect_in (_, _, t)
+  | Ignore (_, t)
+  | With_accepted_exit_codes (_, t) -> runs_process t
+  | Progn l | Pipe (_, l) | Concurrent l -> List.exists l ~f:runs_process
+  | Run _ | System _ | Bash _ | Diff _ -> true
+  | Echo _
+  | Cat _
+  | Copy _
+  | Symlink _
+  | Hardlink _
+  | Write_file _
+  | Rename _
+  | Remove_tree _
+  | Mkdir _ -> false
+  | Extension (module A) -> A.Spec.runs_process
 ;;
 
 let maybe_sandbox_path sandbox p =
@@ -300,6 +452,7 @@ let is_useful_to memoize =
     | Diff _ -> false
     | Mkdir _ -> false
     | Run _ -> true
+    | System _ -> true
     | Bash _ -> true
     | Extension (module A) -> A.Spec.is_useful_to ~memoize
   in
@@ -371,7 +524,7 @@ module Full = struct
   ;;
 
   let map t ~f = { t with action = f t.action }
-  let add_env e t = { t with env = Env.extend_env t.env e }
+  let add_env e t = if Env.is_empty e then t else { t with env = Env.extend_env t.env e }
   let add_locks l t = { t with locks = t.locks @ l }
 
   let add_can_go_in_shared_cache b t =

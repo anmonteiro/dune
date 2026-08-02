@@ -28,19 +28,17 @@ Melange (installed) library depends on private library
   > EOF
 
   $ dune build @install --root lib
-  Entering directory 'lib'
-  Leaving directory 'lib'
   $ dune install --prefix $PWD/prefix --root lib --display short
   Installing $TESTCASE_ROOT/prefix/lib/foo/META
   Installing $TESTCASE_ROOT/prefix/lib/foo/__private__/priv/melange/.public_cmi_melange/priv.cmi
   Installing $TESTCASE_ROOT/prefix/lib/foo/__private__/priv/melange/.public_cmi_melange/priv.cmt
   Installing $TESTCASE_ROOT/prefix/lib/foo/__private__/priv/melange/priv.cmj
-  Installing $TESTCASE_ROOT/prefix/lib/foo/__private__/priv/priv.ml
+  Installing $TESTCASE_ROOT/prefix/lib/foo/__private__/priv/melange/priv.ml
   Installing $TESTCASE_ROOT/prefix/lib/foo/dune-package
-  Installing $TESTCASE_ROOT/prefix/lib/foo/foo.ml
   Installing $TESTCASE_ROOT/prefix/lib/foo/melange/foo.cmi
   Installing $TESTCASE_ROOT/prefix/lib/foo/melange/foo.cmj
   Installing $TESTCASE_ROOT/prefix/lib/foo/melange/foo.cmt
+  Installing $TESTCASE_ROOT/prefix/lib/foo/melange/foo.ml
 
   $ mkdir app
   $ cat > app/dune-project <<EOF
@@ -63,6 +61,4 @@ Melange (installed) library depends on private library
 Build the app that depends on `foo`, which in turn depends on a private lib
 
   $ OCAMLPATH=$PWD/prefix/lib/:$OCAMLPATH dune build @melange --root app
-  Entering directory 'app'
-  Leaving directory 'app'
 

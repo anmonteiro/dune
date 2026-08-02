@@ -16,23 +16,25 @@ We also check that .cmo.js rules are not generated if not specified.
 JS compilation of libraries is always available to avoid having to annotate
 every dependency of an executable.
 
-  $ dune build _build/default/.foo.objs/jsoo/default/foo.cma.js
+  $ dune build _build/default/.foo.objs/jsoo/effects=disabled/foo.cma.js
 
 Check that js targets are attached to @all, but not for tests that do not
 specify js mode (#1940).
 
   $ dune clean
   $ dune build @@all
-  $ dune trace cat | jq -r 'include "dune";
+  $ dune trace cat | jq_dune -r '
   >   processes
   > | select(.args.prog | test("js_of_ocaml$"))
-  > | .args | targets | .[] | sub("^_build/[^/]+/"; "")' | sort
+  > | .args | targets | .[] | sub("^_build/[^/]+/"; "")' \
+  > | sort \
+  > | censor
   .b.eobjs/jsoo/b.cmo.js
   .e.eobjs/jsoo/e.cmo.js
-  .foo.objs/jsoo/default/foo.cma.js
-  .js/default/.runtime/69326c30fc4a6ffc800b0a8e0b822993/runtime.bc.runtime.js
-  .js/default/stdlib/std_exit.cmo.js
-  .js/default/stdlib/stdlib.cma.js
+  .foo.objs/jsoo/effects=disabled/foo.cma.js
+  .js/effects=disabled/.runtime/$DIGEST/runtime.bc.runtime.js
+  .js/effects=disabled/stdlib/std_exit.cmo.js
+  .js/effects=disabled/stdlib/stdlib.cma.js
   b.bc.js
   e.bc.js
 

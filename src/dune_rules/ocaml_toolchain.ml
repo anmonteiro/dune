@@ -60,7 +60,12 @@ let best_mode t : Mode.t =
 
 let make name ~which ~env ~get_ocaml_tool =
   let not_found ?hint program =
-    Action.Prog.Not_found.create ?hint ~context:name ~loc:None ~program ()
+    Action.Prog.Not_found.create
+      ?hint
+      ~context:name
+      ~loc:None
+      ~program:(Filename.of_string_exn program)
+      ()
   in
   let* ocamlc =
     let program = "ocamlc" in
@@ -117,13 +122,13 @@ let of_env_with_findlib name env findlib_config ~which =
     get_tool_using_findlib_config program
     >>= function
     | Some x -> Memo.return (Some x)
-    | None -> which program
+    | None -> which (Filename.of_string_exn program)
   in
   let get_ocaml_tool ~dir prog =
     get_tool_using_findlib_config prog
     >>= function
     | Some x -> Memo.return (Some x)
-    | None -> Which.best_in_dir ~dir prog
+    | None -> Which.best_in_dir ~dir (Filename.of_string_exn prog)
   in
   make name ~env ~get_ocaml_tool ~which
 ;;
@@ -135,6 +140,7 @@ let of_binaries ~path name env binaries =
       |> Filename.Map.of_list_map_exn ~f:(fun binary -> Path.basename binary, binary)
     in
     fun basename ->
+      let basename = Filename.of_string_exn basename in
       match Which.candidates basename |> List.find_map ~f:(Filename.Map.find map) with
       | Some s -> Memo.return (Some s)
       | None -> Which.which ~path basename

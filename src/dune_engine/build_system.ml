@@ -5,32 +5,38 @@ module Error = Build_system_error
 module Progress = struct
   type t =
     { number_of_rules_discovered : int
-    ; number_of_rules_executed : int
+    ; number_of_rules_validated : int
     ; number_of_rules_failed : int
     }
 
-  let to_dyn t =
-    Dyn.record
-      [ "number_of_rules_discovered", Dyn.int t.number_of_rules_discovered
-      ; "number_of_rules_executed", Dyn.int t.number_of_rules_executed
-      ; "number_of_rules_failed", Dyn.int t.number_of_rules_failed
+  let repr =
+    Repr.record
+      "Progress"
+      [ Repr.field "number_of_rules_discovered" Repr.int ~get:(fun t ->
+          t.number_of_rules_discovered)
+      ; Repr.field "number_of_rules_validated" Repr.int ~get:(fun t ->
+          t.number_of_rules_validated)
+      ; Repr.field "number_of_rules_failed" Repr.int ~get:(fun t ->
+          t.number_of_rules_failed)
       ]
   ;;
 
-  let equal
-        { number_of_rules_discovered; number_of_rules_executed; number_of_rules_failed }
-        t
-    =
-    Int.equal number_of_rules_discovered t.number_of_rules_discovered
-    && Int.equal number_of_rules_executed t.number_of_rules_executed
-    && Int.equal number_of_rules_failed t.number_of_rules_failed
-  ;;
+  include Repr.Poly (struct
+      type nonrec t = t
+
+      let repr = repr
+    end)
 
   let init =
     { number_of_rules_discovered = 0
-    ; number_of_rules_executed = 0
+    ; number_of_rules_validated = 0
     ; number_of_rules_failed = 0
     }
+  ;;
+
+  (* Rules that have become live but whose value has not yet been validated this run. *)
+  let number_of_rules_in_progress t =
+    t.number_of_rules_discovered - t.number_of_rules_validated
   ;;
 end
 
@@ -44,69 +50,106 @@ module State = struct
     | Build_succeeded__now_waiting_for_changes
     | Build_failed__now_waiting_for_changes
 
-  let to_dyn = function
-    | Initializing -> Dyn.variant "Initializing" []
-    | Building progress -> Dyn.variant "Building" [ Progress.to_dyn progress ]
-    | Restarting_current_build -> Dyn.variant "Restarting_current_build" []
-    | Build_succeeded__now_waiting_for_changes ->
-      Dyn.variant "Build_succeeded__now_waiting_for_changes" []
-    | Build_failed__now_waiting_for_changes ->
-      Dyn.variant "Build_failed__now_waiting_for_changes" []
+  let repr =
+    Repr.variant
+      "State"
+      [ Repr.case0 "Initializing" ~test:(function
+          | Initializing -> true
+          | Building _
+          | Restarting_current_build
+          | Build_succeeded__now_waiting_for_changes
+          | Build_failed__now_waiting_for_changes -> false)
+      ; Repr.case "Building" Progress.repr ~proj:(function
+          | Building progress -> Some progress
+          | Initializing
+          | Restarting_current_build
+          | Build_succeeded__now_waiting_for_changes
+          | Build_failed__now_waiting_for_changes -> None)
+      ; Repr.case0 "Restarting_current_build" ~test:(function
+          | Restarting_current_build -> true
+          | Initializing
+          | Building _
+          | Build_succeeded__now_waiting_for_changes
+          | Build_failed__now_waiting_for_changes -> false)
+      ; Repr.case0 "Build_succeeded__now_waiting_for_changes" ~test:(function
+          | Build_succeeded__now_waiting_for_changes -> true
+          | Initializing
+          | Building _
+          | Restarting_current_build
+          | Build_failed__now_waiting_for_changes -> false)
+      ; Repr.case0 "Build_failed__now_waiting_for_changes" ~test:(function
+          | Build_failed__now_waiting_for_changes -> true
+          | Initializing
+          | Building _
+          | Restarting_current_build
+          | Build_succeeded__now_waiting_for_changes -> false)
+      ]
   ;;
 
-  let equal x y =
-    match x, y with
-    | Building x, Building y -> Progress.equal x y
-    | Initializing, Initializing
-    | Restarting_current_build, Restarting_current_build
-    | Build_succeeded__now_waiting_for_changes, Build_succeeded__now_waiting_for_changes
-    | Build_failed__now_waiting_for_changes, Build_failed__now_waiting_for_changes -> true
-    | Building _, _
-    | Initializing, _
-    | Restarting_current_build, _
-    | Build_succeeded__now_waiting_for_changes, _
-    | Build_failed__now_waiting_for_changes, _ -> false
-  ;;
+  let to_dyn = Repr.to_dyn repr
 
-  let t = Fiber.Svar.create Initializing
+  include Repr.Poly (struct
+      type nonrec t = t
+
+      let repr = repr
+    end)
+
+  (* The build progress lives in a plain [ref], not a [Fiber.Svar.t], so that [on_rule_event]
+     (a synchronous Memo callback) can update it. Observers (the status line, the RPC server)
+     read it directly or poll it; see [Rpc.Long_poll.Source.Computed]. *)
+  let t = ref Initializing
 
   (* This mutable table is safe: it maps paths to lazily created mutexes. *)
   let locks : (Path.t, Fiber.Mutex.t) Table.t = Table.create (module Path) 32
 
   (* This mutex ensures that at most one [run] is running in parallel. *)
   let build_mutex = Fiber.Mutex.create ()
-  let reset_progress () = Svar.write t (Building Progress.init)
-  let set what = Svar.write t what
+
+  let reset_progress () =
+    Metrics.Build.reset ();
+    t := Building Progress.init
+  ;;
+
+  let set what = t := what
 
   let update_build_progress_exn ~f =
-    let current = Svar.read t in
-    match current with
-    | Building current -> Svar.write t @@ Building (f current)
+    match !t with
+    | Building current -> t := Building (f current)
     | other ->
       Code_error.raise
         "Unexpected build progress state (expected [Building _])"
         [ "current", to_dyn other ]
   ;;
 
-  let incr_rule_done_exn () =
-    update_build_progress_exn ~f:(fun p ->
-      { p with number_of_rules_executed = p.number_of_rules_executed + 1 })
+  (* Like [update_build_progress_exn] but a no-op outside of a running build. Used by
+     [on_rule_event], which can fire from tests that drive the build engine directly. *)
+  let update_build_progress ~f =
+    match !t with
+    | Building progress -> t := Building (f progress)
+    | Initializing
+    | Restarting_current_build
+    | Build_succeeded__now_waiting_for_changes
+    | Build_failed__now_waiting_for_changes -> ()
   ;;
 
-  let start_rule_exn () =
-    update_build_progress_exn ~f:(fun p ->
-      { p with number_of_rules_discovered = p.number_of_rules_discovered + 1 })
+  (* Fired by Memo for rule and anonymous-action nodes. [Live] fires when a node becomes
+     live in the current run, so [number_of_rules_discovered] counts every live rule,
+     including ones restored from the cache - the true total. [Validated] fires when a
+     node's value is established for the run, advancing [number_of_rules_validated]. *)
+  let on_rule_event _input (event : Memo.Event.t) =
+    update_build_progress ~f:(fun p ->
+      match event with
+      | Live -> { p with number_of_rules_discovered = p.number_of_rules_discovered + 1 }
+      | Validated ->
+        { p with number_of_rules_validated = p.number_of_rules_validated + 1 })
   ;;
 
   let errors = Svar.create Error.Set.empty
   let reset_errors () = Svar.write errors Error.Set.empty
 
   let add_errors error_list =
-    let open Fiber.O in
-    let* () =
-      update_build_progress_exn ~f:(fun p ->
-        { p with number_of_rules_failed = p.number_of_rules_failed + 1 })
-    in
+    update_build_progress_exn ~f:(fun p ->
+      { p with number_of_rules_failed = p.number_of_rules_failed + 1 });
     List.fold_left error_list ~init:(Svar.read errors) ~f:Error.Set.add
     |> Svar.write errors
   ;;
@@ -120,124 +163,15 @@ let rec with_locks ~f = function
       ~f:(fun () -> with_locks ~f mutexes)
 ;;
 
-module Pending_targets = struct
-  (* All file and directory targets of non-sandboxed actions that are currently
-     being executed. On exit, we need to delete them as they might contain
-     garbage. *)
-
-  let t = ref Targets.empty
-  let remove targets = t := Targets.diff !t (Targets.Validated.unvalidate targets)
-  let add targets = t := Targets.combine !t (Targets.Validated.unvalidate targets)
-
-  let cleanup () =
-    let targets = !t in
-    t := Targets.empty;
-    Targets.iter
-      targets
-      ~file:(fun p -> p |> Path.Build.to_string |> Fpath.unlink_no_err)
-      ~dir:(fun p -> Path.rm_rf (Path.build p))
-  ;;
-end
-
 type rule_execution_result =
   { facts : Dep.Fact.t Dep.Map.t
   ; targets : Digest.t Targets.Produced.t
   }
 
-module type Rec = sig
-  (** Build all the transitive dependencies of the alias and return the alias
-      expansion. *)
-  val build_alias : Alias.t -> Dep.Fact.Files.t Memo.t
-
-  val build_file : Path.t -> Digest.t Memo.t
-  val build_dir : Path.t -> Digest.t Targets.Produced.t Memo.t
-  val build_dep : Dep.t -> Dep.Fact.t Memo.t
-  val build_deps : Dep.Set.t -> Dep.Facts.t Memo.t
-  val execute_rule : Rule.t -> rule_execution_result Memo.t
-
-  val execute_action
-    :  observing_facts:Dep.Facts.t
-    -> Rule.Anonymous_action.t
-    -> unit Memo.t
-
-  val execute_action_stdout
-    :  observing_facts:Dep.Facts.t
-    -> Rule.Anonymous_action.t
-    -> string Memo.t
-
-  val eval_pred : File_selector.t -> Filename_set.t Memo.t
-end
-
-(* Separation between [Used_recursively] and [Exported] is necessary because at
-   least one module in the recursive module group must be pure (i.e. only expose
-   functions). *)
-module rec Used_recursively : Rec = Exported
-
-and Exported : sig
-  include Rec
-
-  val execute_rule : Rule.t -> rule_execution_result Memo.t
-
-  type target_kind =
-    | File_target
-    | Dir_target of { targets : Digest.t Targets.Produced.t }
-
-  (* The below two definitions are useless, but if we remove them we get an
-     "Undefined_recursive_module" exception. *)
-
-  val build_file_memo : (Path.t, Digest.t * target_kind) Memo.Table.t Lazy.t
-  [@@warning "-32"]
-
-  val build_alias_memo : (Alias.t, Dep.Fact.Files.t) Memo.Table.t [@@warning "-32"]
-  val dep_on_alias_definition : Rules.Dir_rules.Alias_spec.item -> unit Action_builder.t
-end = struct
-  open Used_recursively
-
+module Internal = struct
   let file_selector_stack_frame_description file_selector =
     Pp.concat [ Pp.text (File_selector.to_dyn file_selector |> Dyn.to_string) ]
   ;;
-
-  let build_file_selector : File_selector.t -> Dep.Fact.t Memo.t =
-    let impl file_selector =
-      let* files = eval_pred file_selector in
-      let+ fact = Dep.Fact.Files.create files ~build_file in
-      (* Fact: [file_selector] expands to the set of [files] whose digests are captured
-         via [build_file]; also, the [File_selector.dir] exists (though it may be empty) *)
-      Dep.Fact.file_selector file_selector fact
-    in
-    let memo =
-      Memo.create
-        "build_file_selector"
-        ~input:(module File_selector)
-        ~cutoff:Dep.Fact.equal
-          (* CR-someday amokhov: Pass [file_selector_stack_frame_description] here to
-             include globs into stack traces. *)
-        ?human_readable_description:None
-        impl
-    in
-    fun file_selector -> Memo.exec memo file_selector
-  ;;
-
-  (* [build_dep] turns a [Dep.t] which is a description of a dependency into a
-     fact about the world. To do that, it needs to do some building. *)
-  let build_dep : Dep.t -> Dep.Fact.t Memo.t = function
-    | Alias a ->
-      let+ digests = build_alias a in
-      (* Fact: alias [a] expands to the set of file-digest pairs [digests] *)
-      Dep.Fact.alias a digests
-    | File f ->
-      (* Not necessarily a file, can also be a directory. *)
-      let+ digest = build_file f in
-      (* Fact: file [f] has digest [digest] *)
-      Dep.Fact.file f digest
-    | File_selector file_selector -> build_file_selector file_selector
-    | Universe | Env _ ->
-      (* Facts about these dependencies are constructed in
-         [Dep.Facts.digest]. *)
-      Memo.return Dep.Fact.nothing
-  ;;
-
-  let build_deps deps = Dep.Map.parallel_map deps ~f:(fun dep () -> build_dep dep)
 
   let select_sandbox_mode (config : Sandbox_config.t) ~loc ~sandboxing_preference =
     (* Rules with (mode patch-back-source-tree) are special and are not affected
@@ -273,9 +207,56 @@ end = struct
            ])
   ;;
 
+  let digest_target_paths d (rule : Rule.t) =
+    let digest_target_path name =
+      Path.Build.relative_fname rule.targets.root name
+      |> Path.Build.to_string
+      |> Digest.Manual.string d
+    in
+    Digest.Manual.int
+      d
+      (Filename.Set.cardinal rule.targets.files + Filename.Set.cardinal rule.targets.dirs);
+    Filename.Set.iter rule.targets.files ~f:digest_target_path;
+    Filename.Set.iter rule.targets.dirs ~f:digest_target_path
+  ;;
+
+  let digest_locks d locks =
+    Digest.Manual.list d locks ~f:(fun d path ->
+      Digest.Manual.string d (Path.to_string path))
+  ;;
+
+  let digest_sandbox_config d sandbox =
+    let flags =
+      (if Sandbox_config.mem sandbox None then 1 lsl 0 else 0)
+      lor (if Sandbox_config.mem sandbox (Some Sandbox_mode.Symlink) then 1 lsl 1 else 0)
+      lor (if Sandbox_config.mem sandbox (Some Sandbox_mode.Copy) then 1 lsl 2 else 0)
+      lor (if Sandbox_config.mem sandbox (Some Sandbox_mode.Hardlink) then 1 lsl 3 else 0)
+      lor
+      if Sandbox_config.mem sandbox (Some Sandbox_mode.Patch_back_source_tree)
+      then 1 lsl 4
+      else 0
+    in
+    Digest.Manual.int d flags
+  ;;
+
+  let digest_env_subset d deps env =
+    let count =
+      Dep.Set.fold deps ~init:0 ~f:(fun dep acc ->
+        match dep with
+        | Env _ -> acc + 1
+        | _ -> acc)
+    in
+    Digest.Manual.int d count;
+    Dep.Set.iter deps ~f:(function
+      | Env var ->
+        Digest.Manual.string d var;
+        Digest.Manual.option d ~f:Digest.Manual.string (Env.get env var)
+      | _ -> ())
+  ;;
+
   (* The current version of the rule digest scheme. We should increment it when
      making any changes to the scheme, to avoid collisions. *)
-  let rule_digest_version = 25
+  let rule_digest_version = 29
 
   let compute_rule_digest
         (rule : Rule.t)
@@ -294,36 +275,23 @@ end = struct
       =
       action
     in
-    let target_paths names =
-      Filename.Set.to_list_map names ~f:(fun name ->
-        Path.Build.relative rule.targets.root name |> Path.Build.to_string)
+    let execution_parameters =
+      if Action.runs_process action
+      then execution_parameters
+      else Execution_parameters.set_sandbox_actions false execution_parameters
     in
     let digest =
       let d = Digest.Manual.create () in
-      Digest.Manual.generic d rule_digest_version;
+      Digest.Manual.int d rule_digest_version;
       (* Update when changing the rule digest scheme. *)
-      Digest.Manual.generic d sandbox_mode;
+      Digest.Manual.repr d Sandbox_mode.repr sandbox_mode;
       Dep.Facts.digest facts d ~env;
-      Digest.Manual.generic
-        d
-        (target_paths rule.targets.files @ target_paths rule.targets.dirs);
-      Digest.Manual.generic d (Action.for_shell action);
-      Digest.Manual.generic d can_go_in_shared_cache;
-      Digest.Manual.generic d (List.map locks ~f:Path.to_string);
-      Digest.Manual.generic d corrections;
-      Digest.Manual.generic
-        d
-        (Execution_parameters.action_stdout_on_success execution_parameters);
-      Digest.Manual.generic
-        d
-        (Execution_parameters.action_stderr_on_success execution_parameters);
-      Digest.Manual.generic
-        d
-        (Execution_parameters.workspace_root_to_build_path_prefix_map
-           execution_parameters);
-      Digest.Manual.generic
-        d
-        (Execution_parameters.expand_aliases_in_sandbox execution_parameters);
+      digest_target_paths d rule;
+      Action.digest d action;
+      Digest.Manual.bool d can_go_in_shared_cache;
+      digest_locks d locks;
+      Digest.Manual.repr d Repr.(option Corrections.repr) corrections;
+      Digest.Manual.digest d (Execution_parameters.digest execution_parameters);
       Digest.Manual.get d
     in
     digest
@@ -332,7 +300,7 @@ end = struct
   let report_evaluated_rule_exn () =
     Dune_trace.emit Debug (fun () ->
       let rule_total =
-        match Fiber.Svar.read State.t with
+        match !State.t with
         | Building progress -> progress.number_of_rules_discovered
         | _ -> assert false
       in
@@ -363,7 +331,86 @@ end = struct
     | `Disabled -> Fiber.return (f ())
   ;;
 
-  let execute_action_for_rule
+  module Anonymous_action = struct
+    type t =
+      { action : Rule.Anonymous_action.t
+      ; deps : Dep.Set.t
+      ; capture_stdout : bool
+      ; digest : Digest.t
+      }
+
+    let equal a b = Digest.equal a.digest b.digest
+    let hash t = Digest.hash t.digest
+
+    let to_dyn t : Dyn.t =
+      Record [ "digest", Digest.to_dyn t.digest; "loc", Loc.to_dyn t.action.loc ]
+    ;;
+  end
+
+  (* CR-soon amokhov: Instead of wrapping the result into a variant, [build_file_impl]
+     could always return [targets : Digest.t Targets.Produced.t], and the latter could
+     provide a way to conveniently check if a specific [path] is a file or a directory,
+     as well as extract its digest when needed. *)
+  type target_kind =
+    | File_target
+    | Dir_target of
+        { targets :
+            (* All targets of the rule which produced the directory target in question. *)
+            Digest.t Targets.Produced.t
+        }
+
+  let target_kind_equal a b =
+    match a, b with
+    | File_target, File_target -> true
+    | Dir_target { targets = a }, Dir_target { targets = b } ->
+      Targets.Produced.equal a b ~equal:Digest.equal
+    | File_target, Dir_target _ | Dir_target _, File_target -> false
+  ;;
+
+  let rec build_alias alias = Memo.exec (Lazy.force build_alias_memo) alias
+  and build_file path = Memo.exec (Lazy.force build_file_memo) path >>| fst
+
+  and build_dir path =
+    let+ (_ : Digest.t), kind = Memo.exec (Lazy.force build_file_memo) path in
+    match kind with
+    | Dir_target { targets } -> targets
+    | File_target ->
+      Code_error.raise "build_dir called on a file target" [ "path", Path.to_dyn path ]
+
+  and eval_pred file_selector = Memo.exec (Lazy.force eval_pred_memo) file_selector
+  and execute_rule rule = Memo.exec (Lazy.force execute_rule_memo) rule
+
+  and build_file_selector (file_selector : File_selector.t) : Dep.Fact.t Memo.t =
+    Memo.exec (Lazy.force build_file_selector_memo) file_selector
+
+  and build_file_selector_impl file_selector =
+    let* files = eval_pred file_selector in
+    let+ fact = Dep.Fact.Files.create files ~build_file in
+    (* Fact: [file_selector] expands to the set of [files] whose digests are captured
+       via [build_file]; also, the [File_selector.dir] exists (though it may be empty) *)
+    Dep.Fact.file_selector file_selector fact
+
+  (* [build_dep] turns a [Dep.t] which is a description of a dependency into a
+     fact about the world. To do that, it needs to do some building. *)
+  and build_dep : Dep.t -> Dep.Fact.t Memo.t = function
+    | Alias a ->
+      let+ digests = build_alias a in
+      (* Fact: alias [a] expands to the set of file-digest pairs [digests] *)
+      Dep.Fact.alias a digests
+    | File f ->
+      (* Not necessarily a file, can also be a directory. *)
+      let+ digest = build_file f in
+      (* Fact: file [f] has digest [digest] *)
+      Dep.Fact.file f digest
+    | File_selector file_selector -> build_file_selector file_selector
+    | Universe | Env _ ->
+      (* Facts about these dependencies are constructed in
+         [Dep.Facts.digest]. *)
+      Memo.return Dep.Fact.nothing
+
+  and build_deps deps = Dep.Map.parallel_map deps ~f:(fun dep () -> build_dep dep)
+
+  and execute_action_for_rule
         ~rule_kind
         ~rule_digest
         ~action
@@ -385,129 +432,102 @@ end = struct
       =
       action
     in
-    let deps =
-      Dep.Facts.paths
-        ~expand_aliases:
-          (Execution_parameters.expand_aliases_in_sandbox execution_parameters)
-        facts
-    in
-    let* sandbox =
-      match sandbox_mode with
-      | Some mode ->
-        let+ sandbox =
-          Sandbox.create
-            ~mode
-            (Option.value ~default:Ignore corrections)
-            ~dirs:(Dep.Facts.necessary_dirs_for_sandboxing facts)
-            ~deps
-            ~rule_dir:targets.root
-            ~rule_loc:loc
-            ~rule_digest
+    let execute_action sandbox =
+      let is_sandboxed = Sandbox.is_sandboxed sandbox in
+      let action = if is_sandboxed then Action.sandbox action sandbox else action in
+      let action =
+        (* We must add the creation of the stamp file after sandboxing it, as
+           otherwise the stamp file would end up inside the sandbox. This is
+           especially a problem for the [Patch_back_source_tree] sandboxing
+           mode. *)
+        match rule_kind with
+        | Normal_rule -> action
+        | Anonymous_action { stamp_file; capture_stdout; _ } ->
+          if capture_stdout
+          then Action.with_stdout_to stamp_file action
+          else Action.progn [ action; Action.write_file stamp_file "" ]
+      in
+      let* () =
+        maybe_async_rule_file_op (fun () ->
+          Action.chdirs action
+          |> Path.Build.Set.iter ~f:(fun p -> Path.mkdir_p (Path.build p)))
+      in
+      let context = Build_context.of_build_path targets.root in
+      let root =
+        match context with
+        | None -> Path.Build.root
+        | Some context -> context.build_dir
+      in
+      let root = Path.build (Sandbox.map_path sandbox root) in
+      let action_trace = Action_trace.create rule_digest in
+      with_locks locks ~f:(fun () ->
+        let* action_exec_result =
+          let input =
+            let env = Action_trace.add_to_env action_trace env in
+            { Action_exec.root
+            ; context (* can be derived from the root *)
+            ; env
+            ; targets = Some targets
+            ; rule_loc = loc
+            ; execution_parameters
+            ; action
+            }
+          in
+          let build_deps deps = Memo.run (build_deps deps) in
+          Action_exec.exec input ~build_deps
         in
-        Some sandbox
-      | None ->
-        (* If the action is not sandboxed, we use [pending_file_targets] to
-           clean up the build directory if the action is interrupted. *)
-        Pending_targets.add targets;
-        Fiber.return None
+        let* action_exec_result = Action_exec.Exec_result.ok_exn action_exec_result in
+        let* () = Action_trace.collect action_trace in
+        let* () =
+          if not is_sandboxed
+          then Fiber.return ()
+          else (
+            (* The stamp file for anonymous actions is always created outside
+               the sandbox, so we can't move it. *)
+            let should_be_skipped =
+              match rule_kind with
+              | Normal_rule -> fun (_ : Path.Build.t) -> false
+              | Anonymous_action { stamp_file; _ } -> Path.Build.equal stamp_file
+            in
+            Sandbox.move_targets_to_build_dir sandbox ~should_be_skipped ~targets)
+        in
+        let+ produced_targets =
+          maybe_async_rule_file_op (fun () -> Targets.Produced.of_validated targets)
+        in
+        match produced_targets with
+        | Ok produced_targets -> { Exec_result.produced_targets; action_exec_result }
+        | Error error -> User_error.raise ~loc (Targets.Produced.Error.message error))
     in
-    let action =
-      match sandbox with
-      | None -> action
-      | Some sandbox -> Action.sandbox action sandbox
+    let deps, sandbox_dirs =
+      match sandbox_mode with
+      | None -> Path.Set.empty, Path.Build.Set.empty
+      | Some _ ->
+        ( Dep.Facts.paths
+            ~expand_aliases:
+              (Execution_parameters.expand_aliases_in_sandbox execution_parameters)
+            facts
+        , Dep.Facts.necessary_dirs_for_sandboxing facts )
     in
-    let action =
-      (* We must add the creation of the stamp file after sandboxing it, as
-         otherwise the stamp file would end up inside the sandbox. This is
-         especially a problem for the [Patch_back_source_tree] sandboxing
-         mode. *)
-      match rule_kind with
-      | Normal_rule -> action
-      | Anonymous_action { stamp_file; capture_stdout; _ } ->
-        if capture_stdout
-        then Action.with_stdout_to stamp_file action
-        else Action.progn [ action; Action.write_file stamp_file "" ]
-    in
-    let* () =
-      maybe_async_rule_file_op (fun () ->
-        Action.chdirs action
-        |> Path.Build.Set.iter ~f:(fun p -> Path.mkdir_p (Path.build p)))
-    in
-    let context = Build_context.of_build_path targets.root in
-    let root =
-      match context with
-      | None -> Path.Build.root
-      | Some context -> context.build_dir
-    in
-    let root =
-      Path.build
-        (match sandbox with
-         | None -> root
-         | Some sandbox -> Sandbox.map_path sandbox root)
-    in
-    let action_trace = Action_trace.create rule_digest in
-    Fiber.finalize
-      ~finally:(fun () ->
-        match sandbox with
-        | Some sandbox -> Sandbox.destroy sandbox
-        | None ->
-          Pending_targets.remove targets;
-          Fiber.return ())
-      (fun () ->
-         with_locks locks ~f:(fun () ->
-           let* action_exec_result =
-             let input =
-               let env = Action_trace.add_to_env action_trace env in
-               { Action_exec.root
-               ; context (* can be derived from the root *)
-               ; env
-               ; targets = Some targets
-               ; rule_loc = loc
-               ; execution_parameters
-               ; action
-               }
-             in
-             let build_deps deps = Memo.run (build_deps deps) in
-             Action_exec.exec input ~build_deps
-           in
-           let* action_exec_result = Action_exec.Exec_result.ok_exn action_exec_result in
-           let* () = Action_trace.collect action_trace in
-           let* () =
-             match sandbox with
-             | None -> Fiber.return ()
-             | Some sandbox ->
-               (* The stamp file for anonymous actions is always created outside
-                 the sandbox, so we can't move it. *)
-               let should_be_skipped =
-                 match rule_kind with
-                 | Normal_rule -> fun (_ : Path.Build.t) -> false
-                 | Anonymous_action { stamp_file; _ } -> Path.Build.equal stamp_file
-               in
-               Sandbox.move_targets_to_build_dir sandbox ~should_be_skipped ~targets
-           in
-           let+ produced_targets =
-             maybe_async_rule_file_op (fun () -> Targets.Produced.of_validated targets)
-           in
-           match produced_targets with
-           | Ok produced_targets -> { Exec_result.produced_targets; action_exec_result }
-           | Error error -> User_error.raise ~loc (Targets.Produced.Error.message error)))
-  ;;
+    Sandbox.with_
+      ~mode:sandbox_mode
+      (Option.value ~default:Ignore corrections)
+      ~rule_loc:loc
+      ~dirs:sandbox_dirs
+      ~deps
+      ~rule_dir:targets.root
+      ~rule_digest
+      ~targets
+      ~f:execute_action
 
-  let promote_targets ~rule_mode ~targets ~promote_source =
+  and promote_targets ~rule_mode ~targets ~promote_source =
     match rule_mode, !Clflags.promote with
     | (Rule.Mode.Standard | Fallback | Ignore_source_files), _ | Promote _, Some Never ->
       Fiber.return ()
     | Promote promote, (Some Automatically | None) ->
       Target_promotion.promote ~targets ~promote ~promote_source
-  ;;
 
-  let execute_rule_impl ~rule_kind rule =
+  and execute_rule_impl ~rule_kind rule =
     let { Rule.id = _; targets; mode; action; info = _; loc } = rule in
-    (* We run [State.start_rule_exn ()] entirely for its side effect, so one
-       might be tempted to use [Memo.of_non_reproducible_fiber] here but that is
-       wrong, because that would force us to rerun [execute_rule_impl] on every
-       incremental build. *)
-    let* () = Memo.of_reproducible_fiber (State.start_rule_exn ()) in
     let head_target = Targets.Validated.head targets in
     let* execution_parameters =
       match Dpath.Target_dir.of_target targets.root with
@@ -669,7 +689,6 @@ end = struct
                      .should_remove_write_permissions_on_generated_files
                        execution_parameters)
                   ~produced_targets:exec_result.produced_targets
-                  ~action:(fun () -> Action.for_shell action.action |> Action_to_sh.pp)
               in
               let dynamic_deps_stages =
                 List.map
@@ -692,38 +711,20 @@ end = struct
             ~targets_digest:(Targets.Produced.digest produced_targets);
           Fiber.return produced_targets
       in
-      let* () =
+      let+ () =
         promote_targets
           ~rule_mode:mode
           ~targets:produced_targets
           ~promote_source:config.promote_source
       in
-      let+ () = State.incr_rule_done_exn () in
       produced_targets)
     (* jeremidimino: We need to include the dependencies discovered while
        running the action here. Otherwise, package dependencies are broken in
        the presence of dynamic actions. *)
     >>| fun produced_targets -> { facts; targets = produced_targets }
-  ;;
-
-  module Anonymous_action = struct
-    type t =
-      { action : Rule.Anonymous_action.t
-      ; deps : Dep.Set.t
-      ; capture_stdout : bool
-      ; digest : Digest.t
-      }
-
-    let equal a b = Digest.equal a.digest b.digest
-    let hash t = Digest.hash t.digest
-
-    let to_dyn t : Dyn.t =
-      Record [ "digest", Digest.to_dyn t.digest; "loc", Loc.to_dyn t.action.loc ]
-    ;;
-  end
 
   (* Returns the action's stdout or the empty string if [capture_stdout = false]. *)
-  let execute_action_generic_stage2_impl
+  and execute_action_generic_stage2_impl
         { Anonymous_action.action = act; deps; capture_stdout; digest }
     =
     let target =
@@ -759,21 +760,8 @@ end = struct
              })
     in
     if capture_stdout then Io.read_file (Path.build target) else ""
-  ;;
 
-  let execute_action_generic_stage2_memo =
-    Memo.create
-      "execute-action"
-      ~input:(module Anonymous_action)
-      ~cutoff:String.equal
-      execute_action_generic_stage2_impl
-  ;;
-
-  (* The current version of the action digest scheme. We should increment it when
-     making any changes to the scheme, to avoid collisions. *)
-  let action_digest_version = 5
-
-  let execute_action_generic
+  and execute_action_generic
         ~observing_facts
         (act : Rule.Anonymous_action.t)
         ~capture_stdout
@@ -813,7 +801,9 @@ end = struct
         =
         act
       in
-      let env =
+      let digest =
+        let d = Digest.Manual.create () in
+        Digest.Manual.int d rule_digest_version;
         (* Here we restrict the environment to only the variables we depend on,
            so that we don't re-execute all actions when some irrelevant
            environment variable changes.
@@ -822,25 +812,19 @@ end = struct
            command, however that might be tedious to do in practice. See this
            ticket for a longer discussion about the management of the
            environment: https://github.com/ocaml/dune/issues/4382 *)
-        Dep.Set.fold deps ~init:Env.Map.empty ~f:(fun dep acc ->
-          match dep with
-          | Env var -> Env.Map.set acc var (Env.get env var)
-          | _ -> acc)
-        |> Env.Map.to_list
-      in
-      let digest =
-        let d = Digest.Manual.create () in
-        Digest.Manual.generic d action_digest_version;
-        Digest.Manual.generic d env;
+        digest_env_subset d deps env;
         Dep.Set.digest deps d;
-        Digest.Manual.generic d (Action.for_shell action);
-        Digest.Manual.generic d (List.map locks ~f:Path.to_string);
-        Digest.Manual.generic d dir;
-        Digest.Manual.generic d alias;
-        Digest.Manual.generic d capture_stdout;
-        Digest.Manual.generic d can_go_in_shared_cache;
-        Digest.Manual.generic d sandbox;
-        Digest.Manual.generic d corrections;
+        Action.digest d action;
+        digest_locks d locks;
+        Digest.Manual.string d (Path.Build.to_string dir);
+        Digest.Manual.option
+          d
+          ~f:(fun d alias -> Digest.Manual.string d (Alias.Name.to_string alias))
+          alias;
+        Digest.Manual.bool d capture_stdout;
+        Digest.Manual.bool d can_go_in_shared_cache;
+        digest_sandbox_config d sandbox;
+        Digest.Manual.repr d Repr.(option Corrections.repr) corrections;
         Digest.Manual.get d
       in
       digest
@@ -852,44 +836,33 @@ end = struct
        same file. Using [Memo.create] serves as a synchronisation point to share
        the execution and avoid such a race condition. *)
     Memo.exec
-      execute_action_generic_stage2_memo
-      { action = act; deps; capture_stdout; digest }
-  ;;
+      (Lazy.force execute_action_generic_stage2_memo)
+      { Anonymous_action.action = act; deps; capture_stdout; digest }
 
-  let execute_action ~observing_facts act =
+  and execute_action ~observing_facts act =
     let+ (_empty_string : string) =
       execute_action_generic ~observing_facts act ~capture_stdout:false
     in
     ()
-  ;;
 
-  let execute_action_stdout ~observing_facts act =
-    execute_action_generic ~observing_facts act ~capture_stdout:true
-  ;;
-
-  (* CR-soon amokhov: Instead of wrapping the result into a variant, [build_file_impl]
-     could always return [targets : Digest.t Targets.Produced.t], and the latter could
-     provide a way to conveniently check if a specific [path] is a file or a directory,
-     as well as extract its digest when needed. *)
-  type target_kind =
-    | File_target
-    | Dir_target of
-        { targets :
-            (* All targets of the rule which produced the directory target in question. *)
-            Digest.t Targets.Produced.t
-        }
-
-  let target_kind_equal a b =
-    match a, b with
-    | File_target, File_target -> true
-    | Dir_target { targets = a }, Dir_target { targets = b } ->
-      Targets.Produced.equal a b ~equal:Digest.equal
-    | File_target, Dir_target _ | Dir_target _, File_target -> false
-  ;;
+  and execute_action_stdout action =
+    let* action, observing_facts = Action_builder.evaluate_and_collect_facts action in
+    execute_action_generic ~observing_facts action ~capture_stdout:true
 
   (* A rule can have multiple targets but calls to [execute_rule] are memoized,
      so the rule will be executed only once. *)
-  let build_file_impl path =
+  and build_file_impl path =
+    let directory_digest contents =
+      Digest.Feed.compute_digest
+        (fun hasher contents ->
+           Targets.Produced.iteri_dir_contents
+             contents
+             ~d:(fun d -> Digest.Feed.string hasher (Path.Local.to_string d))
+             ~f:(fun path digest ->
+               Digest.Feed.digest hasher digest;
+               Digest.Feed.string hasher (Path.Local.to_string path)))
+        contents
+    in
     Load_rules.get_rule_or_source path
     >>= function
     | Source digest -> Memo.return (digest, File_target)
@@ -903,29 +876,19 @@ end = struct
       (match Targets.Produced.find_any targets path with
        | Some (Left digest) -> Memo.return (digest, File_target)
        | Some (Right contents) ->
-         let digest =
-           Digest.Feed.compute_digest
-             (fun hasher contents ->
-                Targets.Produced.iteri_dir_contents
-                  contents
-                  ~d:(fun d -> Digest.Feed.string hasher (Path.Local.to_string d))
-                  ~f:(fun path digest ->
-                    Digest.Feed.digest hasher digest;
-                    Digest.Feed.string hasher (Path.Local.to_string path)))
-             contents
-         in
+         let digest = directory_digest contents in
          Memo.return (digest, Dir_target { targets })
        | None ->
          (* CR-someday amokhov: The most important reason we end up here is
-            [No_such_file]. I think some of the outcomes above are impossible
-            but some others will benefit from a better error. To be refined. *)
+          [No_such_file]. I think some of the outcomes above are impossible
+          but some others will benefit from a better error. To be refined. *)
          let target =
            Path.Build.drop_build_context_exn path |> Path.Source.to_string_maybe_quoted
          in
          let matching_dirs =
            Filename.Set.to_list_map rule.targets.dirs ~f:(fun dir ->
              (* CR-someday rleshchinskiy: This test can probably be simplified. *)
-             let dir = Path.Build.relative rule.targets.root dir in
+             let dir = Path.Build.relative_fname rule.targets.root dir in
              match Path.Build.is_descendant path ~of_:dir with
              | true -> [ dir ]
              | false -> [])
@@ -949,26 +912,22 @@ end = struct
                matching_target
                target
            ])
-  ;;
 
-  let execute_anonymous_action action =
+  and execute_anonymous_action action =
     let* action, facts = Action_builder.evaluate_and_collect_facts action in
     execute_action action ~observing_facts:facts
-  ;;
 
-  let dep_on_anonymous_action (action : Rule.Anonymous_action.t Action_builder.t)
+  and dep_on_anonymous_action (action : Rule.Anonymous_action.t Action_builder.t)
     : unit Action_builder.t
     =
     Action_builder.record_success (Memo.of_thunk_apply execute_anonymous_action action)
-  ;;
 
-  let dep_on_alias_definition (definition : Rules.Dir_rules.Alias_spec.item) =
+  and dep_on_alias_definition (definition : Rules.Dir_rules.Alias_spec.item) =
     match definition with
     | Deps x -> x
     | Action x -> dep_on_anonymous_action x
-  ;;
 
-  let build_alias_impl alias =
+  and build_alias_impl alias =
     let+ l =
       Load_rules.get_alias_definition alias
       >>= Memo.parallel_map ~f:(fun (loc, definition) ->
@@ -980,9 +939,8 @@ end = struct
           ~human_readable_description:(fun () -> Alias.describe alias ~loc))
     in
     Dep.Facts.group_paths_as_fact_files l
-  ;;
 
-  let eval_pred_impl g =
+  and eval_pred_impl g =
     let dir = File_selector.dir g in
     (* CR-soon amokhov: Change [Load_rules.load_dir] to return [Filename_set.t]s to save
        a bunch of set/list operations and reduce code duplication. *)
@@ -1004,7 +962,8 @@ end = struct
           | _ ->
             let basename = Path.Build.basename path in
             if File_selector.test_basename g ~basename then basename :: acc else acc)
-      |> Filename.Set.of_list
+      |> List.rev
+      |> Filename.Array.Set.of_sorted_list
       |> Filename_set.create ~dir
       |> Memo.return
     | Build_under_directory_target { directory_target_ancestor = _ } ->
@@ -1016,86 +975,89 @@ end = struct
          Filename_set.create
            ~dir
            ~filter:(File_selector.test_basename g)
-           (Filename.Set.of_keys files_and_digests)
+           (Filename.Map.keys files_and_digests |> Filename.Array.Set.of_sorted_list)
        | None ->
          (* CR-soon amokhov: I think this case should be an error. If the directory target
             doesn't contain the requested dir, we will currently create an empty directory
             in the sandbox, as if it actually existed. *)
          Filename_set.empty ~dir)
-  ;;
 
-  let eval_pred_memo =
-    Memo.create
-      "eval-pred"
-      ~human_readable_description:file_selector_stack_frame_description
-      ~input:(module File_selector)
-      ~cutoff:Filename_set.equal
-      eval_pred_impl
-  ;;
-
-  let eval_pred = Memo.exec eval_pred_memo
-
-  let build_file_memo =
+  and build_file_selector_memo =
     lazy
-      (let cutoff =
-         match Config.(get cutoffs_that_reduce_concurrency_in_watch_mode) with
-         | `Disabled -> None
-         | `Enabled -> Some (Tuple.T2.equal Digest.equal target_kind_equal)
-       in
-       Memo.create_with_store
+      (Memo.create
+         "build_file_selector"
+         ~input:(module File_selector)
+         ~cutoff:Dep.Fact.equal
+           (* CR-someday amokhov: Pass [file_selector_stack_frame_description] here to
+              include globs into stack traces. *)
+         ?human_readable_description:None
+         build_file_selector_impl)
+
+  and execute_action_generic_stage2_memo =
+    lazy
+      (Memo.create
+         "execute-action"
+         ~input:(module Anonymous_action)
+         ~cutoff:String.equal
+         ~on_event:State.on_rule_event
+         execute_action_generic_stage2_impl)
+
+  and eval_pred_memo =
+    lazy
+      (Memo.create
+         "eval-pred"
+         ~human_readable_description:file_selector_stack_frame_description
+         ~input:(module File_selector)
+         ~cutoff:Filename_set.equal
+         eval_pred_impl)
+
+  and build_file_memo =
+    lazy
+      (Memo.create_with_store
          "build-file"
          ~store:(module Path.Table)
          ~input:(module Path)
-         ?cutoff
+         ~cutoff:(Tuple.T2.equal Digest.equal target_kind_equal)
          build_file_impl)
+
+  and build_alias_memo =
+    lazy
+      (Memo.create
+         "build-alias"
+         ~input:(module Alias)
+         ~cutoff:Dep.Fact.Files.equal
+         build_alias_impl)
+
+  and execute_rule_memo =
+    lazy
+      (Memo.create
+         "execute-rule"
+         ~input:(module Rule)
+         ~on_event:State.on_rule_event
+         (execute_rule_impl ~rule_kind:Normal_rule))
   ;;
-
-  let build_file path = Memo.exec (Lazy.force build_file_memo) path >>| fst
-
-  let build_dir path =
-    let+ (_ : Digest.t), kind = Memo.exec (Lazy.force build_file_memo) path in
-    match kind with
-    | Dir_target { targets } -> targets
-    | File_target ->
-      Code_error.raise "build_dir called on a file target" [ "path", Path.to_dyn path ]
-  ;;
-
-  let build_alias_memo =
-    Memo.create
-      "build-alias"
-      ~input:(module Alias)
-      ~cutoff:Dep.Fact.Files.equal
-      build_alias_impl
-  ;;
-
-  let build_alias = Memo.exec build_alias_memo
-
-  let execute_rule_memo =
-    Memo.create
-      "execute-rule"
-      ~input:(module Rule)
-      (execute_rule_impl ~rule_kind:Normal_rule)
-  ;;
-
-  let execute_rule = Memo.exec execute_rule_memo
 
   let () =
     Load_rules.set_current_rule_loc (fun () ->
       let+ stack = Memo.get_call_stack () in
       List.find_map stack ~f:(fun frame ->
-        match Memo.Stack_frame.as_instance_of frame ~of_:execute_rule_memo with
+        match
+          Memo.Stack_frame.as_instance_of
+            frame
+            ~of_:(Memo.Table.spec (Lazy.force execute_rule_memo))
+        with
         | Some r -> Some (Rule.loc r)
         | None ->
           Option.bind
             (Memo.Stack_frame.as_instance_of
                frame
-               ~of_:execute_action_generic_stage2_memo)
+               ~of_:(Memo.Table.spec (Lazy.force execute_action_generic_stage2_memo)))
             ~f:(fun (x : Anonymous_action.t) ->
               Option.some_if (not @@ Loc.is_none x.action.loc) x.action.loc)))
   ;;
 end
 
-include Exported
+include Internal
 
 (* Here we are doing a O(log |S|) lookup in a set S of files in the build
    directory [dir]. We could memoize these lookups, but it doesn't seem to be
@@ -1109,7 +1071,7 @@ let file_exists fn =
   Load_rules.load_dir ~dir:(Path.parent_exn fn)
   >>= function
   | Source { filenames } | External { filenames } ->
-    Filename.Set.mem filenames (Path.basename fn) |> Memo.return
+    Filename.Array.Set.mem filenames (Path.basename fn) |> Memo.return
   | Build { rules_here; _ } ->
     Memo.return
       (Path.Build.Map.mem rules_here.by_file_targets (Path.as_in_build_dir_exn fn))
@@ -1126,7 +1088,8 @@ let files_of ~dir =
     Memo.return (Filename_set.create ~dir filenames)
   | Build { rules_here; _ } ->
     Path.Build.Map.keys rules_here.by_file_targets
-    |> Filename.Set.of_list_map ~f:Path.Build.basename
+    |> List.map ~f:Path.Build.basename
+    |> Filename.Array.Set.of_sorted_list
     |> Filename_set.create ~dir
     |> Memo.return
   | Build_under_directory_target { directory_target_ancestor } ->
@@ -1134,8 +1097,8 @@ let files_of ~dir =
     let filenames =
       let dir = Path.as_in_build_dir_exn dir in
       match Targets.Produced.find_dir path_map dir with
-      | Some files -> Filename.Set.of_keys files
-      | None -> Filename.Set.empty
+      | Some files -> Filename.Map.keys files |> Filename.Array.Set.of_sorted_list
+      | None -> Filename.Array.Set.empty
     in
     Filename_set.create ~dir filenames
 ;;
@@ -1159,7 +1122,7 @@ let report_early_exn exn =
     let+ () = State.add_errors errors
     and+ () =
       match !Clflags.stop_on_first_error with
-      | true -> Scheduler.cancel_current_build ()
+      | true -> Process.Build.cancel_current ()
       | false -> Fiber.return ()
     in
     (match !Clflags.report_errors_config with
@@ -1170,34 +1133,62 @@ let report_early_exn exn =
 let handle_final_exns exns =
   match !Clflags.report_errors_config with
   | Early -> ()
-  | Twice | Deterministic ->
-    let report exn =
-      if not (caused_by_cancellation exn) then Dune_util.Report_error.report exn
-    in
-    List.iter exns ~f:report
+  | Deterministic ->
+    List.iter exns ~f:(fun exn ->
+      if not (caused_by_cancellation exn) then Dune_util.Report_error.report exn)
+  | Twice ->
+    (match List.filter exns ~f:(fun exn -> not (caused_by_cancellation exn)) with
+     | [] -> ()
+     | exns ->
+       Console.print [ Pp.verbatim "==== Error Summary ====" ];
+       List.iter exns ~f:Dune_util.Report_error.report)
 ;;
 
-let run f =
-  let finalize_diff_promotion () =
-    protect ~f:Diff_promotion.finalize ~finally:Diff_promotion.clear_cache
+let run_with_error_collection ?restart_started_at ~build_started_at ~build collect_errors =
+  let build =
+    match build with
+    | Some build -> build
+    | None ->
+      (match Process.Build.get () with
+       | Some build -> build
+       | None ->
+         Process.Build.create
+           ~action_runner:None
+           ~run_id:Batch
+           ~cancellation:(Fiber.Cancel.create ()))
   in
+  let run_id = Process.Build.run_id build in
   let open Fiber.O in
   let f () =
-    let* () = State.reset_progress () in
+    Dune_trace.emit ~buffered:false Build (fun () ->
+      Dune_trace.Event.watch_build_start
+        ~run_id:(Run_id.to_int run_id)
+        ~restart:(Option.is_some restart_started_at)
+        ~start:build_started_at);
+    Dune_trace.reset_alloc_profile ();
+    (* CR-someday amokhov: Currently we invalidate cached timestamps on every
+       incremental rebuild. This conservative approach helps us to work around
+       some [mtime] resolution problems (e.g. on Mac OS). It would be nice to
+       find a way to avoid doing this. In fact, this may be unnecessary even
+       for the initial build if we assume that the user does not modify files
+       in the [_build] directory. For now, it's unclear if optimising this is
+       worth the effort. *)
+    Fs_memo.invalidate_cached_timestamps ();
+    State.reset_progress ();
     let* () = State.reset_errors () in
-    let* res =
-      Fiber.collect_errors (fun () ->
-        Memo.run_with_error_handler f ~handle_error_no_raise:report_early_exn)
-    in
+    let* outcome = collect_errors () in
     Dtemp.clear ();
-    Pending_targets.cleanup ();
+    Sandbox.cleanup_pending_targets ();
     Target_promotion.save ();
-    let res =
-      match res with
+    let* outcome =
+      let finalize_diff_promotion () =
+        protect ~f:Diff_promotion.finalize ~finally:Diff_promotion.clear_cache
+      in
+      match outcome with
       | Ok res ->
         finalize_diff_promotion ();
-        let+ () = State.set Build_succeeded__now_waiting_for_changes in
-        Ok res
+        State.set Build_succeeded__now_waiting_for_changes;
+        Fiber.return (Ok res)
       | Error exns ->
         handle_final_exns exns;
         finalize_diff_promotion ();
@@ -1206,13 +1197,150 @@ let run f =
           then State.Restarting_current_build
           else Build_failed__now_waiting_for_changes
         in
-        let+ () = State.set final_status in
-        Error `Already_reported
+        State.set final_status;
+        Fiber.return (Error `Already_reported)
     in
     Metrics.reset ();
-    res
+    let+ () = Scheduler.flush_file_watcher () in
+    Dune_trace.emit Build (fun () ->
+      let stop = Time.now () in
+      let restart_duration =
+        Option.map restart_started_at ~f:(fun restart_started_at ->
+          Time.diff stop restart_started_at)
+      in
+      Dune_trace.Event.watch_build_finish
+        ~run_id:(Run_id.to_int run_id)
+        ~outcome:
+          (match outcome with
+           | Ok _ -> `Success
+           | Error `Already_reported -> `Failure)
+        ~start:build_started_at
+        ~stop
+        ~restart_duration);
+    Dune_trace.capture_alloc_profile (`Build (Run_id.to_int run_id))
+    |> Option.iter ~f:Dune_trace.always_emit;
+    outcome
   in
-  Fiber.Mutex.with_lock State.build_mutex ~f
+  Fiber.Mutex.with_lock State.build_mutex ~f:(fun () -> Process.Build.with_ build f)
+;;
+
+let evaluate_action_builder request =
+  let+ (), (_ : Dep.Fact.t Dep.Map.t) =
+    Action_builder.evaluate_and_collect_facts request
+  in
+  ()
+;;
+
+module Request = struct
+  module Goal = struct
+    type t =
+      { build : unit Action_builder.t
+      ; outcome : Build_outcome.t Fiber.Ivar.t
+      }
+
+    let create build = { build; outcome = Fiber.Ivar.create () }
+    let await t = Fiber.Ivar.read t.outcome
+    let is_finished t = Option.is_some (Fiber.Ivar.peek t.outcome)
+
+    let complete t outcome =
+      Fiber.of_thunk (fun () ->
+        match Fiber.Ivar.peek t.outcome with
+        | Some _ -> Fiber.return ()
+        | None -> Fiber.Ivar.fill t.outcome outcome)
+    ;;
+
+    let build t = t.build
+  end
+
+  type completion =
+    | Complete_goals
+    | Do_not_complete_goals
+
+  type t =
+    { goals : Goal.t list
+    ; mutable completion : completion
+    }
+
+  let create goals = { goals; completion = Complete_goals }
+  let cancel_completion t = t.completion <- Do_not_complete_goals
+  let goals t = t.goals
+end
+
+let complete_action_runner_build = function
+  | None -> Fiber.return ()
+  | Some build ->
+    (match Process.Build.action_runner build with
+     | None -> Fiber.return ()
+     | Some action_runner ->
+       Action_runner.complete_build
+         action_runner
+         ~run_id:(Process.Build.run_id build)
+         ~cancellation:(Process.Build.cancellation build))
+;;
+
+let run_build_requests ?restart_started_at ~build_started_at ?build (request : Request.t) =
+  let open Fiber.O in
+  let finish_request goal outcome =
+    let* pending =
+      let pending = Diff_promotion.has_pending () in
+      let+ () =
+        (* Process source invalidations before completing the request; an
+           invalidation may cancel completion so the request waits for the
+           restarted build instead of receiving a stale result. *)
+        Scheduler.flush_file_watcher ()
+      in
+      pending
+    in
+    match request.completion, !Clflags.promote with
+    | Do_not_complete_goals, _ -> Fiber.return ()
+    | Complete_goals, Some Automatically when pending -> Fiber.return ()
+    | Complete_goals, _ -> Request.Goal.complete goal outcome
+  in
+  let run_request goal =
+    Fiber.collect_errors (fun () ->
+      Memo.run_with_error_handler ~handle_error_no_raise:report_early_exn (fun () ->
+        Request.Goal.build goal |> evaluate_action_builder))
+    >>= function
+    | Ok () ->
+      let+ () = finish_request goal Success in
+      Ok ()
+    | Error exns when List.for_all exns ~f:caused_by_cancellation ->
+      Fiber.return (Error exns)
+    | Error exns ->
+      let+ () = finish_request goal Failure in
+      Error exns
+  in
+  Fiber.finalize
+    ~finally:(fun () -> complete_action_runner_build build)
+    (fun () ->
+       run_with_error_collection ?restart_started_at ~build_started_at ~build (fun () ->
+         Request.goals request
+         |> Fiber.parallel_map ~f:run_request
+         >>| List.concat_map ~f:(function
+           | Ok () -> []
+           | Error exns -> exns)
+         >>| function
+         | [] -> Ok ()
+         | exns -> Error exns))
+;;
+
+let run ?restart_started_at ?build f =
+  let result = ref None in
+  let goal =
+    let open Memo.O in
+    Action_builder.of_memo
+      (let+ result_value = f () in
+       result := Some result_value)
+  in
+  let request = Request.create [ Request.Goal.create goal ] in
+  let open Fiber.O in
+  run_build_requests ?restart_started_at ~build_started_at:(Time.now ()) ?build request
+  >>| function
+  | Error `Already_reported -> Error `Already_reported
+  | Ok () ->
+    (match !result with
+     | Some result -> Ok result
+     | None -> Code_error.raise "build request did not produce a result" [])
 ;;
 
 let run_exn f =

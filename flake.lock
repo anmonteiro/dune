@@ -1,23 +1,5 @@
 {
   "nodes": {
-    "flake-utils": {
-      "inputs": {
-        "systems": "systems"
-      },
-      "locked": {
-        "lastModified": 1731533236,
-        "narHash": "sha256-l0KFg5HjrsfsO/JpG+r7fRrqm12kzFHyUHqHCVpMMbI=",
-        "owner": "numtide",
-        "repo": "flake-utils",
-        "rev": "11707dc2f618dd54ca8739b309ec4fc024de578b",
-        "type": "github"
-      },
-      "original": {
-        "owner": "numtide",
-        "repo": "flake-utils",
-        "type": "github"
-      }
-    },
     "melange": {
       "inputs": {
         "melange-compiler-libs": "melange-compiler-libs",
@@ -26,16 +8,16 @@
         ]
       },
       "locked": {
-        "lastModified": 1772436048,
-        "narHash": "sha256-/RWEvZeNeag3EKRFS9jIyaDLzl0kpmKEKq0htvDMg9g=",
+        "lastModified": 1783843147,
+        "narHash": "sha256-lT+PtjJ6l6eQGhd/2szsj9alpV5tn/0uouC3OkeTeX0=",
         "owner": "melange-re",
         "repo": "melange",
-        "rev": "0c7fbb6b6734d54e60b7e73d2d696ec31e90a0c8",
+        "rev": "08cd3ca8fcc9ec2a75ebacb5f86f336467cd2e6c",
         "type": "github"
       },
       "original": {
         "owner": "melange-re",
-        "ref": "v6-54",
+        "ref": "v7-55",
         "repo": "melange",
         "type": "github"
       }
@@ -48,86 +30,33 @@
         ]
       },
       "locked": {
-        "lastModified": 1760240634,
-        "narHash": "sha256-cmPZs92Vva6X06E8MreMVn6Yu5gqZtAYLJRweTEWwRY=",
+        "lastModified": 1783838866,
+        "narHash": "sha256-6WDLbI7JSXTCFCj3oVqREtU8/c0D+92ULZUR0OrjLxE=",
         "owner": "melange-re",
         "repo": "melange-compiler-libs",
-        "rev": "b8d6659bfe3045938afa83f37b7c357c052d10c7",
+        "rev": "1a75cd25bb0816c047941be084bf5f9527cbbf05",
         "type": "github"
       },
       "original": {
         "owner": "melange-re",
-        "ref": "5.4",
+        "ref": "5.5",
         "repo": "melange-compiler-libs",
-        "type": "github"
-      }
-    },
-    "nix-github-actions": {
-      "inputs": {
-        "nixpkgs": [
-          "oxcaml",
-          "nixpkgs"
-        ]
-      },
-      "locked": {
-        "lastModified": 1737420293,
-        "narHash": "sha256-F1G5ifvqTpJq7fdkT34e/Jy9VCyzd5XfJ9TO8fHhJWE=",
-        "owner": "nix-community",
-        "repo": "nix-github-actions",
-        "rev": "f4158fa080ef4503c8f4c820967d946c2af31ec9",
-        "type": "github"
-      },
-      "original": {
-        "owner": "nix-community",
-        "repo": "nix-github-actions",
         "type": "github"
       }
     },
     "nixpkgs": {
       "locked": {
-        "lastModified": 1774273680,
-        "narHash": "sha256-a++tZ1RQsDb1I0NHrFwdGuRlR5TORvCEUksM459wKUA=",
+        "lastModified": 1784872115,
+        "narHash": "sha256-THPEF2po0fsoH8gNtp+Ae0XFDJH3N/ol7xO3v6VMTJU=",
         "owner": "nixos",
         "repo": "nixpkgs",
-        "rev": "fdc7b8f7b30fdbedec91b71ed82f36e1637483ed",
+        "rev": "335f0738cb2fa9708f3f428e39d2eae975d1338d",
         "type": "github"
       },
       "original": {
         "owner": "nixos",
         "ref": "nixpkgs-unstable",
         "repo": "nixpkgs",
-        "type": "github"
-      }
-    },
-    "nixpkgs-old": {
-      "locked": {
-        "lastModified": 1746662029,
-        "narHash": "sha256-2lFR2IQHaaUA5X2JMzQ3SGkj5IXFU/ztqpKD4I6vWCw=",
-        "owner": "nixos",
-        "repo": "nixpkgs",
-        "rev": "7f50d4b33363d3948543f6a02b90a2c66852a453",
-        "type": "github"
-      },
-      "original": {
-        "owner": "nixos",
-        "repo": "nixpkgs",
-        "rev": "7f50d4b33363d3948543f6a02b90a2c66852a453",
-        "type": "github"
-      }
-    },
-    "nixpkgs_2": {
-      "locked": {
-        "lastModified": 1762233356,
-        "narHash": "sha256-cGS3lLTYusbEP/IJIWGgnkzIl+FA5xDvtiHyjalGr4k=",
-        "owner": "NixOS",
-        "repo": "nixpkgs",
-        "rev": "ca534a76c4afb2bdc07b681dbc11b453bab21af8",
-        "type": "github"
-      },
-      "original": {
-        "owner": "NixOS",
-        "repo": "nixpkgs",
-        "rev": "ca534a76c4afb2bdc07b681dbc11b453bab21af8",
         "type": "github"
       }
     },
@@ -138,11 +67,11 @@
         ]
       },
       "locked": {
-        "lastModified": 1774618929,
-        "narHash": "sha256-2bbvykJd8IwkmRPSfPRYLHpbAzLJTZY6SEWp+9me214=",
+        "lastModified": 1785023746,
+        "narHash": "sha256-ctxImvbS5x6Ej8BSgoGh0qhF4FBtcvqw4Ry+PwWi1lY=",
         "owner": "nix-ocaml",
         "repo": "nix-overlays",
-        "rev": "3416a42c17fa31f6de8e40277f3b1c6e0b6f2fef",
+        "rev": "c4546d87b1a5f28466b90820ea57225cef72c327",
         "type": "github"
       },
       "original": {
@@ -151,56 +80,20 @@
         "type": "github"
       }
     },
-    "odoc-src": {
+    "ocaml-trunk": {
       "flake": false,
       "locked": {
-        "lastModified": 1764246576,
-        "narHash": "sha256-/rU7van8mtF1TEMZLDL3Kj0FUYfF5oc6yg4yvFf6JE8=",
+        "lastModified": 1784993091,
+        "narHash": "sha256-qROyQDSY87UiOyg80CCLWApoZlOn91Kp5g9y3AawanM=",
         "owner": "ocaml",
-        "repo": "odoc",
-        "rev": "d8460cdaa2b91a03434a9a045d673703b7fabfb2",
+        "repo": "ocaml",
+        "rev": "63b0c81c38e8affcda002e125fad805efbb709a1",
         "type": "github"
       },
       "original": {
         "owner": "ocaml",
-        "repo": "odoc",
-        "rev": "d8460cdaa2b91a03434a9a045d673703b7fabfb2",
-        "type": "github"
-      }
-    },
-    "oxcaml": {
-      "inputs": {
-        "flake-utils": "flake-utils",
-        "nix-github-actions": "nix-github-actions",
-        "nixpkgs": "nixpkgs_2"
-      },
-      "locked": {
-        "lastModified": 1774551809,
-        "narHash": "sha256-uaBwRvteW87S5BDcsQiCaZzLhVirNLFtk+kJ2GtNVD8=",
-        "owner": "oxcaml",
-        "repo": "oxcaml",
-        "rev": "4c48fcee9367830c46bfb71855b3d9e217c34331",
-        "type": "github"
-      },
-      "original": {
-        "owner": "oxcaml",
-        "repo": "oxcaml",
-        "type": "github"
-      }
-    },
-    "oxcaml-opam-repository": {
-      "flake": false,
-      "locked": {
-        "lastModified": 1770746075,
-        "narHash": "sha256-Q6yeTwv0CXAOQov0kNVrozxdSfK1s/c4Uz0Nmu/RqtA=",
-        "owner": "oxcaml",
-        "repo": "opam-repository",
-        "rev": "dde24fbc07390ada8c41508871d4741e06069241",
-        "type": "github"
-      },
-      "original": {
-        "owner": "oxcaml",
-        "repo": "opam-repository",
+        "ref": "trunk",
+        "repo": "ocaml",
         "type": "github"
       }
     },
@@ -212,31 +105,19 @@
         "nixpkgs": [
           "nixpkgs"
         ],
-        "nixpkgs-old": [
-          "nixpkgs-old"
-        ],
         "ocaml-overlays": [
           "ocaml-overlays"
-        ],
-        "odoc-src": [
-          "odoc-src"
-        ],
-        "oxcaml": [
-          "oxcaml"
-        ],
-        "oxcaml-opam-repository": [
-          "oxcaml-opam-repository"
         ],
         "revdeps-dune": [
           "revdeps-dune"
         ]
       },
       "locked": {
-        "lastModified": 1774622333,
-        "narHash": "sha256-1mstTMWySXgw6qwrB6Mhx3BiPSBI1wBfIvxNewnsGdA=",
+        "lastModified": 1785027321,
+        "narHash": "sha256-RoaQPKeuBYo5CmJmyTY5gKy8aMRN5weaPqEk/f/EQUI=",
         "owner": "ocaml",
         "repo": "dune",
-        "rev": "898e0121ff1fb1b5499f9aa976ea5bfc4258cb29",
+        "rev": "f635cb3fa8b5e4e9d94dbcefbfe8065d5fd9ad01",
         "type": "github"
       },
       "original": {
@@ -249,27 +130,9 @@
       "inputs": {
         "melange": "melange",
         "nixpkgs": "nixpkgs",
-        "nixpkgs-old": "nixpkgs-old",
         "ocaml-overlays": "ocaml-overlays",
-        "odoc-src": "odoc-src",
-        "oxcaml": "oxcaml",
-        "oxcaml-opam-repository": "oxcaml-opam-repository",
+        "ocaml-trunk": "ocaml-trunk",
         "revdeps-dune": "revdeps-dune"
-      }
-    },
-    "systems": {
-      "locked": {
-        "lastModified": 1681028828,
-        "narHash": "sha256-Vy1rq5AaRuLzOxct8nz4T6wlgyUR7zLU309k9mBC768=",
-        "owner": "nix-systems",
-        "repo": "default",
-        "rev": "da67096a3b9bf56a91d16901293e51ba5b49a27e",
-        "type": "github"
-      },
-      "original": {
-        "owner": "nix-systems",
-        "repo": "default",
-        "type": "github"
       }
     }
   },

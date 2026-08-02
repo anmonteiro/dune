@@ -1,3 +1,6 @@
-  $ dune build @doc-new
+Tests odoc index generation in the new pipeline.
 
-  $ grep Test _build/default/_doc_new/html/docs/local/hello_world/index.html > /dev/null || echo Missing
+  $ html=_build/default/_doc_new/html/docs/local/hello_world/index.html
+  $ dune build "$html"
+
+  $ grep Test "$html" > /dev/null || echo Missing

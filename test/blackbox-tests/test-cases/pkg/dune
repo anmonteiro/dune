@@ -31,8 +31,10 @@
  (applies_to autolock-with-watch-server))
 
 (cram
- (deps %{bin:patch})
- (applies_to patch opam-package-with-patch extra-sources))
+ (applies_to sites-plugin)
+ (deps
+  (package dune-site)
+  (package dune-private-libs)))
 
 (cram
  (applies_to rev-store-lock-linux)
@@ -67,6 +69,7 @@
   tarball
   pin-depends
   extra-sources
+  fetch-cache-symlink
   broken-symlink-in-dependency))
 
 (cram
@@ -90,7 +93,7 @@
 
 (cram
  (deps %{bin:ocaml_index})
- (applies_to gh10985))
+ (applies_to ocaml-index-private-lib-gh10985))
 
 (cram
  (deps %{bin:unzip})
@@ -122,4 +125,4 @@
 
 (cram
  (enabled_if false)
- (applies_to gh10959))
+ (applies_to watch-exec-crash-gh10959))

@@ -1,7 +1,6 @@
 open Stdune
 open Dune_vcs
 module Process = Dune_engine.Process
-module Display = Dune_engine.Display
 open Dune_scheduler
 module Console = Console
 open Fiber.O
@@ -136,20 +135,42 @@ module Cache = struct
      now, we allow it to raise. It won't be visible to most users due to the
      cache size we have chosen. *)
 
-  let rev_store_cache =
-    (* CR-soon Alizter: For now the cache is disabled by default. Once we add
-       versioning to the cache it will be safe to enable by default. 
+  (* The cache is stored at [$DUNE_CACHE_ROOT/rev_store/<version>/]. Bump
+     [version] whenever the bytes we write to the cache change shape.
+     Concretely:
 
-       When we do this we should check [Int.equal Sys.word_size 64] since
-       32-bit platforms won't handle our cache size well. *)
-    Config.make_toggle ~name:"rev_store_cache" ~default:`Disabled
+       1. The [git ls-tree] invocation changes (different flags or a
+          different command) so that the cached output is a different
+          format than before.
+       2. A new LMDB map is added, or an existing one is removed.
+       3. The key or value [Lmdb.Conv] of an existing map changes (today
+          all values are plain strings, but if we ever swap to a typed
+          converter the on-disk bytes change).
+
+     Changes that are NOT triggers: parser-only changes to [Entry.parse]
+     (the cached bytes are still the same git output, the new parser just
+     interprets them), and renames of OCaml types or fields (nothing is
+     marshalled, so OCaml-side renames do not affect on-disk bytes).
+
+     Old version directories left behind by previous builds are dormant
+     and can be removed by the user if desired. *)
+  let version = "v1"
+
+  let rev_store_cache =
+    Config.make_toggle
+      ~name:"rev_store_cache"
+        (* Enabled by default on non-Windows platforms. Windows is opted out
+           until we can determine that LMDB is not detrimental to performance
+           there. CR-someday Alizter: Do this. *)
+      ~default:(if Sys.win32 then `Disabled else `Enabled)
   ;;
 
   let revision_store_dir =
     lazy
-      (let path = Path.relative (Lazy.force Dune_util.cache_root_dir) "rev_store" in
+      (let base = Path.relative (Lazy.force Dune_util.cache_root_dir) "rev_store" in
+       let path = Path.relative base version in
        let rev_store_cache = Config.get rev_store_cache in
-       Log.info "Revision store cache" [ "status", Config.Toggle.to_dyn rev_store_cache ];
+       Log.info "Revision store cache" [ "status", Toggle.to_dyn rev_store_cache ];
        match rev_store_cache with
        | `Disabled -> None
        | `Enabled ->
@@ -213,42 +234,27 @@ module Cache = struct
   ;;
 
   module Files_and_submodules = struct
-    module Key = struct
-      module T = struct
-        type t = Object.t
-
-        let compare = Object.compare
-        let to_dyn = Object.to_dyn
-      end
-
-      include T
-      module C = Comparable.Make (T)
-
-      let conv =
-        Lmdb.Conv.make
-          ~serialise:(fun alloc obj ->
-            Object.to_hex obj |> Lmdb.Conv.(serialise string alloc))
-          ~deserialise:(fun bs ->
-            Lmdb.Conv.(deserialise string bs) |> Object.of_sha1_unsafe)
-          ()
-      ;;
-    end
-
-    module Value = struct
-      let conv : (File.Set.t * Commit.Set.t) Lmdb.Conv.t =
-        Lmdb.Conv.make
-          ~serialise:(fun alloc v ->
-            Marshal.to_string v ~sharing:true |> Lmdb.Conv.(serialise string alloc))
-          ~deserialise:(fun bs -> Marshal.from_string Lmdb.Conv.(deserialise string bs))
-          ()
-      ;;
-    end
+    module Key = Key
 
     let map =
       lazy
         (Lazy.force db
          |> Option.map ~f:(fun env ->
-           Lmdb.Map.create Nodup ~key:Key.conv ~value:Value.conv ~name:"ls-tree" env))
+           Lmdb.Map.create Nodup ~key:Key.conv ~value:Lmdb.Conv.string ~name:"ls-tree" env)
+        )
+    ;;
+
+    (* Cached value is the raw [git ls-tree -z --long -r] output, rejoined
+       with the NUL separator that git uses. Storing the literal subprocess
+       output avoids any OCaml-side serialisation and keeps the on-disk
+       format independent of the OCaml compiler used to build dune. Lines
+       produced by [-z] never contain NUL, so encode/decode are
+       unambiguous. *)
+    let encode_lines = String.concat ~sep:"\000"
+
+    let decode_lines = function
+      | "" -> []
+      | s -> String.split ~on:'\000' s
     ;;
 
     let get key =
@@ -256,15 +262,15 @@ module Cache = struct
       let* m = Lazy.force map in
       match Lmdb.Map.get m key with
       | exception Not_found -> None
-      | v -> Some v
+      | v -> Some (decode_lines v)
     ;;
 
-    let set key value =
+    let set key lines =
       ignore
       @@
       let open Option.O in
       let+ map = Lazy.force map in
-      Lmdb.Map.set map key value
+      Lmdb.Map.set map key (encode_lines lines)
     ;;
   end
 
@@ -365,20 +371,21 @@ let with_flock lock_path ~f =
       (Path.to_string lock_path)
       [ Unix.O_CREAT; O_WRONLY; O_SHARE_DELETE; Unix.O_CLOEXEC ]
       0o600
+    |> Fd.unsafe_of_unix_file_descr
   in
   let flock = Flock.create fd in
   let max_retries = 49 in
   Fiber.finalize
     ~finally:(fun () ->
       let+ () = Fiber.return () in
-      Unix.close fd)
+      Fd.close fd)
     (fun () ->
        attempt_to_lock flock Flock.Exclusive ~max_retries
        >>= function
        | Ok `Success ->
          Fiber.finalize
            (fun () ->
-              Unix.ftruncate fd 0;
+              Unix.ftruncate (Fd.unsafe_to_unix_file_descr fd) 0;
               Global_lock.write_pid fd;
               f ())
            ~finally:(fun () ->
@@ -422,6 +429,8 @@ let env =
   |> Env.add ~var:"GIT_TERMINAL_PROMPT" ~value:"0"
 ;;
 
+let git () = Vcs.git_for ~needed_for:"by dune package management to fetch git sources"
+
 let with_specified_git_dir ~dir env =
   (* prevent Git from walking up the file system to find a potentially
      unrelated git directory, so we disable the walk up by setting
@@ -438,7 +447,7 @@ module Git_error = struct
     }
 
   let raise_code_error { dir; args; exit_code; output } =
-    let git = Lazy.force Vcs.git in
+    let git = git () in
     Code_error.raise
       "git returned non-zero exit code"
       [ "exit code", Dyn.int exit_code
@@ -457,7 +466,7 @@ end
 
 let run_with_exit_code ~env { dir; _ } ~allow_codes ~display args =
   let stdout_to = make_stdout () in
-  let git = Lazy.force Vcs.git in
+  let git = git () in
   let+ stderr, exit_code =
     Fiber.Temp.with_temp_file
       ~prefix:"dune"
@@ -495,7 +504,7 @@ let run t ~display args =
 ;;
 
 let run_capture_lines { dir; _ } ~display args =
-  let git = Lazy.force Vcs.git in
+  let git = git () in
   let+ output, exit_code =
     Process.run_capture_lines ~dir ~display ~env failure_mode git args
   in
@@ -503,7 +512,7 @@ let run_capture_lines { dir; _ } ~display args =
 ;;
 
 let run_capture_zero_separated_lines { dir; _ } args =
-  let git = Lazy.force Vcs.git in
+  let git = git () in
   let+ output, exit_code =
     Process.run_capture_zero_separated ~dir ~display:Quiet ~env failure_mode git args
   in
@@ -511,7 +520,7 @@ let run_capture_zero_separated_lines { dir; _ } args =
 ;;
 
 let cat_file { dir; _ } command =
-  let git = Lazy.force Vcs.git in
+  let git = git () in
   let failure_mode = Vcs.git_accept () in
   let stderr_to = make_stderr () in
   let stdout_to = make_stdout () in
@@ -521,7 +530,7 @@ let cat_file { dir; _ } command =
 ;;
 
 let rev_parse { dir; _ } rev =
-  let git = Lazy.force Vcs.git in
+  let git = git () in
   let+ lines, code =
     Process.run_capture_lines
       ~dir
@@ -547,7 +556,7 @@ let escape_url_for_ref url = Re.replace_string url_escape_re ~by:"_" url
    refs relevant to the remote being fetched from. *)
 let add_object_ref { dir; _ } ~negotiation_ref_prefix obj =
   let hex = Object.to_hex obj in
-  let git = Lazy.force Vcs.git in
+  let git = git () in
   let env = with_specified_git_dir ~dir env in
   Process.run
     ~dir
@@ -565,7 +574,7 @@ let add_object_ref { dir; _ } ~negotiation_ref_prefix obj =
 ;;
 
 let object_exists_no_lock { dir; _ } obj =
-  let git = Lazy.force Vcs.git in
+  let git = git () in
   let+ (), code =
     Process.run
       ~dir
@@ -601,7 +610,7 @@ let mem_path repo obj path =
 
 let show =
   let show { dir; _ } revs_and_paths =
-    let git = Lazy.force Vcs.git in
+    let git = git () in
     let failure_mode = Vcs.git_accept () in
     let command =
       "show"
@@ -617,7 +626,7 @@ let show =
       (if Sys.win32 then 8191 else 2097152)
       - String.length "show"
       - 1 (* space *)
-      - String.length (Path.to_string (Lazy.force Vcs.git))
+      - String.length (Path.to_string (git ()))
       - 100 (* some extra safety *)
     in
     let rec loop acc batch cmd_len_remaining = function
@@ -775,7 +784,7 @@ let fetch_allow_failure ~env repo ~url obj =
         ~env
         ~allow_codes:(Int.equal 0)
         repo
-        ~display:!Dune_engine.Clflags.display
+        ~display:!Clflags.display
         [ "fetch"
         ; "--no-write-fetch-head"
         ; sprintf "--negotiation-tip=%s/*" negotiation_ref_prefix
@@ -936,28 +945,32 @@ module At_rev = struct
     ;;
   end
 
+  let parse_ls_tree_lines lines =
+    List.fold_left
+      lines
+      ~init:(File.Set.empty, Commit.Set.empty)
+      ~f:(fun (files, commits) line ->
+        match Entry.parse line with
+        | None -> files, commits
+        | Some (File file) -> File.Set.add files file, commits
+        | Some (Commit commit) -> files, Commit.Set.add commits commit)
+  ;;
+
   let files_and_submodules repo key =
     let cached = Cache.Files_and_submodules.get key in
     if !Debug.files_and_submodules_cache
     then Debug.print "files_and_submodules" [ "cached", Dyn.option Dyn.opaque cached ];
     match cached with
-    | Some v -> Fiber.return v
+    | Some lines -> Fiber.return (parse_ls_tree_lines lines)
     | None ->
-      let+ value =
+      let+ lines =
         run_capture_zero_separated_lines
           repo
           [ "ls-tree"; "-z"; "--long"; "-r"; Object.to_hex key ]
         >>| Git_error.result_get_or_code_error
-        >>| List.fold_left
-              ~init:(File.Set.empty, Commit.Set.empty)
-              ~f:(fun (files, commits) line ->
-                match Entry.parse line with
-                | None -> files, commits
-                | Some (File file) -> File.Set.add files file, commits
-                | Some (Commit commit) -> files, Commit.Set.add commits commit)
       in
-      Cache.Files_and_submodules.set key value;
-      value
+      Cache.Files_and_submodules.set key lines;
+      parse_ls_tree_lines lines
   ;;
 
   let path_commit_map submodules =
@@ -1078,7 +1091,7 @@ module At_rev = struct
         }
         ~target
     =
-    let git = Lazy.force Vcs.git in
+    let git = git () in
     let temp_dir =
       Temp_dir.dir_for_target ~target ~prefix:"rev-store" ~suffix:(Object.to_hex revision)
     in
@@ -1130,7 +1143,7 @@ let remote =
       let refs =
         Fiber.Lazy.create (fun () ->
           let+ hits =
-            run_capture_lines t ~display:!Dune_engine.Clflags.display command
+            run_capture_lines t ~display:!Clflags.display command
             >>| function
             | Ok lines -> lines
             | Error git_error ->

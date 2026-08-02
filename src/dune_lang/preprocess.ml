@@ -62,6 +62,15 @@ module Pps = struct
     ; staged : bool
     }
 
+  let repr pps_repr =
+    Repr.record
+      "preprocess-pps"
+      [ Repr.field "pps" Repr.(list pps_repr) ~get:(fun t -> t.pps)
+      ; Repr.field "flags" Repr.(list String_with_vars.repr) ~get:(fun t -> t.flags)
+      ; Repr.field "staged" Bool.repr ~get:(fun t -> t.staged)
+      ]
+  ;;
+
   let equal f t { loc; pps; flags; staged } =
     Loc.equal t.loc loc
     && List.equal f t.pps pps
@@ -75,6 +84,12 @@ module Pps = struct
     let= () = List.compare flags t.flags ~compare:String_with_vars.compare_no_loc in
     List.compare pps t.pps ~compare:compare_pps
   ;;
+
+  let decode =
+    let+ loc = loc
+    and+ pps, flags = Pps_and_flags.decode in
+    { loc; pps; flags; staged = false }
+  ;;
 end
 
 type 'a t =
@@ -82,6 +97,24 @@ type 'a t =
   | Action of Loc.t * Action.t
   | Pps of 'a Pps.t
   | Future_syntax of Loc.t
+
+let repr pps_repr =
+  Repr.variant
+    "preprocess"
+    [ Repr.case0 "No_preprocessing" ~test:(function
+        | No_preprocessing -> true
+        | _ -> false)
+    ; Repr.case "Action" Action.repr ~proj:(function
+        | Action (_, action) -> Some action
+        | _ -> None)
+    ; Repr.case "Pps" (Pps.repr pps_repr) ~proj:(function
+        | Pps x -> Some x
+        | _ -> None)
+    ; Repr.case0 "Future_syntax" ~test:(function
+        | Future_syntax _ -> true
+        | _ -> false)
+    ]
+;;
 
 let equal f x y =
   match x, y with
@@ -109,6 +142,7 @@ let filter_map t ~f =
 module Without_instrumentation = struct
   type t = Loc.t * Lib_name.t
 
+  let repr = Repr.view Lib_name.repr ~to_:snd
   let compare_no_locs (_, x) (_, y) = Lib_name.compare x y
 end
 
@@ -120,6 +154,26 @@ module With_instrumentation = struct
         ; deps : Dep_conf.t list
         ; flags : String_with_vars.t list
         }
+
+  let repr =
+    Repr.variant
+      "preprocess-with-instrumentation"
+      [ Repr.case "Ordinary" Without_instrumentation.repr ~proj:(function
+          | Ordinary x -> Some x
+          | _ -> None)
+      ; Repr.case
+          "Instrumentation_backend"
+          Repr.(
+            triple
+              Without_instrumentation.repr
+              (list Dep_conf.repr)
+              (list String_with_vars.repr))
+          ~proj:(function
+            | Instrumentation_backend { libname; deps; flags } ->
+              Some (libname, deps, flags)
+            | _ -> None)
+      ]
+  ;;
 
   let equal (x : t) (y : t) = Poly.equal x y
 end
@@ -268,6 +322,7 @@ module Per_module = struct
   type 'a preprocess = 'a t
   type 'a t = 'a preprocess Per_module.t
 
+  let repr preprocess_repr = Per_module.repr (repr preprocess_repr)
   let equal f x y = Per_module.equal (equal f) x y
   let decode = Per_module.decode decode ~default:No_preprocessing
   let no_preprocessing () = Per_module.for_all No_preprocessing
@@ -314,20 +369,30 @@ module Per_module = struct
   ;;
 end
 
-let preprocess_fields =
+let preprocess_fields_with_prefix ~prefix:field_prefix =
   let open Decoder in
-  let+ preprocess = field "preprocess" Per_module.decode ~default:(Per_module.default ())
+  let prefix =
+    let prefix x = x ^ "." in
+    Option.map field_prefix ~f:prefix |> Option.value ~default:""
+  in
+  let+ preprocess =
+    match field_prefix with
+    | None ->
+      let+ v = field "preprocess" Per_module.decode ~default:(Per_module.default ()) in
+      Some v
+    | Some _ -> field_o (prefix ^ "preprocess") Per_module.decode
   and+ preprocessor_deps =
-    field_o
-      "preprocessor_deps"
-      (let+ loc = loc
-       and+ l = repeat Dep_conf.decode in
-       loc, l)
+    let decode =
+      let+ loc = loc
+      and+ l = repeat Dep_conf.decode in
+      loc, l
+    in
+    field_o (prefix ^ "preprocessor_deps") decode
   and+ syntax = Syntax.get_exn Stanza.syntax in
   let preprocessor_deps =
-    match preprocessor_deps with
-    | None -> []
-    | Some (loc, deps) ->
+    match preprocessor_deps, preprocess with
+    | Some _, None | None, _ -> []
+    | Some (loc, deps), Some preprocess ->
       let deps_might_be_used =
         Module_name.Per_item.exists preprocess ~f:(fun p ->
           match p with
@@ -339,11 +404,34 @@ let preprocess_fields =
         User_warning.emit
           ~loc
           ~is_error:(syntax >= (2, 0))
-          [ Pp.text
-              "This preprocessor_deps field will be ignored because no preprocessor that \
-               might use them is configured."
+          [ Pp.textf
+              "This %spreprocessor_deps field will be ignored because no preprocessor \
+               that might use them is configured."
+              prefix
           ];
       deps
   in
   preprocess, preprocessor_deps
+;;
+
+let preprocess_fields =
+  let open Decoder in
+  let+ preprocess, deps = preprocess_fields_with_prefix ~prefix:None in
+  Option.value_exn preprocess, deps
+;;
+
+type preprocess =
+  { config : With_instrumentation.t Per_module.t
+  ; preprocessor_deps : Dep_conf.t list
+  }
+
+let preprocess_config ~preprocess ~instrumentation ~preprocessor_deps =
+  let config =
+    let init =
+      let f libname = With_instrumentation.Ordinary libname in
+      Module_name.Per_item.map preprocess ~f:(map ~f)
+    in
+    List.fold_left instrumentation ~init ~f:Per_module.add_instrumentation
+  in
+  { config; preprocessor_deps }
 ;;

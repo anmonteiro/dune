@@ -80,8 +80,8 @@ module type Source_tree = sig
   module Dir : sig
     type t
 
-    val sub_dir_names : t -> Filename.Set.t
-    val filenames : t -> Filename.Set.t
+    val sub_dir_names : t -> Filename.Array.Set.t
+    val filenames : t -> Filename.Array.Set.t
   end
 
   val find_dir : Path.Source.t -> Dir.t option Memo.t
@@ -92,7 +92,7 @@ type t =
   ; rule_generator : (module Gen_rules.Rule_generator)
   ; sandboxing_preference : Sandbox_mode.t list
   ; promote_source :
-      chmod:(int -> int)
+      chmod:(Permissions.Mode.t -> Permissions.Mode.t)
       -> delete_dst_if_it_is_a_directory:bool
       -> src:Path.Build.t
       -> dst:Path.Source.t

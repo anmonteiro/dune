@@ -27,8 +27,6 @@ We setup an installed theory. Note that lib/coq/user-contrib doesn't exist yet,
 so this also tests that it won't be a problem.
 
   $ dune build --root B @install
-  Entering directory 'B'
-  Leaving directory 'B'
   $ dune install --root B --prefix=$PWD --display=short
   Installing $TESTCASE_ROOT/lib/B/META
   Installing $TESTCASE_ROOT/lib/B/dune-package
@@ -73,9 +71,9 @@ As expected, Dune can no longer build A:
 
   $ dune build --root A
   Entering directory 'A'
-  File "dune", line 3, characters 19-20:
-  3 |  (theories Corelib B))
-                         ^
+  File "dune", line 3, characters 11-12:
+  3 |  (theories B))
+                 ^
   Theory "B" has not been found.
   -> required by theory A in dune:2
   -> required by _build/default/.A.theory.d
@@ -119,5 +117,3 @@ with the loadpath semantics of Coq.
   Installing $TESTCASE_ROOT/lib/coq/user-contrib/B/b.vo
 
   $ dune build --root A
-  Entering directory 'A'
-  Leaving directory 'A'

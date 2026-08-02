@@ -29,11 +29,13 @@ type t =
       ; new_name : Module_name.t option
       }
 
+val repr : t Repr.t
 val equal : t -> t -> bool
 val to_dyn : t -> Dyn.t
 val direct : Loc.t * Lib_name.t -> t
 val re_export : Loc.t * Lib_name.t -> t
 val decode : allow_re_export:bool -> t Decoder.t
+val encode : t Encoder.t
 
 module L : sig
   type nonrec t = t list

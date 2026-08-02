@@ -1,9 +1,6 @@
 Copy files from inside a directory target
 
-  $ cat >dune-project <<EOF
-  > (lang dune 3.0)
-  > (using directory-targets 0.1)
-  > EOF
+  $ make_directory_targets_project 3.0
 
 Copy from a generated sub-directory
 -----------------------------------
@@ -25,7 +22,7 @@ Dune loads all the rules of a directory at once.
   Error: Dependency cycle between:
      Computing directory contents of _build/default
   -> { dir = In_build_dir "default/foo"
-     ; predicate = Glob (Glob "*")
+     ; predicate = Element (Glob "*")
      ; only_generated_files = false
      }
   -> Computing directory contents of _build/default

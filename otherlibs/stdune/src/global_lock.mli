@@ -8,15 +8,15 @@ module Lock_held_by : sig
     | Unknown
 end
 
-(** Attempt to acquire a lock. once a lock is locked, subsequent locks always
-    succeed. Returns [Ok ()] if the lock is acquired within [timeout] seconds,
-    and [Error ()] otherwise. *)
-val lock : timeout:Time.Span.t option -> (unit, Lock_held_by.t) result
+(** Attempt to acquire a lock. Once a lock is locked, subsequent locks always
+    succeed. Returns [Ok ()] if the lock is acquired and [Error] when another
+    dune process has acquired the lock. *)
+val lock : unit -> (unit, Lock_held_by.t) result
 
-val lock_exn : timeout:Time.Span.t option -> unit
+val lock_exn : unit -> unit
 
 (** release a lock and allow it be re-acquired *)
 val unlock : unit -> unit
 
-val write_pid : Unix.file_descr -> unit
+val write_pid : Fd.t -> unit
 val at_exit : At_exit.t

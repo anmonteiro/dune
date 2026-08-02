@@ -1,31 +1,11 @@
 open Import
 open Memo.O
 
-let ocaml_flags t ~dir (spec : Dune_lang.Ocaml_flags.Spec.t) =
-  let* expander = Super_context.expander t ~dir in
-  let* flags =
-    let+ ocaml_flags = Ocaml_flags_db.ocaml_flags_env ~dir in
-    Ocaml_flags.make
-      ~spec
-      ~default:ocaml_flags
-      ~eval:(Expander.expand_and_eval_set expander)
-  in
-  Source_tree.is_vendored (Path.Build.drop_build_context_exn dir)
-  >>= function
-  | false -> Memo.return flags
-  | true ->
-    let+ ocaml_version =
-      let+ ocaml = Super_context.context t |> Context.ocaml in
-      ocaml.version
-    in
-    Ocaml_flags.with_vendored_flags ~ocaml_version flags
-;;
-
 let gen_select_rules sctx ~dir compile_info ~for_ =
   Lib.Compile.resolved_selects compile_info ~for_
   |> Resolve.Memo.read_memo
   >>= Memo.parallel_iter ~f:(fun { Lib.Compile.Resolved_select.dst_fn; src_fn; loc } ->
-    let dst = Path.Build.append_local dir dst_fn in
+    let dst = Ml_sources.source_in_dir ~dir dst_fn ~for_ in
     Super_context.add_rule
       sctx
       ~loc
@@ -41,16 +21,16 @@ let gen_select_rules sctx ~dir compile_info ~for_ =
 ;;
 
 let with_lib_deps (t : Context.t) merlin_ident ~dir ~f =
-  let prefix =
-    if Context.merlin t
-    then
+  match Context.merlin t with
+  | false -> f ()
+  | true ->
+    let prefix =
       Merlin_ident.merlin_file_path dir merlin_ident
       |> Path.build
       |> Action_builder.path
       |> Action_builder.goal
-    else Action_builder.return ()
-  in
-  Rules.prefix_rules prefix ~f
+    in
+    Rules.prefix_rules prefix ~f
 ;;
 
 type kind =
@@ -58,8 +38,7 @@ type kind =
   | Library of Buildable.t * Lib_name.Local.t
   | Parameter of Buildable.t * Lib_name.Local.t
   | Melange of
-      { preprocess : Preprocess.With_instrumentation.t Preprocess.Per_module.t
-      ; preprocessor_deps : Dep_conf.t list
+      { preprocess : Preprocess.preprocess
       ; lint : Preprocess.Without_instrumentation.t Preprocess.Per_module.t
       ; empty_module_interface_if_absent : bool
       }
@@ -92,7 +71,6 @@ let instrumentation_deps t ~instrumentation_backend =
 
 let modules_rules
       ~preprocess
-      ~preprocessor_deps
       ~lint
       ~empty_module_interface_if_absent
       sctx
@@ -103,6 +81,7 @@ let modules_rules
       ~lib_name
       ~empty_intf_modules
   =
+  let { Preprocess.config = preprocess; preprocessor_deps } = preprocess in
   let* pp =
     let instrumentation_backend = Lib.DB.instrumentation_backend (Scope.libs scope) in
     let* preprocess_with_instrumentation =
@@ -150,7 +129,7 @@ let modules_rules
   modules, pp
 ;;
 
-let modules_rules sctx kind expander ~dir scope modules =
+let modules_rules sctx kind expander ~dir scope modules ~for_ =
   let* () =
     match kind with
     | Executables _ | Library _ | Melange _ -> Memo.return ()
@@ -163,15 +142,19 @@ let modules_rules sctx kind expander ~dir scope modules =
           [ Pp.text "The compiler you are using is not compatible with library parameter"
           ]
   in
-  let preprocess, preprocessor_deps, lint, empty_module_interface_if_absent =
+  let preprocess, lint, empty_module_interface_if_absent =
     match kind with
-    | Executables (buildable, _) | Library (buildable, _) | Parameter (buildable, _) ->
-      ( buildable.preprocess
-      , buildable.preprocessor_deps
-      , buildable.lint
-      , buildable.empty_module_interface_if_absent )
-    | Melange { preprocess; preprocessor_deps; lint; empty_module_interface_if_absent } ->
-      preprocess, preprocessor_deps, lint, empty_module_interface_if_absent
+    | Executables (buildable, _) | Parameter (buildable, _) ->
+      buildable.preprocess, buildable.lint, buildable.empty_module_interface_if_absent
+    | Library (buildable, _) ->
+      let preprocess =
+        match for_ with
+        | Compilation_mode.Ocaml -> buildable.preprocess
+        | Melange -> buildable.melange_preprocess
+      in
+      preprocess, buildable.lint, buildable.empty_module_interface_if_absent
+    | Melange { preprocess; lint; empty_module_interface_if_absent } ->
+      preprocess, lint, empty_module_interface_if_absent
   in
   let lib_name =
     match kind with
@@ -185,7 +168,6 @@ let modules_rules sctx kind expander ~dir scope modules =
   in
   modules_rules
     ~preprocess
-    ~preprocessor_deps
     ~lint
     ~empty_module_interface_if_absent
     sctx

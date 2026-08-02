@@ -1,8 +1,6 @@
 We shouldn't allow foo/y/$x.ml to depend on foo/foo.ml
 
-  $ cat > dune-project << EOF
-  > (lang dune 3.7)
-  > EOF
+  $ make_dune_project 3.7
 
   $ cat > dune << EOF
   > (include_subdirs qualified)
@@ -23,7 +21,7 @@ We shouldn't allow foo/y/$x.ml to depend on foo/foo.ml
   X is the main module of the library and is the only module exposed outside of
   the library. Consequently, it should be the one depending on all the other
   modules in the library.
-  -> required by _build/default/.foo.objs/foo__X__Y__Z.impl.all-deps
+  -> required by transitive deps of foo__X__Y__Z.impl in _build/default
   -> required by _build/default/.foo.objs/byte/foo__X__Y__Z.cmo
   -> required by _build/default/foo.cma
   -> required by alias all

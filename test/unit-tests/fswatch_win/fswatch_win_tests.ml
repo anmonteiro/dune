@@ -1,4 +1,5 @@
 open Stdune
+module Fswatch_win = Dune_scheduler.For_tests.Fswatch_win
 
 let remove_dot_slash s = String.drop_prefix s ~prefix:".\\" |> Option.value ~default:s
 let create_file fn = Io.String_path.write_file fn ""
@@ -256,17 +257,12 @@ let _ =
 ;;
 
 let run cmd =
-  match
-    snd
-      (Unix.waitpid
-         []
-         (Unix.create_process
-            (List.hd cmd)
-            (Array.of_list cmd)
-            Unix.stdin
-            Unix.stdout
-            Unix.stderr))
-  with
+  let prog =
+    Bin.which ~path:(Env_path.path Env.initial) (List.hd cmd)
+    |> Option.value_exn
+    |> Path.to_string
+  in
+  match snd (Unix.waitpid [] (Spawn.spawn ~prog ~argv:cmd () |> Pid.to_int)) with
   | WEXITED 0 -> ()
   | _ -> assert false
 ;;

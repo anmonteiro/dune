@@ -3,10 +3,8 @@
 (library
  (name dune_rules)
  (libraries
-  action_ext
   build_path_prefix_map
   csexp
-  action_plugin
   dune_action_plugin
   dune_config_file
   dune_digest
@@ -26,7 +24,6 @@
   dune_util
   dune_vcs
   fiber
-  fs
   install
   memo
   ocaml
@@ -43,8 +40,7 @@
 (ocamllex ocamlobjinfo)
 
 (rule
- (mode promote)
- (target assets.ml)
+ (target assets.ml.gen)
  (action
   (with-stdout-to
    %{target}
@@ -57,15 +53,19 @@
     (echo "|jbp}")))))
 
 (rule
+ (alias check)
+ (action
+  (diff assets.ml assets.ml.gen)))
+
+(rule
  (targets setup.ml)
  (mode fallback)
  (action
   (copy# setup.defaults.ml setup.ml)))
 
 (rule
- (mode promote)
  (alias runtest)
- (targets setup.defaults.ml)
+ (target setup.defaults.ml.gen)
  (deps
   (:configure %{project_root}/boot/configure.ml))
  (action
@@ -73,5 +73,10 @@
    %{project_root}
    (setenv
     DUNE_CONFIGURE_OUTPUT
-    "src/dune_rules/setup.defaults.ml"
+    "%{target}"
     (run %{ocaml} %{configure})))))
+
+(rule
+ (alias runtest)
+ (action
+  (diff setup.defaults.ml setup.defaults.ml.gen)))

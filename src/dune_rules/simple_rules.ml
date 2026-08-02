@@ -247,7 +247,7 @@ let copy_files sctx ~dir ~expander ~src_dir (def : Copy_files.t) =
            (Path.to_string_maybe_quoted glob_in_src)
            (Path.Source.to_string_maybe_quoted src_dir));
   let src_in_src = Path.parent_exn glob_in_src in
-  let glob = Path.basename glob_in_src |> Glob.of_string_exn loc in
+  let glob = Path.basename glob_in_src |> Filename.to_string |> Glob.of_string_exn loc in
   let src_in_build =
     match Path.as_in_source_tree src_in_src with
     | None -> src_in_src
@@ -295,26 +295,27 @@ let copy_files sctx ~dir ~expander ~src_dir (def : Copy_files.t) =
      add the corresponding rules, and then to convert the files to [targets]. To
      do only one traversal we need [Memo.parallel_map_set]. *)
   let* () =
-    Memo.parallel_iter_seq
-      (Filename.Set.to_seq (Filename_set.filenames files))
-      ~f:(fun basename ->
-        let file_src = Path.relative src_in_build basename in
-        let file_dst = Path.Build.relative dir basename in
-        let context = Super_context.context sctx in
-        Super_context.add_rule
-          sctx
-          ~loc
-          ~dir
-          ~mode
-          ((if def.add_line_directive
-            then Copy_line_directive.builder context
-            else Action_builder.copy)
-             ~src:file_src
-             ~dst:file_dst))
+    Filename_set.filenames files
+    |> Filename.Array.Set.to_list
+    |> Memo.parallel_iter ~f:(fun basename ->
+      let basename = Filename.to_string basename in
+      let file_src = Path.relative src_in_build basename in
+      let file_dst = Path.Build.relative dir basename in
+      let context = Super_context.context sctx in
+      Super_context.add_rule
+        sctx
+        ~loc
+        ~dir
+        ~mode
+        ((if def.add_line_directive
+          then Copy_line_directive.builder context
+          else Action_builder.copy)
+           ~src:file_src
+           ~dst:file_dst))
   in
   let targets =
-    Filename.Set.to_list_map (Filename_set.filenames files) ~f:(fun basename ->
-      let file_dst = Path.Build.relative dir basename in
+    Filename.Array.Set.to_list_map (Filename_set.filenames files) ~f:(fun basename ->
+      let file_dst = Path.Build.relative_fname dir basename in
       Path.build file_dst)
     |> Path.Set.of_list
   in
@@ -344,14 +345,17 @@ let alias sctx ~dir ~expander (alias_conf : Alias_conf.t) =
   | true ->
     (match alias_conf.action with
      | None ->
-       (* Sandboxing options don't make sense for deps, only for actions *)
-       let builder, _expander, _sandbox =
+       (* Sandboxing options don't make sense for deps, only for actions.
+          The same applies to [action_env]: with no action attached to
+          this alias, there is no command to which the bin-layout PATH
+          hint could be applied. We register the deps and discard env. *)
+       let action_env, _expander, _sandbox =
          Dep_conf_eval.named
            ~expander
            Sandbox_config.no_special_requirements
            alias_conf.deps
        in
-       Rules.Produce.Alias.add_deps alias ~loc builder
+       Rules.Produce.Alias.add_deps alias ~loc (Action_builder.ignore action_env)
      | Some (action_loc, action) ->
        let action =
          let chdir = Expander.dir expander in

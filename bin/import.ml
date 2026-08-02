@@ -1,7 +1,12 @@
 include Stdune
 include Dune_config_file
 include Dune_vcs
-include Dune_scheduler
+
+include struct
+  open Dune_scheduler
+  module Scheduler = Scheduler
+end
+
 module Targets = Dune_targets
 
 include struct
@@ -10,11 +15,9 @@ include struct
   module Build_system = Build_system
   module Build_system_error = Build_system_error
   module Load_rules = Load_rules
-  module Hooks = Hooks
   module Action_builder = Dune_rules.Action_builder
   module Action = Action
   module Dep = Dep
-  module Action_to_sh = Action_to_sh
   module Dpath = Dpath
   module Findlib = Dune_rules.Findlib
   module Diff_promotion = Diff_promotion
@@ -73,6 +76,7 @@ include struct
   module Section = Section
   module Dune_project_name = Dune_project_name
   module Dune_project = Dune_project
+  module Compilation_mode = Compilation_mode
 end
 
 include struct
@@ -84,5 +88,4 @@ include struct
 end
 
 module Dune_rpc = Dune_rpc.Private
-module Graph = Dune_graph.Graph
 include Let_syntax

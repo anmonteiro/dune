@@ -1,7 +1,8 @@
+Traces stdout, stderr, and combined-output redirections.
+
   $ dune runtest
 
-  $ dune trace cat | jq -c '
-  > include "dune";
+  $ dune trace cat | jq_dune -c '
   >   progMatchingFilter(. == "sh" or . == "diff")
   > | del(.target_files)
   > '

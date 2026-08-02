@@ -4,8 +4,7 @@ open Dune_scheduler
 module Dune_rpc = Dune_rpc.Private
 module Request = Dune_rpc.Public.Request
 module Diagnostic = Dune_rpc.Diagnostic
-module Client = Dune_rpc_client.Client
-module Session = Csexp_rpc.Session
+module Client = Rpc.Client
 
 (* enable to debug process stdout/stderr *)
 let debug = false
@@ -34,7 +33,7 @@ let init_chan ~root_dir =
     let* res = once () in
     match res with
     | Some res -> Fiber.return res
-    | None -> Scheduler.sleep (Time.Span.of_secs 0.2) >>= loop
+    | None -> Scheduler.sleep (Time.Span.of_secs 0.05) >>= loop
   in
   loop ()
 ;;
@@ -101,10 +100,9 @@ let run ?env ~prog ~argv () =
       ~argv
       ~stdout:stdout_w
       ~stderr:stderr_w
-      ~stdin:(Lazy.force Dev_null.in_)
+      ~stdin:(Fd.unsafe_to_unix_file_descr (Lazy.force Dev_null.in_))
       ?env
       ()
-    |> Pid.of_int
   in
   Unix.close stdout_w;
   Unix.close stderr_w;
@@ -179,7 +177,7 @@ let with_dune_watch ?watch_mode_args ?env f =
 ;;
 
 let config =
-  Dune_engine.Clflags.display := Quiet;
+  Clflags.display := Quiet;
   { Scheduler.Config.concurrency = 1
   ; print_ctrl_c_warning = false
   ; watch_exclusions = []
@@ -199,6 +197,5 @@ let run run =
     ~finally:(fun () -> Sys.chdir cwd)
     ~f:(fun () ->
       Sys.chdir (Path.to_string dir);
-      Scheduler.Run.go config run ~timeout:(Time.Span.of_secs 5.0) ~on_event:(fun _ _ ->
-        ()))
+      Scheduler.Run.go config run ~timeout:(Time.Span.of_secs 5.0))
 ;;

@@ -12,10 +12,11 @@ let test_kind ~dir dir_contents name ext =
   (* let dir = Dir_contents.dir dir_contents in *)
   let files = Dir_contents.text_files dir_contents in
   let expected_basename = name ^ ".expected" in
-  if Filename.Set.mem files expected_basename
+  let expected_basename_fn = Filename.of_string_exn expected_basename in
+  if Filename.Array.Set.mem files expected_basename_fn
   then
     `Expect
-      { Diff.file1 = Path.build (Path.Build.relative dir expected_basename)
+      { Action_types.Diff.file1 = Path.build (Path.Build.relative dir expected_basename)
       ; file2 =
           Path.Build.relative dir (name ^ Filename.Extension.to_string ext ^ ".output")
       ; optional = false

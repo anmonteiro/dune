@@ -151,6 +151,7 @@ let setup_rules_and_return_exe_path t ~linkage =
       ~link_args:
         (Action_builder.return (Command.Args.As [ "-linkall"; "-warn-error"; "-31" ]))
       ~promote:None
+      ~env:(Action_builder.return Env.empty)
   in
   let+ () = setup_module_rules t in
   Exe.exe_path t.cctx ~program ~linkage
@@ -245,6 +246,7 @@ module Stanza = struct
           ~modules
           ~opaque:(Explicit false)
           ~requires_compile
+          ~user_written_requires:None
           ~requires_link
           ~flags
           ~js_of_ocaml:(Js_of_ocaml.Mode.Pair.make None)
@@ -256,7 +258,7 @@ module Stanza = struct
       let resolved = make ~cctx ~source ~preprocess:toplevel.pps expander in
       setup_rules_and_return_exe_path resolved ~linkage
     in
-    let symlink = Path.Build.relative dir (Path.Build.basename exe) in
+    let symlink = Path.Build.relative_fname dir (Path.Build.basename exe) in
     Super_context.add_rule
       sctx
       ~dir

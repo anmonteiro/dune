@@ -11,10 +11,7 @@ into the user build environment.
 Make a fake OCamlFormat which depends on printer lib:
   $ mkdir ocamlformat
   $ cd ocamlformat
-  $ cat > dune-project <<EOF
-  > (lang dune 3.13)
-  > (package (name ocamlformat))
-  > EOF
+  $ make_dune_project_with_package 3.13 ocamlformat
   $ cat > ocamlformat.ml <<EOF
   > let () = Printer.print ()
   > EOF
@@ -98,13 +95,11 @@ versions of the same dependency.
   - printer.1.0
   File "foo.ml", line 1, characters 0-0:
   --- foo.ml
-  +++ .formatted/foo.ml
+  +++ foo.ml.corrected
   @@ -1 +1 @@
   -let () = Printer.print ()
   +formatted
   [1]
-  $ cat _build/default/.formatted/foo.ml
-  formatted
 
 Update "dune-project", removing the dependency on the "printer" package. This
 demonstrates that even though OCamlFormat depends on the "printer" package, building the
@@ -130,7 +125,6 @@ There is no leak here. It is not taking the "printer" lib from dev-tools.
   Error: Library "printer" not found.
   -> required by _build/default/.foo.eobjs/native/dune__exe__Foo.cmx
   -> required by _build/default/foo.exe
-  -> required by _build/install/default/bin/foo
   [1]
 
 Update the executable "foo" to not depend on the library "printer", but "foo.ml" still

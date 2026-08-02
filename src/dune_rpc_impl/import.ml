@@ -8,10 +8,11 @@ include struct
   module Build_system = Build_system
   module Build_system_error = Build_system_error
   module Running_jobs = Running_jobs
+  module Build_outcome = Build_outcome
 end
 
 include struct
-  open Dune_rpc_client
+  open Rpc
   module Where = Where
-  module Client = Dune_rpc_client.Client
+  module Client = Rpc.Client
 end

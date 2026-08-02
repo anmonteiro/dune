@@ -1,4 +1,6 @@
+module Toggle0 = Toggle
 open Import
+module Toggle = Toggle0
 module Versioned_file = Dune_sexp.Versioned_file
 module Execution_parameters = Dune_engine.Execution_parameters
 module Compound_user_error = Dune_rpc.Private.Compound_user_error
@@ -251,7 +253,10 @@ module Extension = struct
 
   type info =
     | Extension of packed_extension
-    | Deleted_in of Syntax.Version.t
+    | Deleted_in of
+        { version : Syntax.Version.t
+        ; hints : User_message.Style.t Pp.t list
+        }
 
   type instance =
     { extension : packed_extension
@@ -278,8 +283,8 @@ module Extension = struct
     key
   ;;
 
-  let register_deleted ~name ~deleted_in =
-    Table.add_exn extensions name (Deleted_in deleted_in)
+  let register_deleted ~name ?(hints = []) ~deleted_in () =
+    Table.add_exn extensions name (Deleted_in { version = deleted_in; hints })
   ;;
 
   let register_unit syntax stanzas =
@@ -305,14 +310,15 @@ module Extension = struct
         ~loc:name_loc
         [ Pp.textf "Unknown extension %S." name ]
         ~hints:(User_message.did_you_mean name ~candidates)
-    | Some (Deleted_in v) ->
+    | Some (Deleted_in { version; hints }) ->
       let name = Syntax.Name.to_string name in
       User_error.raise
         ~loc
+        ~hints
         [ Pp.textf
             "Extension %s was deleted in the %s version of the dune language"
             name
-            (Syntax.Version.to_string v)
+            (Syntax.Version.to_string version)
         ]
     | Some (Extension (Packed e)) ->
       Syntax.check_supported ~dune_lang_ver e.syntax (ver_loc, ver);
@@ -378,7 +384,7 @@ module Extension = struct
 end
 
 module Melange_syntax = struct
-  let name = Syntax.Name.parse "melange"
+  let name = Syntax.name Melange.syntax
 end
 
 let make_parsing_context ~(lang : Lang.Instance.t) extensions =
@@ -477,7 +483,7 @@ let interpret_lang_and_extensions ~(lang : Lang.Instance.t) ~explicit_extensions
   parsing_context, stanza_parser, extension_args
 ;;
 
-let filename = "dune-project"
+let filename = Filename.dune_project
 let opam_file_location_default ~lang:_ = `Relative_to_project
 let wrapped_executables_default ~(lang : Lang.Instance.t) = lang.version >= (2, 0)
 let map_workspace_root_default ~(lang : Lang.Instance.t) = lang.version >= (3, 0)
@@ -522,7 +528,7 @@ let subst_config t =
 
 let default_name ~dir ~(packages : Package.t Package.Name.Map.t) =
   match
-    (* CR rgrinberg: why do we pick a name randomly? How about just making it
+    (* CR-someday rgrinberg: why do we pick a name randomly? How about just making it
        anonymous here *)
     Package.Name.Map.min_binding packages
   with
@@ -780,6 +786,8 @@ let update_execution_parameters t ep =
   |> Execution_parameters.set_expand_aliases_in_sandbox t.expand_aliases_in_sandbox
   |> Execution_parameters.set_workspace_root_to_build_path_prefix_map
        (if t.map_workspace_root then Set "/workspace_root" else Unset)
+  |> Execution_parameters.set_action_project_root
+       (if t.dune_version >= (3, 23) then Some t.root else None)
   |> Execution_parameters.set_should_remove_write_permissions_on_generated_files
        (t.dune_version >= (2, 4))
 ;;
@@ -796,6 +804,7 @@ let including_hidden_packages t = t.including_hidden_packages
 let make_packages
       ~opam_packages
       ~dir
+      ~dune_version
       ~generate_opam_files
       ~opam_file_location
       packages
@@ -851,7 +860,11 @@ let make_packages
   | Ok packages ->
     let generated_opam_file =
       if generate_opam_files
-      then fun p -> Package.set_has_opam_file p Package.Generated
+      then (
+        let has_opam_file =
+          if dune_version >= (3, 23) then Package.Generated_with_diff else Generated
+        in
+        fun p -> Package.set_has_opam_file p has_opam_file)
       else Fun.id
     in
     (match opam_file_location with
@@ -883,6 +896,7 @@ let parse_packages
       name
       ~info
       ~dir
+      ~dune_version
       ~version
       packages
       opam_file_location
@@ -903,6 +917,7 @@ let parse_packages
        (make_packages
           ~opam_packages
           ~dir
+          ~dune_version
           ~generate_opam_files
           ~opam_file_location
           packages
@@ -1007,6 +1022,7 @@ let parse ~dir ~(lang : Lang.Instance.t) ~file =
         name
         ~info
         ~dir
+        ~dune_version:lang.version
         ~version
         packages
         opam_file_location
@@ -1060,8 +1076,9 @@ let parse ~dir ~(lang : Lang.Instance.t) ~file =
     let dialects =
       let dialects =
         match Syntax.Name.Map.find explicit_extensions_map Melange_syntax.name with
-        | Some extension -> (extension.loc, Dialect.rescript) :: dialects
-        | None -> dialects
+        | Some extension when extension.version < (1, 0) ->
+          (extension.loc, Dialect.rescript) :: dialects
+        | Some _ | None -> dialects
       in
       List.fold_left dialects ~init:Dialect.DB.builtin ~f:(fun dialects (loc, dialect) ->
         Dialect.DB.add dialects ~loc dialect)
@@ -1100,7 +1117,7 @@ let parse ~dir ~(lang : Lang.Instance.t) ~file =
 ;;
 
 let load_dune_project ~read ~dir opam_packages : t Memo.t =
-  let file = Path.Source.relative dir filename in
+  let file = Path.Source.relative_fname dir filename in
   let open Memo.O in
   let* lexbuf =
     let+ contents = read file in
@@ -1114,11 +1131,11 @@ let gen_load ~read ~dir ~files ~infer_from_opam_files ~load_opam_file_with_conte
   =
   let open Memo.O in
   let opam_packages =
-    Filename.Set.fold files ~init:[] ~f:(fun fn acc ->
+    Filename.Array.Set.fold files ~init:[] ~f:(fun fn acc ->
       match Package.Name.of_opam_file_basename fn with
       | None -> acc
       | Some name ->
-        let opam_file = Path.Source.relative dir fn in
+        let opam_file = Path.Source.relative_fname dir fn in
         let loc = Loc.in_file (Path.source opam_file) in
         let pkg =
           let+ contents = read opam_file in
@@ -1127,12 +1144,12 @@ let gen_load ~read ~dir ~files ~infer_from_opam_files ~load_opam_file_with_conte
         (name, (loc, pkg)) :: acc)
     |> Package.Name.Map.of_list_exn
   in
-  if Filename.Set.mem files filename
+  if Filename.Array.Set.mem files filename
   then load_dune_project ~read ~dir opam_packages >>| Option.some
   else if infer_from_opam_files && not (Package.Name.Map.is_empty opam_packages)
   then
     let+ opam_packages =
-      let module Memo_package_name = Memo.Make_parallel_map (Package.Name.Map) in
+      let module Memo_package_name = Memo.Map (Package.Name.Map) in
       Memo_package_name.parallel_map opam_packages ~f:(fun _ (_loc, pkg) -> pkg)
     in
     Some (infer Package_info.empty ~dir opam_packages)
@@ -1153,3 +1170,15 @@ let () =
 ;;
 
 let () = Extension.register_simple Unreleased.syntax (Decoder.return [])
+
+let () =
+  Extension.register_deleted
+    ~name:(Syntax.Name.parse "coq")
+    ~hints:
+      [ Pp.text
+          "The Coq Build Language has been replaced by the Rocq Build Language. Use \
+           (using rocq <version>) instead."
+      ]
+    ~deleted_in:(3, 24)
+    ()
+;;

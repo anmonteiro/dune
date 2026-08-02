@@ -23,24 +23,22 @@ Test dependency on installed package
   > EOF
 
   $ dune build --root lib-a
-  Entering directory 'lib-a'
-  Leaving directory 'lib-a'
 
   $ dune install --root lib-a --prefix $PWD/prefix --display short
   Installing $TESTCASE_ROOT/prefix/lib/a/META
-  Installing $TESTCASE_ROOT/prefix/lib/a/a.ml
   Installing $TESTCASE_ROOT/prefix/lib/a/dune-package
-  Installing $TESTCASE_ROOT/prefix/lib/a/foo.ml
   Installing $TESTCASE_ROOT/prefix/lib/a/melange/a.cmi
   Installing $TESTCASE_ROOT/prefix/lib/a/melange/a.cmj
   Installing $TESTCASE_ROOT/prefix/lib/a/melange/a.cmt
+  Installing $TESTCASE_ROOT/prefix/lib/a/melange/a.ml
   Installing $TESTCASE_ROOT/prefix/lib/a/melange/a__Foo.cmi
   Installing $TESTCASE_ROOT/prefix/lib/a/melange/a__Foo.cmj
   Installing $TESTCASE_ROOT/prefix/lib/a/melange/a__Foo.cmt
   Installing $TESTCASE_ROOT/prefix/lib/a/melange/a__Sub.cmi
   Installing $TESTCASE_ROOT/prefix/lib/a/melange/a__Sub.cmj
   Installing $TESTCASE_ROOT/prefix/lib/a/melange/a__Sub.cmt
-  Installing $TESTCASE_ROOT/prefix/lib/a/sub/sub.ml
+  Installing $TESTCASE_ROOT/prefix/lib/a/melange/foo.ml
+  Installing $TESTCASE_ROOT/prefix/lib/a/melange/sub/sub.ml
 
   $ cat >b/dune-project <<EOF
   > (lang dune 3.8)
@@ -59,13 +57,12 @@ Test dependency on installed package
   > let x = Js.log A.Foo.x
   > EOF
 
-  $ OCAMLPATH=$PWD/prefix/lib/:$OCAMLPATH dune build --root b @dist --display=short 2>&1 | grep -v melange
-  Entering directory 'b'
-          melc dist/node_modules/a/a.js
-          melc dist/node_modules/a/foo.js
-          melc dist/node_modules/a/sub/sub.js
-          melc dist/bar.js
-  Leaving directory 'b'
+  $ OCAMLPATH=$PWD/prefix/lib/:$OCAMLPATH dune build --root b @dist
+  $ find b/_build/default/dist -type f | sort
+  b/_build/default/dist/bar.js
+  b/_build/default/dist/node_modules/a/a.js
+  b/_build/default/dist/node_modules/a/foo.js
+  b/_build/default/dist/node_modules/a/sub/sub.js
 
   $ find b/_build/default/dist | grep -v melange | sort
   b/_build/default/dist

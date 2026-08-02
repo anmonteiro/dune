@@ -4,6 +4,7 @@ module type S = sig
   val hash : t -> int
   val to_string : t -> string
   val of_string : string -> t
+  val repr : t Repr.t
 
   (** a directory is smaller than its descendants *)
   include Comparator.S with type t := t
@@ -33,7 +34,7 @@ module type S = sig
     include Set.S with type elt = t and type 'a map = 'a Map.t
 
     val to_dyn : t Dyn.builder
-    val of_listing : dir:elt -> filenames:string list -> t
+    val of_listing : dir:elt -> filenames:Filename.t list -> t
   end
 
   val equal : t -> t -> bool
@@ -48,6 +49,7 @@ module type With_loc = sig
   type t
 
   val relative : ?error_loc:Loc0.t -> t -> string -> t
+  val relative_fname : ?error_loc:Loc0.t -> t -> Filename.t -> t
   val parse_string_exn : loc:Loc0.t -> string -> t
 end
 
@@ -78,6 +80,7 @@ module type Local_gen = sig
      additionally ask for an object that fixes 'w *)
   val to_string : 'w t -> string
   val of_string : string -> 'w t
+  val relative_fname : 'w t -> Filename.t -> 'w t
 
   (** a directory is smaller than its descendants *)
   val compare : 'w t -> 'w t -> Ordering.t

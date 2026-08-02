@@ -30,10 +30,9 @@ Testing the bootstrap of a wrapped include subdirs unqualified.
   > module M4 = A.C
   > let () = Printf.printf "Hello from bootstrapped binary!"
   > EOF
-  ocamlc -output-complete-exe -intf-suffix .dummy -g -o .duneboot.exe -I boot -I +unix unix.cma boot/types.ml boot/libs.ml boot/duneboot.ml
-  ./.duneboot.exe
+  ocamllex -q -o boot/pps.ml boot/pps.mll
+  ocaml -I +unix unix.cma $DUNEBOOT
   Hello from wrapped a/b/b.ml
   Hello from wrapped a/b/c/c.ml
   Hello from unwrapped a/x.ml
   Hello from bootstrapped binary!
-

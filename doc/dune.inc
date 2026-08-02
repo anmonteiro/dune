@@ -54,13 +54,13 @@
  (files   dune-clean.1))
 
 (rule
- (with-stdout-to dune-coq.1
-  (run dune coq --help=groff)))
+ (with-stdout-to dune-completion.1
+  (run dune completion --help=groff)))
 
 (install
  (section man)
  (package dune)
- (files   dune-coq.1))
+ (files   dune-completion.1))
 
 (rule
  (with-stdout-to dune-describe.1

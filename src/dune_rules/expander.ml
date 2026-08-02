@@ -45,6 +45,7 @@ end
 type value = Value.t list Deps.t
 
 let lookup_artifacts = Fdecl.create Dyn.opaque
+let resolve_pkg_install_file = Fdecl.create Dyn.opaque
 
 type t =
   { dir : Path.Build.t
@@ -65,6 +66,11 @@ let artifacts t = t.artifacts_host
 let dir t = t.dir
 let project t = t.project
 let context t = Context.name t.context
+
+let host_context t =
+  let open Memo.O in
+  t.scope_host >>= fun s -> Context.DB.by_dir (Scope.root s)
+;;
 
 let set_local_env_var t ~var ~value =
   { t with local_env = Env.Var.Map.set t.local_env var value }
@@ -185,12 +191,12 @@ let expand_artifact ~source t artifact arg =
   in
   match artifact with
   | Pform.Artifact.Mod kind ->
-    let name =
-      Module_name.of_string_allow_invalid (Dune_lang.Template.Pform.loc source, name)
-      |> Module_name.Unchecked.allow_invalid
-    in
-    (match Artifacts_obj.lookup_module artifacts name with
-     | None -> does_not_exist ~what:"Module" (Module_name.to_string name)
+    (match Artifacts_obj.lookup_module artifacts path with
+     | None ->
+       Module_name.of_string_allow_invalid (loc, Filename.to_string name)
+       |> Module_name.Unchecked.allow_invalid
+       |> Module_name.to_string
+       |> does_not_exist ~what:"Module"
      | Some (t, m) ->
        (match
           match kind with
@@ -201,7 +207,10 @@ let expand_artifact ~source t artifact arg =
         | None -> Action_builder.return [ Value.String "" ]
         | Some path -> dep (Path.build path)))
   | Lib mode ->
-    let name = Lib_name.parse_string_exn (Dune_lang.Template.Pform.loc source, name) in
+    let name =
+      Lib_name.parse_string_exn
+        (Dune_lang.Template.Pform.loc source, Filename.to_string name)
+    in
     (match Artifacts_obj.lookup_library artifacts name with
      | None -> does_not_exist ~what:"Library" (Lib_name.to_string name)
      | Some lib ->
@@ -268,7 +277,8 @@ let[@inline never] invalid_use_of_target_variable
        User_error.raise
          ~loc:source.loc
          [ Pp.textf
-             "You cannot use %s with inferred rules."
+             "You cannot use %s unless the rule has a (target ...) or (targets ...) \
+              field."
              (Dune_lang.Template.Pform.describe source)
          ]
      | Static { targets = _; multiplicity } ->
@@ -399,13 +409,19 @@ let expand_lib_variable t source ~lib ~file ~lib_exec ~lib_private =
               ]
       | _ ->
         let has_exe_ext =
-          let extension = Filename.extension file in
+          let extension =
+            Stdlib.Filename.extension file |> Filename.Extension.Or_empty.of_string_exn
+          in
           Filename.Extension.Or_empty.check extension Filename.Extension.exe
         in
         if (not lib_exec) || (not Sys.win32) || has_exe_ext
         then dep p
         else (
-          let p_exe = Path.extend_basename p ~suffix:".exe" in
+          let p_exe =
+            Path.extend_basename
+              p
+              ~suffix:(Filename.Extension.to_filename Filename.Extension.exe)
+          in
           Action_builder.if_file_exists p_exe ~then_:(dep p_exe) ~else_:(dep p)))
    | Error () ->
      (if lib_private
@@ -583,6 +599,16 @@ let expand_pform_var (context : Context.t) ~dir ~source (var : Pform.Var.t) =
            let+ scope = scope in
            let dune_version = Dune_project.dune_version (Scope.project scope) in
            Value.L.strings (Ocaml_flags.dune_warnings ~dune_version ~profile:Dev)))
+  | Git_sha ->
+    (let open Memo.O in
+     let+ sha =
+       Source_tree.nearest_vcs Path.Source.root
+       >>= function
+       | None -> Memo.return None
+       | Some vcs -> Vcs.git_sha_short vcs
+     in
+     string (Option.value sha ~default:""))
+    |> static
 ;;
 
 let ocaml_config_macro source macro_invocation context =
@@ -628,6 +654,111 @@ let env_macro t source macro_invocation =
           Env.get env var |> Option.value ~default |> string))
 ;;
 
+let resolve_installed_pkg_file ~loc (pkg : Dune_package.t) ~section ~file =
+  let candidates =
+    List.concat_map pkg.files ~f:(fun (s, paths) ->
+      if Section.equal s section
+      then
+        List.map paths ~f:(fun (p : Dune_package.path) -> Install.Entry.Dst.local p.dst)
+      else [])
+  in
+  match List.mem candidates file ~equal:Path.Local.equal with
+  | false ->
+    let file_str = Path.Local.to_string file in
+    let candidates = List.map candidates ~f:Path.Local.to_string in
+    User_error.raise
+      ~loc
+      ~hints:(User_message.did_you_mean file_str ~candidates)
+      [ Pp.textf
+          "File %s not found in section %s of package %s"
+          file_str
+          (Section.to_string section)
+          (Package.Name.to_string pkg.name)
+      ]
+  | true ->
+    (* pkg.dir is <prefix>/lib/<pkg>, so two parent_exn calls
+       recover the opam prefix. *)
+    let install_paths =
+      let roots =
+        Path.parent_exn (Path.parent_exn pkg.dir)
+        |> Install.Roots.opam_from_prefix ~relative:Path.relative
+      in
+      Install.Paths.make ~relative:Path.relative ~package:pkg.name ~roots
+    in
+    let path = Path.append_local (Install.Paths.get install_paths section) file in
+    let open Action_builder.O in
+    let+ () = Action_builder.path path in
+    path
+;;
+
+let resolve_local_pkg_file ~loc ~context_name ~pkg_name ~section ~file =
+  let open Action_builder.O in
+  let* src =
+    Action_builder.of_memo
+      (Fdecl.get resolve_pkg_install_file ~loc context_name ~pkg:pkg_name ~section ~file)
+  in
+  let path = Path.build src in
+  let+ () = Action_builder.path path in
+  path
+;;
+
+let expand_pkg_macro ~loc { context; _ } macro_invocation =
+  let context_name = Context.name context in
+  let pkg_name, section, file =
+    match Pform.Macro_invocation.Args.split macro_invocation with
+    (* CR-someday Alizter: validate the package name *)
+    | [ pkg_name; section; file ] -> Package.Name.of_string pkg_name, section, file
+    | _ ->
+      User_error.raise
+        ~loc
+        ~hints:[ Pp.text "the syntax is %{pkg:PACKAGE:SECTION:PATH}" ]
+        [ Pp.text "%{pkg:..} requires exactly 3 arguments." ]
+  in
+  let section =
+    match Section.of_string section with
+    | Some Misc | None ->
+      let supported =
+        Section.Set.to_list Section.all
+        |> List.filter_map ~f:(fun s ->
+          if Section.equal s Misc then None else Some (Section.to_string s))
+        |> String.enumerate_and
+      in
+      User_error.raise
+        ~loc
+        ~hints:[ Pp.textf "supported sections are %s." supported ]
+        [ Pp.textf "%s is not a valid section." section ]
+    | Some section -> section
+  in
+  let file =
+    match Path.Local.of_string file with
+    | f -> f
+    | exception User_error.E _ ->
+      User_error.raise
+        ~loc
+        ~hints:[ Pp.text "the path must be relative and must not contain '..'." ]
+        [ Pp.textf "%s is not a valid file path." file ]
+  in
+  let open Action_builder.O in
+  let+ path =
+    let* found =
+      Action_builder.of_memo
+        (let open Memo.O in
+         let* package_db = Package_db.create context_name in
+         Package_db.find_package package_db pkg_name)
+    in
+    match found with
+    | None ->
+      User_error.raise
+        ~loc
+        [ Pp.textf "Package %s does not exist" (Package.Name.to_string pkg_name) ]
+    | Some (Installed pkg) -> resolve_installed_pkg_file ~loc pkg ~section ~file
+    | Some (Local _) -> resolve_local_pkg_file ~loc ~context_name ~pkg_name ~section ~file
+    | Some (Build _) ->
+      Pkg_rules.resolve_installed_file ~loc ~context_name ~pkg_name ~section ~file
+  in
+  [ Value.Path path ]
+;;
+
 let expand_pform_macro
       (context : Context.t)
       ~dir
@@ -636,7 +767,9 @@ let expand_pform_macro
   =
   let s = Pform.Macro_invocation.Args.whole macro_invocation in
   match macro_invocation.macro with
-  | Pkg -> Code_error.raise "pkg forms aren't possible here" []
+  | Pkg ->
+    let loc = Dune_lang.Template.Pform.loc source in
+    Need_full_expander (fun t -> With (expand_pkg_macro ~loc t macro_invocation))
   | Pkg_self -> Code_error.raise "pkg-self forms aren't possible here" []
   | Ocaml_config -> ocaml_config_macro source macro_invocation context
   | Env -> Need_full_expander (fun t -> env_macro t source macro_invocation)
@@ -718,13 +851,6 @@ let expand_pform_macro
             ]
         | Ok s -> s)
       |> strings)
-  | Coq_config ->
-    Need_full_expander
-      (fun t ->
-        Without
-          (let open Memo.O in
-           let* artifacts_host = t.artifacts_host in
-           Coq_config.expand source macro_invocation ~dir:t.dir artifacts_host))
   | Ppx ->
     Need_full_expander
       (fun t ->

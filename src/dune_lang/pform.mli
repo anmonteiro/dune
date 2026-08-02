@@ -92,6 +92,7 @@ module Var : sig
     | Pkg of Pkg.t
     | Oxcaml_supported
     | Dune_warnings
+    | Git_sha
 
   val compare : t -> t -> Ordering.t
   val to_dyn : t -> Dyn.t
@@ -137,7 +138,6 @@ module Macro : sig
     | Read_lines
     | Path_no_dep
     | Ocaml_config
-    | Coq_config
     | Rocq_config
     | Env
     | Artifact of Artifact.t

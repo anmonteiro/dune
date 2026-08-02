@@ -222,7 +222,7 @@ let impl_config bin =
             ~output_limit:Execution_parameters.Action_output_limit.default)
        Return
        bin
-       [ "--config" ]
+       [ "c"; "--config" ]
 ;;
 
 let config_memo = Memo.create "rocq-config" ~input:(module Path) impl_config
@@ -230,7 +230,7 @@ let config_memo = Memo.create "rocq-config" ~input:(module Path) impl_config
 let make ~(rocq : Action.Prog.t) =
   let open Memo.O in
   let+ config_output =
-    get_output_from_config_or_version ~rocq ~what:"--config" config_memo
+    get_output_from_config_or_version ~rocq ~what:"c --config" config_memo
   in
   let open Result.O in
   let* config_output = config_output in
@@ -243,7 +243,7 @@ let make ~(rocq : Action.Prog.t) =
     let rocq_native_compiler_default = Vars.get_opt vars "COQ_NATIVE_COMPILER_DEFAULT" in
     Ok { rocqlib; rocq_native_compiler_default }
   | Error msg ->
-    User_error.raise Pp.[ textf "Cannot parse output of rocq --config:"; msg ]
+    User_error.raise Pp.[ textf "Cannot parse output of 'rocq c --config':"; msg ]
 ;;
 
 let by_name { rocqlib; rocq_native_compiler_default } name =
@@ -261,7 +261,12 @@ let expand source macro ~dir artifacts_host =
   let s = Pform.Macro_invocation.Args.whole macro in
   let open Memo.O in
   let* rocq =
-    Artifacts.binary artifacts_host ~where:Original_path ~dir ~loc:None "rocq"
+    Artifacts.binary
+      artifacts_host
+      ~where:Original_path
+      ~dir
+      ~loc:None
+      (Filename.to_string Filename.rocq)
   in
   let expand m k s =
     let+ t = m ~rocq in

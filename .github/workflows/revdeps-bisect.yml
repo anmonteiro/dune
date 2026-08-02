@@ -19,22 +19,15 @@ on:
 permissions:
   contents: read
 
-env:
-  EXTRA_NIX_CONFIG: |
-    extra-substituters = https://anmonteiro.nix-cache.workers.dev
-    extra-trusted-public-keys = ocaml.nix-cache.com-1:/xI2h2+56rwFfKyyFVbkJSeGqSIYMC/Je+7XXqGKDIY=
-
 jobs:
   bisect:
     name: Bisect ${{ inputs.package }}
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
-      - uses: nixbuild/nix-quick-install-action@v34
-        with:
-          nix_conf: ${{ env.EXTRA_NIX_CONFIG }}
+      - uses: nixbuild/nix-quick-install-action@v35
       - name: Bisect
         run: |
           package="${{ inputs.package }}"

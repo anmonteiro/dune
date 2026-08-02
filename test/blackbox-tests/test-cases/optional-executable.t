@@ -12,10 +12,7 @@ Test optional executable
   >  (action (run %{exe:x.exe})))
   > EOF
 
-  $ cat >dune-project <<EOF
-  > (lang dune 2.0)
-  > (package (name x))
-  > EOF
+  $ make_dune_project_with_package 2.0 x
 
   $ touch x.ml
 
@@ -70,10 +67,7 @@ of its dependencies were optional.
 
   $ mkdir optional-binary
   $ cd optional-binary
-  $ cat >dune-project <<EOF
-  > (lang dune 3.0)
-  > (package (name myfoo))
-  > EOF
+  $ make_dune_project_with_package 3.0 myfoo
 
   $ mkdir exe
   $ cat >exe/bar.ml <<EOF
@@ -115,10 +109,7 @@ present even if the binary is not optional.
 
   $ mkdir optional-binary-absent
   $ cd optional-binary-absent
-  $ cat >dune-project <<EOF
-  > (lang dune 3.0)
-  > (package (name myfoo))
-  > EOF
+  $ make_dune_project_with_package 3.0 myfoo
 
   $ mkdir exe
   $ cat >exe/bar.ml <<EOF
@@ -151,7 +142,6 @@ present even if the binary is not optional.
   Error: Library "doesnotexistatall" not found.
   -> required by _build/default/exe/.bar.eobjs/native/dune__exe__Bar.cmx
   -> required by _build/default/exe/bar.exe
-  -> required by _build/install/default/bin/dunetestbar
   -> required by %{bin:dunetestbar} at dune:3
   -> required by alias run-x in dune:1
   [1]
@@ -167,7 +157,7 @@ Optional on the executable should be respected:
   > EOF
 
   $ PATH=./bin:$PATH dune build @run-x
-  binary path: $TESTCASE_ROOT/optional-binary-absent/./bin/dunetestbar
+  binary path: $TESTCASE_ROOT/optional-binary-absent/bin/dunetestbar
 
 In the same way as enabled_if:
 
@@ -179,7 +169,7 @@ In the same way as enabled_if:
   > EOF
 
   $ PATH=./bin:$PATH dune build @run-x --force
-  binary path: $TESTCASE_ROOT/optional-binary-absent/./bin/dunetestbar
+  binary path: $TESTCASE_ROOT/optional-binary-absent/bin/dunetestbar
 
   $ cd ..
 

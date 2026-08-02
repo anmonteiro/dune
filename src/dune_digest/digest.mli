@@ -36,8 +36,12 @@ module Manual : sig
   type t
 
   val create : unit -> t
+  val bool : t -> bool -> unit
+  val int : t -> int -> unit
   val string : t -> string -> unit
-  val generic : t -> 'a -> unit
+  val option : t -> f:(t -> 'a -> unit) -> 'a option -> unit
+  val list : t -> f:(t -> 'a -> unit) -> 'a list -> unit
+  val repr : t -> 'a Repr.t -> 'a -> unit
   val digest : t -> digest -> unit
   val get : t -> digest
 end
@@ -54,7 +58,6 @@ val file : Path.t -> t
 val file_async : Path.t -> t Fiber.t
 val string : string -> t
 val to_string_raw : t -> string
-val generic : 'a -> t
 val repr : 'a Repr.t -> 'a -> t
 
 (** The subset of fields of [Unix.stats] used by this module.
@@ -105,5 +108,7 @@ val path_with_stats_async
   -> (t, Path_digest_error.t) result Fiber.t
 
 (** Digest a file taking the [executable] bit into account. Should not be called
-    on a directory. *)
+    on a directory. Digesting is done in the background thread pool, with the
+    number of concurrent calls capped by a global throttle so that we do not
+    exceed the process's open file descriptor limit. *)
 val file_with_executable_bit : executable:bool -> Path.t -> t Fiber.t

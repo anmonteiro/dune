@@ -1,5 +1,5 @@
 open Stdune
-module Io_buffer = Csexp_rpc.Private.Io_buffer
+module Io_buffer = Rpc.Private.Io_buffer
 
 let () = Printexc.record_backtrace false
 let print_dyn x = Io_buffer.to_dyn x |> Dyn.to_string |> print_endline
@@ -21,6 +21,29 @@ let%expect_test "resize" =
   [%expect
     {|
     { total_written = 0; contents = "3:xxx6:xxxyyy"; pos_w = 13; pos_r = 0 } |}]
+;;
+
+let%expect_test "empty atom exact-fit write" =
+  let buf = Io_buffer.create ~size:2 in
+  Io_buffer.write_csexps buf [ Csexp.Atom "" ];
+  print_dyn buf;
+  [%expect {| { total_written = 0; contents = "0:"; pos_w = 2; pos_r = 0 } |}]
+;;
+
+let%expect_test "compaction does not grow the buffer" =
+  let buf = Io_buffer.create ~size:8 in
+  Io_buffer.write_csexps buf [ Csexp.Atom "abcde" ];
+  Io_buffer.read buf 4;
+  printfn "capacity before: %d" (Bytes.length (Io_buffer.bytes buf));
+  Io_buffer.write_csexps buf [ Csexp.Atom "x" ];
+  printfn "capacity after: %d" (Bytes.length (Io_buffer.bytes buf));
+  print_dyn buf;
+  [%expect
+    {|
+    capacity before: 8
+    capacity after: 8
+    { total_written = 4; contents = "cde1:x"; pos_w = 6; pos_r = 0 }
+    |}]
 ;;
 
 let%expect_test "reading" =
@@ -49,7 +72,7 @@ let%expect_test "reading" =
   ("(\"not enough bytes in buffer\", { len = 2; length = 1 })") |}]
 ;;
 
-let%expect_test "reading" =
+let%expect_test "flush token" =
   let buf = Io_buffer.create ~size:1 in
   Io_buffer.write_csexps buf [ Atom "abc" ];
   print_dyn buf;

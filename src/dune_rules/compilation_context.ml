@@ -85,6 +85,7 @@ type t =
   ; modules : modules
   ; flags : Ocaml_flags.t
   ; requires_compile : Lib.t list Resolve.Memo.t
+  ; user_written_requires : Lib.t list Resolve.Memo.t Lazy.t option
   ; requires_hidden : Lib.t list Resolve.Memo.t
   ; requires_link : Lib.t list Resolve.t Memo.Lazy.t
   ; implements : Virtual_rules.t
@@ -97,7 +98,7 @@ type t =
   ; sandbox : Sandbox_config.t
   ; package : Package.t option
   ; melange_package_name : Lib_name.t option
-  ; modes : Lib_mode.Map.Set.t
+  ; modes : Mode.Dict.Set.t option
   ; bin_annot : bool
   ; bin_annot_cms : bool
   ; cms_cmt_dependency : Workspace.Context.Cms_cmt_dependency.t
@@ -114,6 +115,7 @@ let obj_dir t = t.obj_dir
 let modules t = t.modules.modules
 let flags t = t.flags
 let requires_compile t = t.requires_compile
+let user_written_requires t = Option.map t.user_written_requires ~f:Lazy.force
 let requires_hidden t = t.requires_hidden
 let requires_link t = Memo.Lazy.force t.requires_link
 let parameters t = t.parameters
@@ -154,6 +156,7 @@ let create
       ~modules
       ~flags
       ~requires_compile
+      ~user_written_requires
       ~requires_link
       ?(preprocessing = Pp_spec.dummy)
       ~opaque
@@ -173,6 +176,12 @@ let create
   let project = Scope.project scope in
   let context = Super_context.context super_context in
   let* ocaml = Context.ocaml context in
+  let modes =
+    match for_, modes with
+    | Compilation_mode.Melange, _ -> None
+    | Ocaml, Some modes -> Some modes
+    | Ocaml, None -> Some (Mode.Dict.make_both true)
+  in
   let direct_requires, hidden_requires =
     match Dune_project.implicit_transitive_deps project ocaml.version with
     | Enabled -> Memo.Lazy.force requires_link, Resolve.Memo.return []
@@ -193,14 +202,12 @@ let create
     | None -> Resolve.Memo.return []
     | Some parameters -> parameters_main_modules parameters
   in
-  let sandbox =
-    match for_ with
-    | Compilation_mode.Ocaml -> Sandbox_config.no_special_requirements
-    | Compilation_mode.Melange -> Sandbox_config.needs_sandboxing
-  in
+  let sandbox = Compilation_mode.default_sandbox in
   let modes =
-    let default = { Lib_mode.Map.ocaml = Mode.Dict.make_both true; melange = false } in
-    Option.value ~default modes
+    match for_, modes with
+    | Compilation_mode.Melange, _ -> None
+    | Ocaml, Some modes -> Some modes
+    | Ocaml, None -> Some (Mode.Dict.make_both true)
   in
   let opaque =
     let profile = Context.profile context in
@@ -236,6 +243,7 @@ let create
   ; modules = { modules; dep_graphs }
   ; flags
   ; requires_compile = direct_requires
+  ; user_written_requires
   ; requires_hidden = hidden_requires
   ; requires_link
   ; implements
@@ -343,6 +351,7 @@ let for_module_generated_at_link_time cctx ~requires ~module_ =
   ; flags = Ocaml_flags.empty
   ; requires_link = Memo.lazy_ (fun () -> requires)
   ; requires_compile = requires
+  ; user_written_requires = None
   ; includes
   ; modules
   }
@@ -372,7 +381,7 @@ let without_bin_annot t =
 ;;
 
 let set_obj_dir t obj_dir = { t with obj_dir }
-let set_modes t ~modes = { t with modes }
+let set_modes t ~modes = { t with modes = Some modes }
 
 let instances t =
   match t.instances with

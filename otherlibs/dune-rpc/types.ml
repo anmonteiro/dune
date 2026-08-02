@@ -4,9 +4,10 @@ module Id = struct
   module T = struct
     type t = Sexp.t
 
+    let repr = Sexp.repr
     let equal = Poly.equal
     let compare = Poly.compare
-    let to_dyn s = Sexp.to_dyn s
+    let to_dyn = Stdune.Repr.to_dyn repr
   end
 
   include T
@@ -27,7 +28,7 @@ end
 module Version = struct
   type t = int * int
 
-  let latest = 3, 23
+  let latest = 3, 25
 
   let sexp : t Conv.value =
     let open Conv in
@@ -460,22 +461,6 @@ module Decl = struct
       }
     ;;
 
-    let print_generation_list ~include_response generations =
-      List.iter generations ~f:(fun (version, Generation.T conv) ->
-        let conv_to_digest conv =
-          let sexp_string = Sexp.to_string (Conv.sexp_for_digest conv) in
-          if String.length sexp_string < 32
-          then sexp_string
-          else Digest.to_hex (Digest.string sexp_string)
-        in
-        let req = conv_to_digest conv.req in
-        let resp = conv_to_digest conv.resp in
-        if include_response
-        then Printf.printf "Version %d:\n  Request: %s\n  Response: %s\n" version req resp
-        else Printf.printf "Version %d: %s\n" version req)
-    ;;
-
-    let print_generations t = print_generation_list ~include_response:true t.generations
     let witness t = t.decl
   end
 
@@ -519,10 +504,6 @@ module Decl = struct
       ; decl =
           { method_; key = Univ_map.Key.create ~name:method_ (Int.Map.to_dyn gen_to_dyn) }
       }
-    ;;
-
-    let print_generations t =
-      Request.print_generation_list ~include_response:false t.generations
     ;;
 
     let witness t = t.decl

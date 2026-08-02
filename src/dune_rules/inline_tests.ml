@@ -4,7 +4,6 @@ module Mode_conf = Inline_tests_info.Mode_conf
 
 let action
       sctx
-      ~deps
       ~loc
       ~dir
       ~inline_test_dir
@@ -34,7 +33,7 @@ let action
       | Native | Best | Byte -> None
       | Jsoo _ -> Some Jsoo_rules.runner
     with
-    | None -> flags >>| Action.run (Ok exe)
+    | None -> flags >>| fun flags -> Action.run (Ok exe) flags
     | Some runner ->
       let* prog =
         Super_context.resolve_program
@@ -54,7 +53,6 @@ let action
       (match prog with
        | Error _ -> action
        | Ok p -> Action_builder.path p >>> action)
-  and+ () = deps
   and+ () = Action_builder.path exe
   and+ () =
     match mode with
@@ -202,10 +200,16 @@ include Sub_system.Register_end_point (struct
         let lib_name = snd lib.name in
         Path.Build.relative dir (Inline_tests_info.inline_test_dirname lib_name)
       in
+      let dune_version = Scope.project scope |> Dune_project.dune_version in
       let runner_name = Inline_tests_info.inline_test_runner in
       let main_module =
         let name = Module_name.of_checked_string "main" in
         Module.generated ~kind:Impl ~for_ ~src_dir:inline_test_dir [ name ]
+      in
+      let generate_runner_sandbox =
+        if dune_version >= (3, 23)
+        then Sandbox_config.needs_sandboxing
+        else Sandbox_config.no_special_requirements
       in
       (* Generate the runner file *)
       let js_of_ocaml =
@@ -229,19 +233,24 @@ include Sub_system.Register_end_point (struct
                let expander =
                  let bindings =
                    let files ml_kind =
-                     List.filter_map source_modules ~f:(Module.file ~ml_kind)
-                     |> Value.L.paths
+                     let files =
+                       List.filter_map source_modules ~f:(Module.file ~ml_kind)
+                     in
+                     Expander.Deps.With
+                       (let open Action_builder.O in
+                        let+ () = Action_builder.paths files in
+                        Value.L.paths files)
                    in
                    Pform.Map.of_list_exn
                      [ Var Impl_files, files Impl; Var Intf_files, files Intf ]
                  in
-                 Expander.add_bindings expander ~bindings
+                 Expander.add_bindings_full expander ~bindings
                in
                List.filter_map backends ~f:(fun (backend : Backend.t) ->
                  Option.map backend.info.generate_runner ~f:(fun (loc, action) ->
                    Action_unexpanded.expand_no_targets
                      action
-                     Sandbox_config.no_special_requirements
+                     generate_runner_sandbox
                      ~loc
                      ~expander
                      ~chdir:dir
@@ -258,7 +267,7 @@ include Sub_system.Register_end_point (struct
         let package = Library.package lib in
         let* flags =
           let+ ocaml_flags =
-            Buildable_rules.ocaml_flags sctx ~dir info.executable_ocaml_flags
+            Ocaml_flags_db.ocaml_flags sctx ~dir info.executable_ocaml_flags
           in
           Ocaml_flags.append_common ocaml_flags [ "-w"; "-24"; "-g" ]
         in
@@ -301,6 +310,7 @@ include Sub_system.Register_end_point (struct
           ~modules
           ~opaque:(Explicit false)
           ~requires_compile:runner_libs
+          ~user_written_requires:None
           ~requires_link:(Memo.lazy_ (fun () -> runner_libs))
           ~flags
           ~js_of_ocaml:(Js_of_ocaml.Mode.Pair.map ~f:Option.some js_of_ocaml)
@@ -311,11 +321,19 @@ include Sub_system.Register_end_point (struct
         let+ jsoo_enabled_modes =
           Jsoo_rules.jsoo_enabled_modes ~expander ~dir ~in_context:js_of_ocaml
         in
+        let ocaml = Compilation_context.ocaml cctx in
+        let lib_has_native =
+          let { Lib_config.has_native; _ } = ocaml.lib_config in
+          let lib_modes = Dune_lang.Mode_conf.Lib.Set.eval lib.modes ~has_native in
+          lib_modes.ocaml.native
+        in
         Mode_conf.Set.to_list info.modes
-        |> List.filter ~f:(fun (mode : Mode_conf.t) ->
+        |> List.filter_map ~f:(fun (mode : Mode_conf.t) ->
           match mode with
-          | Native | Best | Byte -> true
-          | Jsoo mode -> Js_of_ocaml.Mode.Pair.select ~mode jsoo_enabled_modes)
+          | Best -> Some (if lib_has_native then mode else Mode_conf.Byte)
+          | Native | Byte -> Some mode
+          | Jsoo mode as v ->
+            if Js_of_ocaml.Mode.Pair.select ~mode jsoo_enabled_modes then Some v else None)
       in
       let* (_ : Exe.dep_graphs) =
         let* linkages =
@@ -358,33 +376,40 @@ include Sub_system.Register_end_point (struct
           ~linkages
           ~link_args
           ~promote:None
+          ~env:(Action_builder.return Env.empty)
       in
       let lib_name = snd lib.name in
       let partitions_flags = partition_flags ~expander ~lib_name ~backends in
-      let deps, sandbox =
+      let env, sandbox =
         let sandbox =
-          let project = Scope.project scope in
-          if Dune_project.dune_version project < (3, 5)
+          if dune_version < (3, 5)
           then Sandbox_config.no_special_requirements
           else Sandbox_config.needs_sandboxing
         in
         Dep_conf_eval.unnamed sandbox info.deps ~expander
       in
-      let action = action sctx ~deps ~loc ~dir ~inline_test_dir ~runner_name in
+      let test_action = action sctx ~loc ~dir ~inline_test_dir ~runner_name in
+      let list_partitions mode partitions_flags =
+        let open Action_builder.O in
+        let action =
+          let+ action = test_action mode partitions_flags
+          and+ env in
+          Action.Full.make ~sandbox action |> Action.Full.add_env env
+        in
+        let+ partitions =
+          Super_context.execute_action_stdout sctx ~loc ~dir action
+          |> Action_builder.of_memo
+          >>| String.split_lines
+        in
+        Log.info
+          "inline-test partitions"
+          [ "library", Lib_name.Local.to_dyn lib_name
+          ; "mode", Mode_conf.to_dyn mode
+          ; "partitions", Dyn.list Dyn.string partitions
+          ];
+        partitions
+      in
       Memo.parallel_iter modes ~f:(fun (mode : Mode_conf.t) ->
-        let partition_file =
-          Path.Build.relative inline_test_dir ("partitions-" ^ Mode_conf.to_string mode)
-        in
-        let* () =
-          match partitions_flags with
-          | None -> Memo.return ()
-          | Some partitions_flags ->
-            let open Action_builder.O in
-            action mode partitions_flags
-            >>| Action.Full.make ~sandbox
-            |> Action_builder.with_stdout_to partition_file
-            |> Super_context.add_rule sctx ~dir ~loc
-        in
         let* runtest_alias =
           match mode with
           | Native | Best | Byte -> Memo.return Alias0.runtest
@@ -408,31 +433,39 @@ include Sub_system.Register_end_point (struct
           ~loc:info.loc
           alias
           (let open Action_builder.O in
-           let source_files = List.concat_map source_modules ~f:Module.sources in
+           let promotion_targets =
+             List.concat_map source_modules ~f:Module.sources_without_pp
+           in
            let+ actions =
-             (match partitions_flags with
-              | None -> Action_builder.return [ None ]
-              | Some _ ->
-                Path.build partition_file
-                |> Action_builder.lines_of
-                >>| List.map ~f:(fun x -> Some x))
-             >>| List.map ~f:(fun partition ->
-               flags ~info ~expander ~backends ~lib_name:(snd lib.name) ~partition
-               |> action mode)
-             >>= Action_builder.all
-           and+ () = Action_builder.paths source_files in
+             let action_for_partition partition =
+               flags ~info ~expander ~backends ~lib_name ~partition |> test_action mode
+             in
+             match partitions_flags with
+             | None -> action_for_partition None >>| List.singleton
+             | Some partitions_flags ->
+               list_partitions mode partitions_flags
+               >>= Action_builder.List.map ~f:(fun partition ->
+                 action_for_partition (Some partition))
+           and+ () =
+             List.concat_map source_modules ~f:(fun module_ ->
+               Module.ml_source module_ |> Module.sources)
+             |> Action_builder.paths
+           and+ () = Action_builder.paths promotion_targets
+           and+ env in
            match actions with
            | [] -> Action.Full.empty
            | _ :: _ ->
              let run_tests = Action.concurrent actions in
              let diffs =
-               List.map source_files ~f:(fun fn ->
+               List.map promotion_targets ~f:(fun fn ->
                  Path.as_in_build_dir_exn fn
-                 |> Path.Build.extend_basename ~suffix:".corrected"
+                 |> Path.Build.extend_basename ~suffix:Filename.corrected
                  |> Action.diff ~optional:true fn)
                |> Action.concurrent
              in
-             Action.Full.make ~sandbox @@ Action.progn [ run_tests; diffs ]))
+             Action.progn [ run_tests; diffs ]
+             |> Action.Full.make ~sandbox
+             |> Action.Full.add_env env))
     ;;
 
     let gen_rules

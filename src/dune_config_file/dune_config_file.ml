@@ -1,11 +1,40 @@
-open Import
+open Stdune.Action_types
+module Toggle = Stdune.Toggle
+
+let decode_action_stdout_on_success = Dune_sexp.Decoder.enum Action_output_on_success.all
 
 module Dune_config = struct
-  open Stdune
   open Dune_lang.Decoder
   module Display = Display
-  module Sandbox_mode = Dune_engine.Sandbox_mode
-  module Console = Console
+
+  include struct
+    open Stdune
+    module Sandbox_mode = Sandbox_mode
+    module Console = Console
+    module Repr = Repr
+    module Loc = Loc
+    module Config = Config
+    module Int = Int
+    module User_error = User_error
+    module List = List
+    module Terminal_persistence = Terminal_persistence
+    module Tuple = Tuple
+    module Poly = Poly
+    module Execution_env = Execution_env
+    module Option = Option
+    module Code_error = Code_error
+    module Path = Path
+    module Fpath = Fpath
+    module String = String
+    module Log = Log
+    module Env = Env
+    module Bin = Bin
+    module Env_path = Env_path
+    module Fd = Fd
+    module Dev_null = Dev_null
+    include Action_types
+  end
+
   module Stanza = Dune_lang.Stanza
   module String_with_vars = Dune_lang.String_with_vars
   module Pform = Dune_lang.Pform
@@ -22,12 +51,33 @@ module Dune_config = struct
       ; license : string list option
       }
 
-    let equal t { authors; maintainers; maintenance_intent; license } =
-      Option.equal (List.equal String.equal) t.authors authors
-      && Option.equal (List.equal String.equal) t.maintainers maintainers
-      && Option.equal (List.equal String.equal) t.maintenance_intent maintenance_intent
-      && Option.equal (List.equal String.equal) t.license license
+    let repr =
+      Repr.record
+        "project-defaults"
+        [ Repr.field
+            "authors"
+            (Repr.option (Repr.list Repr.string))
+            ~get:(fun t -> t.authors)
+        ; Repr.field
+            "maintainers"
+            (Repr.option (Repr.list Repr.string))
+            ~get:(fun t -> t.maintainers)
+        ; Repr.field
+            "maintenance_intent"
+            (Repr.option (Repr.list Repr.string))
+            ~get:(fun t -> t.maintenance_intent)
+        ; Repr.field
+            "license"
+            (Repr.option (Repr.list Repr.string))
+            ~get:(fun t -> t.license)
+        ]
     ;;
+
+    include Repr.Poly (struct
+        type nonrec t = t
+
+        let repr = repr
+      end)
 
     let decode =
       fields
@@ -39,15 +89,7 @@ module Dune_config = struct
          { authors; maintainers; maintenance_intent; license })
     ;;
 
-    let to_dyn t =
-      let f = Dyn.(option (list string)) in
-      Dyn.record
-        [ "authors", f t.authors
-        ; "maintainers", f t.maintainers
-        ; "maintenance_intent", f t.maintenance_intent
-        ; "license", f t.license
-        ]
-    ;;
+    let to_dyn = Repr.to_dyn repr
   end
 
   module Pkg_enabled = struct
@@ -56,16 +98,16 @@ module Dune_config = struct
         | Cli
         | Loc of Loc.t
 
-      let equal x y =
-        match x, y with
-        | Cli, Cli -> true
-        | Loc x, Loc y -> Loc.equal x y
-        | _, _ -> false
-      ;;
-
-      let to_dyn = function
-        | Cli -> Dyn.variant "Cli" []
-        | Loc loc -> Dyn.variant "Loc" [ Loc.to_dyn loc ]
+      let repr =
+        Repr.variant
+          "pkg-enabled-where"
+          [ Repr.case0 "Cli" ~test:(function
+              | Cli -> true
+              | Loc _ -> false)
+          ; Repr.case "Loc" Loc.repr ~proj:(function
+              | Loc loc -> Some loc
+              | Cli -> None)
+          ]
       ;;
     end
 
@@ -74,63 +116,49 @@ module Dune_config = struct
       | Loc of Loc.t
 
     type t =
-      | Set of where * Config.Toggle.t
+      | Set of where * Toggle.t
       | Unset
+
+    let repr =
+      let toggle_repr =
+        Repr.variant
+          "config-toggle"
+          [ Repr.case0 "Enabled" ~test:(function
+              | `Enabled -> true
+              | `Disabled -> false)
+          ; Repr.case0 "Disabled" ~test:(function
+              | `Disabled -> true
+              | `Enabled -> false)
+          ]
+      in
+      Repr.variant
+        "pkg-enabled"
+        [ Repr.case "Set" (Repr.pair Where.repr toggle_repr) ~proj:(function
+            | Set (where, toggle) -> Some (where, toggle)
+            | Unset -> None)
+        ; Repr.case0 "Unset" ~test:(function
+            | Unset -> true
+            | Set _ -> false)
+        ]
+    ;;
 
     let decode =
       let open Dune_lang.Decoder in
-      let+ loc, value = located (enum Config.Toggle.all) in
+      let+ loc, value = located (enum Toggle.all) in
       Set (Loc loc, value)
     ;;
 
-    let equal x y =
-      match x, y with
-      | Set (x_loc, x_toggle), Set (y_loc, y_toggle) ->
-        Where.equal x_loc y_loc && Config.Toggle.equal x_toggle y_toggle
-      | Unset, Unset -> true
-      | _, _ -> false
-    ;;
+    include Repr.Poly (struct
+        type nonrec t = t
 
-    let to_dyn = function
-      | Set (loc, toggle) ->
-        Dyn.variant "Set" [ Where.to_dyn loc; Config.Toggle.to_dyn toggle ]
-      | Unset -> Dyn.variant "Unset" []
-    ;;
+        let repr = repr
+      end)
+
+    let to_dyn = Repr.to_dyn repr
 
     let all where =
       [ "enabled", Set (where, `Enabled); "disabled", Set (where, `Disabled) ]
     ;;
-  end
-
-  module Terminal_persistence = struct
-    type t =
-      | Preserve
-      | Clear_on_rebuild
-      | Clear_on_rebuild_and_flush_history
-
-    let all =
-      [ "preserve", Preserve
-      ; "clear-on-rebuild", Clear_on_rebuild
-      ; "clear-on-rebuild-and-flush-history", Clear_on_rebuild_and_flush_history
-      ]
-    ;;
-
-    let equal a b =
-      match a, b with
-      | Preserve, Preserve
-      | Clear_on_rebuild, Clear_on_rebuild
-      | Clear_on_rebuild_and_flush_history, Clear_on_rebuild_and_flush_history -> true
-      | _, _ -> false
-    ;;
-
-    let to_dyn = function
-      | Preserve -> Dyn.Variant ("Preserve", [])
-      | Clear_on_rebuild -> Dyn.Variant ("Clear_on_rebuild", [])
-      | Clear_on_rebuild_and_flush_history ->
-        Variant ("Clear_on_rebuild_and_flush_history", [])
-    ;;
-
-    let decode = enum all
   end
 
   module Concurrency = struct
@@ -138,12 +166,23 @@ module Dune_config = struct
       | Fixed of int
       | Auto
 
-    let equal a b =
-      match a, b with
-      | Fixed a, Fixed b -> Int.equal a b
-      | Auto, Auto -> true
-      | _, _ -> false
+    let repr =
+      Repr.variant
+        "concurrency"
+        [ Repr.case "Fixed" Repr.int ~proj:(function
+            | Fixed n -> Some n
+            | Auto -> None)
+        ; Repr.case0 "Auto" ~test:(function
+            | Auto -> true
+            | Fixed _ -> false)
+        ]
     ;;
+
+    include Repr.Poly (struct
+        type nonrec t = t
+
+        let repr = repr
+      end)
 
     let error = Error "invalid concurrency value, must be 'auto' or a positive number"
 
@@ -167,10 +206,7 @@ module Dune_config = struct
       | Fixed n -> string_of_int n
     ;;
 
-    let to_dyn = function
-      | Auto -> Dyn.Variant ("Auto", [])
-      | Fixed n -> Dyn.Variant ("Fixed", [ Int n ])
-    ;;
+    let to_dyn = Repr.to_dyn repr
   end
 
   module Sandboxing_preference = struct
@@ -198,13 +234,26 @@ module Dune_config = struct
         | Enabled_except_user_rules
         | Enabled
 
-      let equal a b =
-        match a, b with
-        | Disabled, Disabled
-        | Enabled_except_user_rules, Enabled_except_user_rules
-        | Enabled, Enabled -> true
-        | _, _ -> false
+      let repr =
+        Repr.variant
+          "cache-toggle"
+          [ Repr.case0 "Disabled" ~test:(function
+              | Disabled -> true
+              | Enabled_except_user_rules | Enabled -> false)
+          ; Repr.case0 "Enabled_except_user_rules" ~test:(function
+              | Enabled_except_user_rules -> true
+              | Disabled | Enabled -> false)
+          ; Repr.case0 "Enabled" ~test:(function
+              | Enabled -> true
+              | Disabled | Enabled_except_user_rules -> false)
+          ]
       ;;
+
+      include Repr.Poly (struct
+          type nonrec t = t
+
+          let repr = repr
+        end)
 
       let to_string = function
         | Disabled -> "disabled"
@@ -228,11 +277,7 @@ module Dune_config = struct
           ]
       ;;
 
-      let to_dyn = function
-        | Disabled -> Dyn.variant "Disabed" []
-        | Enabled_except_user_rules -> Dyn.variant "Enabled_except_user_rules" []
-        | Enabled -> Dyn.variant "Enabled" []
-      ;;
+      let to_dyn = Repr.to_dyn repr
     end
 
     module Transport_deprecated = struct
@@ -263,12 +308,6 @@ module Dune_config = struct
 
       let to_dyn = Dyn.option Dune_cache.Mode.to_dyn
     end
-  end
-
-  module Action_output_on_success = struct
-    include Dune_engine.Execution_parameters.Action_output_on_success
-
-    let decode = enum all
   end
 
   module type S = sig
@@ -487,24 +526,7 @@ module Dune_config = struct
         let field f = f
       end)
 
-  let standard_watch_exclusions =
-    [ {|^_opam|}
-    ; {|/_opam|}
-    ; {|^_esy|}
-    ; {|/_esy|}
-    ; {|^\.#.*|} (* Such files can be created by Emacs and also Dune itself. *)
-    ; {|/\.#.*|}
-    ; {|~$|}
-    ; {|^#[^#]*#$|}
-    ; {|/#[^#]*#$|}
-    ; {|^4913$|} (* https://github.com/neovim/neovim/issues/3460 *)
-    ; {|/4913$|}
-    ; {|/.git|}
-    ; {|/.hg|}
-    ; {|:/windows|}
-    ]
-  ;;
-
+  let standard_watch_exclusions = Dune_scheduler.File_watcher.standard_watch_exclusions
   let hash = Poly.hash
 
   let default =
@@ -539,7 +561,7 @@ module Dune_config = struct
     let+ display = field_o "display" (1, 0) (enum Display.all)
     and+ concurrency = field_o "jobs" (1, 0) Concurrency.decode
     and+ terminal_persistence =
-      field_o "terminal-persistence" (1, 0) Terminal_persistence.decode
+      field_o "terminal-persistence" (1, 0) (enum Terminal_persistence.all)
     and+ sandboxing_preference =
       field_o "sandboxing_preference" (1, 0) Sandboxing_preference.decode
     and+ cache_enabled = field_o "cache" (2, 0) (Cache.Toggle.decode ~check)
@@ -586,9 +608,9 @@ module Dune_config = struct
            ~extra_info:"To trim the cache, use the 'dune cache trim' command."
          >>> Dune_lang.Decoder.bytes_unit)
     and+ action_stdout_on_success =
-      field_o "action_stdout_on_success" (3, 0) Action_output_on_success.decode
+      field_o "action_stdout_on_success" (3, 0) decode_action_stdout_on_success
     and+ action_stderr_on_success =
-      field_o "action_stderr_on_success" (3, 0) Action_output_on_success.decode
+      field_o "action_stderr_on_success" (3, 0) decode_action_stdout_on_success
     and+ project_defaults = field_o "project_defaults" (3, 17) Project_defaults.decode
     and+ pkg_enabled = field_o "pkg" (3, 20) Pkg_enabled.decode
     and+ experimental =
@@ -672,12 +694,7 @@ module Dune_config = struct
   let init t ~watch =
     Config.init (String.Map.of_list_exn t.experimental);
     Console.Backend.set (Display.console_backend t.display);
-    if watch
-    then (
-      match t.terminal_persistence with
-      | Preserve -> ()
-      | Clear_on_rebuild -> Console.reset ()
-      | Clear_on_rebuild_and_flush_history -> Console.reset_flush_history ());
+    if watch then Console.init t.terminal_persistence;
     Stdune.Io.set_copy_impl Config.(get copy_file);
     Log.verbose
     := match t.display with
@@ -708,12 +725,12 @@ module Dune_config = struct
                 let prog = Path.to_string prog in
                 let fdr, fdw = Unix.pipe () ~cloexec:true in
                 (match
-                   Spawn.spawn
+                   Stdune.Spawn.spawn
                      ~prog
                      ~argv:(prog :: args)
-                     ~stdin:(Lazy.force Dev_null.in_)
+                     ~stdin:(Fd.unsafe_to_unix_file_descr (Lazy.force Dev_null.in_))
                      ~stdout:fdw
-                     ~stderr:(Lazy.force Dev_null.out)
+                     ~stderr:(Fd.unsafe_to_unix_file_descr (Lazy.force Dev_null.out))
                      ()
                  with
                  | exception Unix.Unix_error _ ->
@@ -729,8 +746,8 @@ module Dune_config = struct
                      | exception End_of_file -> None
                    in
                    close_in ic;
-                   (match n, snd (Unix.waitpid [] pid) with
-                    | Some n, WEXITED 0 -> n
+                   (match n, Stdune.Proc.wait (Pid pid) [] with
+                    | Some n, Some { status = WEXITED 0; _ } -> n
                     | _ -> loop rest)))
          in
          loop commands))
@@ -745,10 +762,13 @@ module Dune_config = struct
         Log.info "Auto-detected concurrency" [ "concurrency", Dyn.int n ];
         n
     in
-    (Dune_engine.Clflags.display
+    (Stdune.Clflags.display
      := match t.display with
-        | Tui -> Dune_engine.Display.Quiet
+        | Tui -> Stdune.Display.Quiet
         | Simple { verbosity; _ } -> verbosity);
-    { Scheduler.Config.concurrency; print_ctrl_c_warning; watch_exclusions }
+    { Dune_scheduler.Scheduler.Config.concurrency
+    ; print_ctrl_c_warning
+    ; watch_exclusions
+    }
   ;;
 end

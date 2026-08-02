@@ -139,8 +139,8 @@ let decode files =
           Sandbox_config config )
       ; ( "include"
         , let+ () = Syntax.since Stanza.syntax (3, 1)
-          and+ filename = filename in
-          Include filename )
+          and+ file_path = file_path in
+          Include file_path )
       ]
   in
   decode
@@ -150,6 +150,15 @@ let decode files =
 
 let decode_no_files = decode `Forbid
 let decode = decode `Allow
+
+let command_line_parser ~stanza_version =
+  Syntax.set
+    Stanza.syntax
+    (Active Stanza.latest_version)
+    (String_with_vars.set_decoding_env
+       (Pform.Env.initial ~stanza:stanza_version ~extensions:[])
+       decode)
+;;
 
 open Dune_sexp
 
@@ -170,4 +179,5 @@ let encode = function
   | Include t -> List [ Dune_sexp.atom "include"; Dune_sexp.atom t ]
 ;;
 
+let repr = Repr.view Dune_sexp.repr ~to_:encode
 let to_dyn t = Dune_sexp.to_dyn (encode t)

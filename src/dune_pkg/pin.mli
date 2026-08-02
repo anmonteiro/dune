@@ -33,11 +33,11 @@ end
 module Scan_project : sig
   type t =
     read:(Path.Source.t -> string Fiber.t)
-    -> files:Filename.Set.t
+    -> files:Filename.Array.Set.t
     -> (DB.t * Dune_lang.Package.t Package_name.Map.t) option Fiber.t
 end
 
-val resolve
-  :  DB.t
-  -> scan_project:Scan_project.t
-  -> Resolved_package.t Package_name.Map.t Fiber.t
+module Project : sig
+  val collect_all : Dune_lang.Dune_project.t list -> DB.t
+  val resolve : DB.t -> Resolved_package.t Package_name.Map.t Fiber.t
+end

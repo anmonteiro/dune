@@ -1,7 +1,6 @@
-  $ cat >dune-project <<EOF
-  > (lang dune 3.0)
-  > (package (name foo))
-  > EOF
+Reports %{...} syntax errors caused by illegal characters.
+
+  $ make_dune_project_with_package 3.0 foo
 
   $ cat >dune <<EOF
   > (rule

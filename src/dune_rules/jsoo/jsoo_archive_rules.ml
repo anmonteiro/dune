@@ -12,18 +12,21 @@ module Library_key = struct
   let to_dyn (dir, name) = Dyn.Tuple [ Path.Build.to_dyn dir; Dyn.string name ]
 end
 
-let find_library ~dir ~lib_name =
+let find_library ~expander ~dir ~lib_name =
   Dune_load.stanzas_in_dir dir
   >>= function
   | None -> Memo.return None
   | Some dune_file ->
-    let+ stanzas = Dune_file.stanzas dune_file in
-    List.find_map stanzas ~f:(fun stanza ->
+    let* stanzas = Dune_file.stanzas dune_file in
+    Memo.List.find_map stanzas ~f:(fun stanza ->
       match Stanza.repr stanza with
-      | Library.T lib ->
-        let name = Lib_name.Local.to_string (snd lib.name) in
-        Option.some_if (String.equal name lib_name) lib
-      | _ -> None)
+      | Library.T lib when String.equal (Lib_name.Local.to_string (snd lib.name)) lib_name
+        ->
+        Expander.eval_blang expander lib.enabled_if
+        >>| (function
+         | true -> Some lib
+         | false -> None)
+      | _ -> Memo.return None)
 ;;
 
 let library_cctx_memo =
@@ -34,22 +37,28 @@ let library_cctx_memo =
        let* sctx =
          Context.DB.by_dir lib_dir >>| Context.name >>= Super_context.find_exn
        in
-       find_library ~dir:lib_dir ~lib_name
+       let* expander = Super_context.expander sctx ~dir:lib_dir in
+       find_library ~expander ~dir:lib_dir ~lib_name
        >>= function
        | None -> Memo.return None
        | Some lib ->
          let* dir_contents = Dir_contents.get sctx ~dir:lib_dir in
          let* scope = Scope.DB.find_by_dir lib_dir in
-         let* expander = Super_context.expander sctx ~dir:lib_dir in
          (* [compile_context] may produce rules (via [modules_rules]) as implicit
             output. We collect and discard them here; they will be replayed by memo
             when the library directory is loaded through [Lib_rules.rules]. *)
          let* cctx, _cctx_rules =
            Rules.collect (fun () ->
-             Lib_rules.compile_context lib ~sctx ~dir_contents ~expander ~scope)
+             Lib_rules.compile_context
+               lib
+               ~sctx
+               ~dir_contents
+               ~expander
+               ~scope
+               ~for_:Ocaml)
          in
-         let modes = Compilation_context.modes cctx in
-         if modes.ocaml.byte then Memo.return (Some (lib, cctx)) else Memo.return None)
+         let modes = Compilation_context.modes cctx |> Option.value_exn in
+         if modes.byte then Memo.return (Some (lib, cctx)) else Memo.return None)
 ;;
 
 module Lib_archive_rule_key = struct
@@ -77,13 +86,13 @@ end
 let parse_lib_archive_dir dir =
   let jsoo_dir_config =
     match Path.Build.basename dir with
-    | s when Obj_dir.is_jsoo_dirname s -> Some (dir, None)
+    | s when Obj_dir.is_jsoo_dirname (Filename.to_string s) -> Some (dir, None)
     | config ->
       (match Path.Build.parent dir with
        | Some parent
          when (not (Path.Build.is_root parent))
-              && Obj_dir.is_jsoo_dirname (Path.Build.basename parent) ->
-         Some (parent, Some config)
+              && Obj_dir.is_jsoo_dirname (Path.Build.basename parent |> Filename.to_string)
+         -> Some (parent, Some (Filename.to_string config))
        | _ -> None)
   in
   match jsoo_dir_config with
@@ -93,7 +102,7 @@ let parse_lib_archive_dir dir =
     (* The ".<lib_name>.objs" convention comes from
        [Obj_dir.Paths.library_object_directory]. *)
     let lib_name =
-      String.drop_prefix (Path.Build.basename obj_dir) ~prefix:"."
+      String.drop_prefix (Path.Build.basename obj_dir |> Filename.to_string) ~prefix:"."
       |> Option.bind ~f:(String.drop_suffix ~suffix:".objs")
     in
     Option.map lib_name ~f:(fun lib_name ->

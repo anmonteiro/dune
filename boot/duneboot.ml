@@ -539,24 +539,24 @@ module Io = struct
     | Ok s -> s
   ;;
 
-  let do_then_copy ~f a b =
+  let do_then_copy ~f ~pp a b =
     let s = read_file a in
     with_file_out b ~f:(fun oc ->
       f oc;
-      output_string oc s)
+      output_string oc (if pp then Pps.pp s else s))
   ;;
 
   (* copy a file - fails if the file exists *)
-  let copy a b = do_then_copy ~f:(fun _ -> ()) a b
+  let copy a b = do_then_copy ~pp:false ~f:(fun _ -> ()) a b
 
   (* copy a file and insert a header - fails if the file exists *)
-  let copy_with_header ~header a b =
-    do_then_copy ~f:(fun oc -> output_string oc header) a b
+  let copy_with_header ~pp ~header a b =
+    do_then_copy ~pp ~f:(fun oc -> output_string oc header) a b
   ;;
 
   (* copy a file and insert a directive - fails if the file exists *)
   let copy_with_directive ~directive a b =
-    do_then_copy ~f:(fun oc -> fprintf oc "#%s 1 %S\n" directive a) a b
+    do_then_copy ~pp:false ~f:(fun oc -> fprintf oc "#%s 1 %S\n" directive a) a b
   ;;
 
   let rec rm_rf fn =
@@ -849,18 +849,35 @@ end = struct
       let stderr_fn, stderr_fd =
         if split then open_temp_file () else stdout_fn, stdout_fd
       in
-      Option.iter cwd ~f:Sys.chdir;
       let pid =
-        Unix.create_process
-          prog
-          (Array.of_list (prog :: args))
-          Unix.stdin
-          stdout_fd
-          stderr_fd
+        let res =
+          let max_retries = 5 in
+          let initial_delay = 0.01 in
+          let argv = Array.of_list (prog :: args) in
+          let rec loop retries_left delay =
+            Option.iter cwd ~f:Sys.chdir;
+            let res =
+              match Unix.create_process prog argv Unix.stdin stdout_fd stderr_fd with
+              | pid -> Ok pid
+              | exception exn -> Error exn
+            in
+            Option.iter cwd ~f:(fun (_ : string) -> Sys.chdir initial_cwd);
+            match res with
+            | Ok pid -> pid
+            | Error (Unix.Unix_error (Unix.EAGAIN, _, _)) when retries_left > 0 ->
+              Unix.sleepf delay;
+              loop (retries_left - 1) (delay *. 2.0)
+            | Error exn -> raise exn
+          in
+          try Ok (loop max_retries initial_delay) with
+          | exn -> Error exn
+        in
+        Unix.close stdout_fd;
+        if split then Unix.close stderr_fd;
+        match res with
+        | Ok pid -> pid
+        | Error exn -> raise exn
       in
-      Option.iter cwd ~f:(fun _ -> Sys.chdir initial_cwd);
-      Unix.close stdout_fd;
-      if split then Unix.close stderr_fd;
       let ivar = Ivar.create () in
       Hashtbl.add running ~key:pid ~data:ivar;
       let* (status : Unix.process_status) = Ivar.read ivar in
@@ -935,7 +952,17 @@ module Process = Fiber.Process
 (** {2 OCaml tools} *)
 
 module Libs = struct
-  let external_libraries = [ "unix"; "threads" ]
+  let ocaml_version = Scanf.sscanf Sys.ocaml_version "%d.%d" (fun a b -> a, b)
+
+  let is_oxcaml =
+    let check suffix = String.ends_with Sys.ocaml_version ~suffix in
+    check "+ox" || check "+jst"
+  ;;
+
+  let external_libraries =
+    let base = [ "unix"; "threads" ] in
+    if ocaml_version >= (5, 0) && not is_oxcaml then base @ [ "runtime_events" ] else base
+  ;;
 
   let make_lib lib =
     let root_module =
@@ -966,18 +993,6 @@ module Libs = struct
       }
     ; { path = "vendor/re/src"
       ; main_module_name = Some "Re"
-      ; include_subdirs = No
-      ; special_builtin_support = None
-      ; root_module = None
-      }
-    ; { path = "vendor/spawn/src"
-      ; main_module_name = Some "Spawn"
-      ; include_subdirs = No
-      ; special_builtin_support = None
-      ; root_module = None
-      }
-    ; { path = "vendor/uutf"
-      ; main_module_name = Some "Uutf"
       ; include_subdirs = No
       ; special_builtin_support = None
       ; root_module = None
@@ -1139,6 +1154,12 @@ let copy_parser ~header src dst =
 
 (** {2 Preparation of library files} *)
 module Build_info = struct
+  let has_git_dir () =
+    match Unix.stat ".git" with
+    | { st_kind = S_DIR; _ } -> true
+    | _ | (exception Unix.Unix_error (_, _, _)) -> false
+  ;;
+
   let get_version () =
     match
       match Io.read_lines "dune-project" with
@@ -1151,7 +1172,7 @@ module Build_info = struct
     with
     | Some _ as s -> Fiber.return s
     | None ->
-      if not (Sys.file_exists ".git")
+      if not (has_git_dir ())
       then Fiber.return None
       else (
         match
@@ -1260,7 +1281,7 @@ module File_kind = struct
         let fn = Filename.remove_extension fn in
         let check suffix = String.ends_with fn ~suffix in
         let x86 gnu _msvc =
-          (* CR rgrinberg: select msvc flags on windows *)
+          (* CR-someday rgrinberg: select msvc flags on windows *)
           Some `amd64, gnu
         in
         if check "_sse2"
@@ -1457,6 +1478,14 @@ module Group = struct
 end
 
 module Library = struct
+  let rec merge_sources left right =
+    String.Map.union left right ~f:(fun _key (left : _ String.Trie.node) right ->
+      match left, right with
+      | Node _, _ -> Some left
+      | Tree left, Tree right -> Some (Tree (merge_sources left right))
+      | Tree _, Node _ -> Some left)
+  ;;
+
   (* Collect source files *)
   let scan ~module_path ~dir ~include_subdirs =
     let rec collect dir module_path =
@@ -1494,6 +1523,28 @@ module Library = struct
       String.Map.union files dirs ~f:(fun _ _ _ -> assert false)
     in
     collect dir module_path
+  ;;
+
+  let copy_only_vendor_c_file file = Filename.basename file <> "ev.c"
+
+  (* Bootstrap does not evaluate [copy_files], so [lev] must explicitly pull
+     in the vendored C sources and headers that live next to [src]. We only
+     compile [ev.c]; the other vendored [.c] files are conditionally included
+     by [ev.c] and must only be copied into the boot directory. *)
+  let extra_sources ~dir =
+    match dir with
+    | "src/lev/src" ->
+      let vendor_dir = Filename.dirname dir ^/ "vendor" in
+      if Sys.file_exists vendor_dir && Sys.is_directory vendor_dir
+      then
+        scan ~module_path:[] ~dir:vendor_dir ~include_subdirs:No
+        |> String.Trie.map ~f:(fun (source : File_kind.t Source.t) ->
+          match source.kind with
+          | File_kind.C _ when copy_only_vendor_c_file source.file ->
+            { source with kind = File_kind.Header }
+          | _ -> source)
+      else String.Trie.empty
+    | _ -> String.Trie.empty
   ;;
 
   module Conv = Trie.Conv (String.Trie) (Module.Name.Trie)
@@ -1583,6 +1634,8 @@ module Library = struct
       | "lmdb_stubs.c", _, _, _ -> [ "-I ." ]
       | "mdb.c", `Msvc, `Win32, _ -> [ "/wd4333"; "/wd4172" ]
       | "mdb.c", `Other, `Win32, _ -> [ "-Wno-return-local-addr" ]
+      | "ev.c", `Msvc, _, _ -> [ "/w" ]
+      | "ev.c", _, _, _ -> [ "-w" ]
       | _, _, _, _ -> []
     in
     { Source.flags = extra_flags @ c.flags; name = fn }
@@ -1610,12 +1663,15 @@ module Library = struct
     | Header | C _ ->
       Io.copy_with_directive ~directive:"line" fn dst;
       Fiber.return [ mangled ]
-    | Ml { kind = `Ml | `Mli; _ } ->
-      Io.copy_with_header ~header fn dst;
+    | Ml { kind = `Mli; _ } ->
+      Io.copy_with_header ~pp:false ~header fn dst;
+      Fiber.return [ mangled ]
+    | Ml { kind = `Ml; _ } ->
+      Io.copy_with_header ~pp:true ~header fn dst;
       Fiber.return [ mangled ]
     | Ml { kind = `Mll; _ } -> copy_lexer fn dst ~header >>> Fiber.return [ mangled ]
     | Ml { kind = `Mly; _ } ->
-      (* CR rgrinberg: what if the parser already has an mli? *)
+      (* CR-someday rgrinberg: what if the parser already has an mli? *)
       copy_parser fn dst ~header >>> Fiber.return [ mangled; mangled ^ "i" ]
   ;;
 
@@ -1697,7 +1753,7 @@ module Library = struct
         | None -> []
         | Some x -> [ Module.Name.to_string x ]
       in
-      scan ~module_path ~dir ~include_subdirs
+      merge_sources (scan ~module_path ~dir ~include_subdirs) (extra_sources ~dir)
     in
     let modules, path_by_obj =
       let root_module = Option.map root_module ~f:fst in
@@ -1954,7 +2010,9 @@ let resolve_externals external_libraries =
     let convert = function
       | "threads" -> Some ("threads" ^ Config.ocaml_archive_ext, [ "-I"; "+threads" ])
       | "unix" -> Some ("unix" ^ Config.ocaml_archive_ext, Config.unix_library_flags)
-      | "csexp" | "pp" | "re" | "seq" | "spawn" | "uutf" -> None
+      | "runtime_events" ->
+        Some ("runtime_events" ^ Config.ocaml_archive_ext, [ "-I"; "+runtime_events" ])
+      | "csexp" | "pp" | "re" | "seq" -> None
       | s -> fatal "unhandled external library %s" s
     in
     List.filter_map ~f:convert external_libraries |> List.split

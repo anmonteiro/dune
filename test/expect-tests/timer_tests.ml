@@ -3,7 +3,7 @@ open Fiber.O
 open Dune_scheduler
 
 let config =
-  Dune_engine.Clflags.display := Short;
+  Clflags.display := Short;
   { Scheduler.Config.concurrency = 1
   ; print_ctrl_c_warning = false
   ; watch_exclusions = []
@@ -11,31 +11,25 @@ let config =
 ;;
 
 let%expect_test "create and wait for timer" =
-  Scheduler.Run.go
-    ~on_event:(fun _ _ -> ())
-    config
-    (fun () ->
-       let now () = Time.now () in
-       let start = now () in
-       let duration = Time.Span.of_secs 0.2 in
-       let+ () = Scheduler.sleep duration in
-       assert (Time.Span.to_secs (Time.diff (now ()) start) >= Time.Span.to_secs duration);
-       print_endline "timer finished successfully");
+  Scheduler.Run.go config (fun () ->
+    let now () = Time.now () in
+    let start = now () in
+    let duration = Time.Span.of_secs 0.2 in
+    let+ () = Scheduler.sleep duration in
+    assert (Time.Span.to_secs (Time.diff (now ()) start) >= Time.Span.to_secs duration);
+    print_endline "timer finished successfully");
   [%expect {| timer finished successfully |}]
 ;;
 
 let%expect_test "multiple timers" =
-  Scheduler.Run.go
-    ~on_event:(fun _ _ -> ())
-    config
-    (fun () ->
-       [ 0.3; 0.2; 0.1 ]
-       |> Fiber.parallel_iter ~f:(fun duration ->
-         let+ () =
-           let duration = Time.Span.of_secs duration in
-           Scheduler.sleep duration
-         in
-         printfn "finished %0.2f" duration));
+  Scheduler.Run.go config (fun () ->
+    [ 0.3; 0.2; 0.1 ]
+    |> Fiber.parallel_iter ~f:(fun duration ->
+      let+ () =
+        let duration = Time.Span.of_secs duration in
+        Scheduler.sleep duration
+      in
+      printfn "finished %0.2f" duration));
   [%expect
     {|
     finished 0.10
@@ -43,25 +37,35 @@ let%expect_test "multiple timers" =
     finished 0.30 |}]
 ;;
 
+let%expect_test "simultaneous timers are deterministic" =
+  Scheduler.Run.go config (fun () ->
+    [ "first"; "second"; "third" ]
+    |> Fiber.parallel_iter ~f:(fun name ->
+      let+ () = Scheduler.sleep Time.Span.zero in
+      print_endline name));
+  [%expect
+    {|
+    first
+    second
+    third |}]
+;;
+
 let%expect_test "run process with timeout" =
-  Scheduler.Run.go
-    ~on_event:(fun _ _ -> ())
-    config
-    (fun () ->
-       let pid =
-         let prog =
-           let path = Env.get Env.initial "PATH" |> Option.value_exn |> Bin.parse_path in
-           Bin.which ~path "sleep" |> Option.value_exn |> Path.to_string
-         in
-         Spawn.spawn ~prog ~argv:[ prog; "100000" ] () |> Pid.of_int
-       in
-       let+ (_ : Proc.Process_info.t) =
-         Scheduler.wait_for_process
-           ~timeout:(Time.Span.of_secs 0.1)
-           ~is_process_group_leader:false
-           pid
-       in
-       print_endline "sleep timed out");
+  Scheduler.Run.go config (fun () ->
+    let pid =
+      let prog =
+        let path = Env.get Env.initial "PATH" |> Option.value_exn |> Bin.parse_path in
+        Bin.which ~path "sleep" |> Option.value_exn |> Path.to_string
+      in
+      Spawn.spawn ~prog ~argv:[ prog; "100000" ] ()
+    in
+    let+ (_ : Proc.Process_info.t) =
+      Scheduler.wait_for_process
+        ~timeout:(Time.Span.of_secs 0.1)
+        ~is_process_group_leader:false
+        pid
+    in
+    print_endline "sleep timed out");
   [%expect
     {|
     sleep timed out |}]

@@ -1,5 +1,5 @@
 open Import
-module Client = Dune_rpc_client.Client
+module Client = Root.Rpc.Client
 
 let ( let** ) x f =
   let open Fiber.O in
@@ -48,7 +48,9 @@ let registered_dunes () : Dune_rpc.Registry.Dune.t list Fiber.t =
   let config = Dune_rpc.Registry.Config.create (Lazy.force Dune_util.xdg) in
   let registry = Dune_rpc.Registry.create config in
   let open Fiber.O in
-  let+ _result = Dune_rpc_impl.Poll_active.poll registry in
+  let+ (_result : (Dune_rpc.Registry.Refresh.t, exn) result) =
+    Root.Rpc.Poll_active.poll registry
+  in
   Dune_rpc.Registry.current registry
 ;;
 
@@ -62,7 +64,7 @@ type status =
 (** Fetch the status of a single Dune instance *)
 let get_status (dune : Dune_rpc.Registry.Dune.t) =
   let root = Dune_rpc.Registry.Dune.root dune in
-  let pid = Dune_rpc.Registry.Dune.pid dune |> Pid.of_int in
+  let pid = Dune_rpc.Registry.Dune.pid dune |> Pid.of_int_exn in
   let where = Dune_rpc.Registry.Dune.where dune in
   let open Fiber.O in
   let+ result = server_response_map ~where ~f:List.length in

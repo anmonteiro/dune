@@ -14,9 +14,9 @@ type mkdir_result =
   | `Missing_parent_directory
   ]
 
-let mkdir ?(perms = 0o777) t_s =
+let mkdir ?(perms = Permissions.Mode.default_dir) t_s =
   try
-    Unix.mkdir t_s perms;
+    Unix.mkdir t_s (Permissions.Mode.to_int perms);
     `Created
   with
   | Unix.Unix_error (EEXIST, _, _) -> `Already_exists
@@ -106,29 +106,6 @@ let follow_symlink path =
   | Ok None -> Error Not_a_symlink
   | Ok (Some p) -> loop 20 p
   | Error e -> Error (Unix_error e)
-;;
-
-let rec follow_symlinks path =
-  let parent = Filename.dirname path in
-  let file = Filename.basename path in
-  (* If we reached the root, just return the path. *)
-  if parent = path
-  then Some path
-  else if parent = Filename.current_dir_name
-  then
-    (* Only keep the initial ["."] if it was in the path. *)
-    if path = Filename.concat Filename.current_dir_name file then Some path else Some file
-  else (
-    (* Recurse on parent, and re-add toplevel file. *)
-    match follow_symlinks parent with
-    | None -> None
-    | Some parent ->
-      let path = Filename.concat parent file in
-      (* Normalize the result. *)
-      (match follow_symlink path with
-       | Ok p -> Some p
-       | Error Max_depth_exceeded -> None
-       | Error _ -> Some path))
 ;;
 
 let win32_unlink fn =
@@ -268,6 +245,7 @@ let rm_rf ?(chmod = false) fn =
 ;;
 
 let default ~dir:_ _ acc = acc
+let filename = Filename.of_string_exn
 
 (* CR-someday rgrinberg: maybe we should make sure that we don't hit any
    symlink loops here? *)
@@ -280,6 +258,7 @@ let traverse
       ?(on_symlink = `Resolve)
       ?(enter_dir = fun ~dir:_ _fname -> true)
       ?(on_error = `Raise)
+      ?(sort_entries = false)
       ()
   =
   let on_other =
@@ -292,20 +271,21 @@ let traverse
           [ Pp.textf
               "unrecognized file kind %s in %S"
               (File_kind.to_string_hum kind)
-              (Filename.concat dir fname)
+              (Filename.append dir fname)
           ]
   in
   let handle_kind ~dir fname kind stack acc =
+    let filename = filename fname in
     match (kind : Unix.file_kind) with
     | S_DIR ->
-      (match enter_dir ~dir fname with
+      (match enter_dir ~dir filename with
        | false -> stack, acc
        | true ->
-         let acc = on_dir ~dir fname acc in
+         let acc = on_dir ~dir filename acc in
          let stack = Filename.concat dir fname :: stack in
          stack, acc)
-    | S_REG -> stack, on_file ~dir fname acc
-    | kind -> stack, on_other ~dir fname kind acc
+    | S_REG -> stack, on_file ~dir filename acc
+    | kind -> stack, on_other ~dir filename kind acc
   in
   let on_error =
     match on_error with
@@ -323,6 +303,15 @@ let traverse
          let acc = on_error ~dir e acc in
          loop root dirs acc
        | Ok entries ->
+         let entries =
+           if sort_entries
+           then
+             List.sort
+               ~compare:(fun (name1, _kind1) (name2, _kind2) ->
+                 String.compare name2 name1)
+               entries
+           else entries
+         in
          let stack, acc =
            List.fold_left entries ~init:(dirs, acc) ~f:(fun (stack, acc) (fname, kind) ->
              match (kind : Unix.file_kind) with
@@ -341,7 +330,7 @@ let traverse
                      stack, on_error ~dir (x, y, z) acc
                    | stat -> handle_kind ~dir fname stat.st_kind stack acc)
                 | `Call f ->
-                  let acc, kind = f ~dir fname acc in
+                  let acc, kind = f ~dir (filename fname) acc in
                   (match kind with
                    | None -> stack, acc
                    | Some kind -> handle_kind ~dir fname kind stack acc))
@@ -356,7 +345,7 @@ let traverse_files ~dir ~init ~f =
   let skip = fun ~dir:_ _fname acc -> acc in
   let root = dir in
   let on_symlink ~dir fname acc =
-    let path = Filename.concat (Filename.concat root dir) fname in
+    let path = Filename.append (Filename.concat root dir) fname in
     match Unix.stat path with
     | { Unix.st_kind = kind; _ } -> acc, Some kind
     | exception Unix.Unix_error (Unix.ENOENT, _, _) -> acc, None
@@ -385,7 +374,7 @@ let is_broken_symlink path =
 
 let is_directory x =
   try (Unix.stat x).st_kind = S_DIR with
-  | Unix.Unix_error (ENOENT, _, _) -> false
+  | Unix.Unix_error ((ENOENT | ENOTDIR), _, _) -> false
 ;;
 
 let exists x =
@@ -393,5 +382,5 @@ let exists x =
     ignore (Unix.stat x);
     true
   with
-  | Unix.Unix_error (ENOENT, _, _) -> false
+  | Unix.Unix_error ((ENOENT | ENOTDIR), _, _) -> false
 ;;

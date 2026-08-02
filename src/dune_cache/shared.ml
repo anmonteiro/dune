@@ -64,12 +64,16 @@ module Target = struct
     let path = Path.Build.to_string path in
     match Unix.lstat path with
     | { Unix.st_kind = Unix.S_REG; st_perm; _ } ->
-      Unix.chmod path (Permissions.remove Permissions.write st_perm);
-      let executable = Permissions.test Permissions.execute st_perm in
+      let mode = Permissions.Mode.of_int st_perm in
+      Unix.chmod
+        path
+        (Permissions.remove Permissions.write mode |> Permissions.Mode.to_int);
+      let executable = Permissions.test Permissions.execute mode in
       Some (File { executable })
     | { Unix.st_kind = Unix.S_DIR; st_perm; _ } ->
+      let mode = Permissions.Mode.of_int st_perm in
       (* Adding "executable" permissions to directories mean we can traverse them. *)
-      Unix.chmod path (Permissions.add Permissions.execute st_perm);
+      Unix.chmod path (Permissions.add Permissions.execute mode |> Permissions.Mode.to_int);
       Some Directory
     | (exception Unix.Unix_error _) | _ -> None
   ;;
@@ -284,8 +288,14 @@ module File_restore = struct
   ;;
 
   let copy ~src ~dst =
-    try Io.copy_file ~src ~dst () with
-    | Sys_error _ -> raise_notrace (E Not_found_in_cache)
+    (try Io.copy_file ~src ~dst () with
+     | Sys_error _ -> raise_notrace (E Not_found_in_cache));
+    let src = Path.to_string src in
+    match Unix.stat src with
+    | exception Unix.Unix_error _ -> ()
+    | stats ->
+      (try Unix.chmod src stats.st_perm with
+       | Unix.Unix_error _ -> ())
   ;;
 
   let create_all_or_none (mode : Mode.t) (artifacts : _ Targets.Produced.t) =
@@ -402,27 +412,24 @@ let lookup ~can_go_in_shared_cache ~rule_digest ~targets
 (* If this function fails to store the rule to the shared cache, it returns
    [None] because we don't want this to be a catastrophic error. We simply log
    this incident and continue without saving the rule to the shared cache. *)
-let try_to_store_to_shared_cache ~mode ~rule_digest ~action ~produced_targets
+let try_to_store_to_shared_cache ~mode ~rule_digest ~loc ~produced_targets
   : Digest.t Targets.Produced.t option Fiber.t
   =
   let open Fiber.O in
   let hex = Digest.to_string rule_digest in
   let pp_error msg =
-    let action = action () in
     Pp.concat
-      [ Pp.textf "cache store error [%s]: %s after executing" hex msg
-      ; Pp.space
-      ; Pp.char '('
-      ; action
-      ; Pp.char ')'
+      [ Pp.textf
+          "cache store error [%s]: %s after executing action at %s"
+          hex
+          msg
+          (Loc.to_file_colon_line loc)
       ]
   in
   match
     Targets.Produced.map_with_errors
       produced_targets
       ~f:(fun target ->
-        (* All of this monad boilerplate seems unnecessary since we
-           don't care about errors... *)
         match Target.create target with
         | Some t -> Ok t
         | None -> Error ())
@@ -431,7 +438,13 @@ let try_to_store_to_shared_cache ~mode ~rule_digest ~action ~produced_targets
         | Some _ -> Ok ()
         | None -> Error ())
   with
-  | Error _ -> Fiber.return None
+  | Error errors ->
+    Log.info
+      "cache store target creation errors"
+      [ ( "failed"
+        , Dyn.list (fun (t, _) -> Path.Build.to_dyn t) (Nonempty_list.to_list errors) )
+      ];
+    Fiber.return None
   | Ok targets ->
     store_artifacts ~mode ~rule_digest targets
     >>= (function
@@ -467,20 +480,9 @@ module File_digest = struct
   module Digest_result = Dune_digest.Digest_result
   module Error = Digest_result.Error
 
-  (* CR-soon rgrinberg: a bunch of this is duplicated from cached_digest.ml.
-     This is temporary since [Cached_digest] is going to be limited source
-     files *)
-
   let refresh_async ~allow_dirs stats path =
     let path = Path.build path in
-    let open Fiber.O in
-    Digest.Stats_for_digest.of_unix_stats stats
-    |> Digest.path_with_stats_async ~allow_dirs path
-    >>| function
-    | Ok digest -> Ok digest
-    | Error Unexpected_kind -> Error (Error.Unexpected_kind stats.st_kind)
-    | Error (Unix_error (ENOENT, _, _)) -> Error No_such_file
-    | Error (Unix_error other_error) -> Error (Unix_error other_error)
+    Digest_result.path_with_unix_stats_async ~allow_dirs path stats
   ;;
 
   let refresh_without_removing_write_permissions_async ~allow_dirs path =
@@ -512,7 +514,12 @@ module File_digest = struct
             Fiber.return (Error Broken_symlink)
           | exception exn -> Fiber.return (Error (Digest_result.Error.of_exn exn)))
        | S_REG ->
-         let perm = Permissions.remove Permissions.write stats.st_perm in
+         let perm =
+           stats.st_perm
+           |> Permissions.Mode.of_int
+           |> Permissions.remove Permissions.write
+           |> Permissions.Mode.to_int
+         in
          (match Unix.chmod (Path.Build.to_string path) perm with
           | () -> refresh_async ~allow_dirs:false { stats with st_perm = perm } path
           | exception exn -> Fiber.return (Error (Digest_result.Error.of_exn exn)))
@@ -600,7 +607,6 @@ let examine_targets_and_store
       ~loc
       ~rule_digest
       ~should_remove_write_permissions_on_generated_files
-      ~action
       ~(produced_targets : unit Targets.Produced.t)
   : Digest.t Targets.Produced.t Fiber.t
   =
@@ -608,7 +614,7 @@ let examine_targets_and_store
   | Enabled { storage_mode = mode; reproducibility_check = _ } when can_go_in_shared_cache
     ->
     let open Fiber.O in
-    try_to_store_to_shared_cache ~mode ~rule_digest ~produced_targets ~action
+    try_to_store_to_shared_cache ~mode ~rule_digest ~produced_targets ~loc
     >>= (function
      | Some produced_targets_with_digests -> Fiber.return produced_targets_with_digests
      | None ->

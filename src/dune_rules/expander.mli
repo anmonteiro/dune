@@ -19,6 +19,12 @@ val make_root
   -> artifacts_host:Artifacts.t Memo.t
   -> t
 
+(** The host context this expander resolves to (the current context if there
+    is no cross-compilation). Used for resolving [%{bin:...}] artifacts and
+    package layouts, which must live in the context that produced the
+    binaries the action will execute. *)
+val host_context : t -> Context.t Memo.t
+
 val set_local_env_var : t -> var:string -> value:string Action_builder.t -> t
 
 val set_scope
@@ -131,4 +137,14 @@ val foreign_flags
       Fdecl.t
 
 val lookup_artifacts : (dir:Path.Build.t -> Artifacts_obj.t Memo.t) Fdecl.t
+
+val resolve_pkg_install_file
+  : (loc:Loc.t
+     -> Context_name.t
+     -> pkg:Package.Name.t
+     -> section:Section.t
+     -> file:Path.Local.t
+     -> Path.Build.t Memo.t)
+      Fdecl.t
+
 val to_expander0 : t -> Expander0.t

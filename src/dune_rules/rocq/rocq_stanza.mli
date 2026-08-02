@@ -18,7 +18,7 @@ module Buildable : sig
     { flags : Ordered_set_lang.Unexpanded.t
     ; rocq_lang_version : Dune_sexp.Syntax.Version.t
     ; mode : Rocq_mode.t option
-    ; use_stdlib : bool
+    ; use_corelib : bool
     ; plugins : (Loc.t * Lib_name.t) list (** ocaml plugins *)
     ; theories : (Loc.t * Rocq_lib_name.t) list (** rocq libraries *)
     ; loc : Loc.t
@@ -27,12 +27,12 @@ end
 
 module Extraction : sig
   type t =
-    { extracted_modules : string list
+    { target_fnames : string list
     ; prelude : Loc.t * Rocq_module.Name.t
     ; buildable : Buildable.t
     }
 
-  val ml_target_fnames : t -> string list
+  val target_fnames : t -> string list
 
   include Stanza.S with type t := t
 end

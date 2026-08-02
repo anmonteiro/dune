@@ -3,6 +3,19 @@ module List = ListLabels
 module String = StringLabels
 include Csexp
 
+let repr =
+  Repr.fix (fun repr ->
+    Repr.variant
+      "sexp"
+      [ Repr.case "Atom" Repr.string ~proj:(function
+          | Atom string -> Some string
+          | List _ -> None)
+      ; Repr.case "List" (Repr.list repr) ~proj:(function
+          | List list -> Some list
+          | Atom _ -> None)
+      ])
+;;
+
 let rec to_string = function
   | Atom s -> Escape.quote_if_needed s
   | List l -> Printf.sprintf "(%s)" (List.map ~f:to_string l |> String.concat ~sep:" ")
@@ -20,24 +33,11 @@ let rec pp = function
        ++ Pp.text ")")
 ;;
 
-let hash = Stdlib.Hashtbl.hash
-let string_equal (x : string) (y : string) = x = y
+include Repr.Poly (struct
+    type nonrec t = t
 
-let rec equal x y =
-  match x, y with
-  | Atom x, Atom y -> string_equal x y
-  | List x, List y -> equal_list x y
-  | _, _ -> false
-
-and equal_list xs ys =
-  (* replicating List.equal to avoid circular deps *)
-  match xs, ys with
-  | [], [] -> true
-  | x :: xs, y :: ys -> equal x y && equal_list xs ys
-  | _, _ -> false
-;;
-
-let compare x y = Ordering.of_int (compare x y)
+    let repr = repr
+  end)
 
 let rec of_dyn : Dyn.t -> t = function
   | Opaque -> Atom "<opaque>"

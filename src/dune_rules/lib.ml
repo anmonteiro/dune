@@ -209,7 +209,7 @@ module Error = struct
       ~loc
       [ Pp.textf
           "Library %S is private, it cannot be a dependency of a %s. You need to give %S \
-           a public name."
+           a public name or add a (package ...) field to its stanza."
           (Lib_name.to_string name)
           (match kind with
            | `Private_package -> "private library attached to a package"
@@ -379,14 +379,14 @@ module T = struct
     { info : Lib_info.external_
     ; name : Lib_name.t
     ; unique_id : Id.t
-    ; re_exports : t list Resolve.t Compilation_mode.By_mode.t
+    ; re_exports : t list Resolve.t Compilation_mode.Per_mode.t
     ; (* [requires] is contains all required libraries, including the ones
          mentioned in [re_exports]. *)
-      requires : t list Resolve.t Compilation_mode.By_mode.t
-    ; user_written_requires : (Loc.t * t) list Resolve.Memo.t Compilation_mode.By_mode.t
-    ; ppx_runtime_deps : t list Resolve.t Compilation_mode.By_mode.t
-    ; pps : t list Resolve.t Compilation_mode.By_mode.t
-    ; resolved_selects : Resolved_select.t list Resolve.t Compilation_mode.By_mode.t
+      requires : t list Resolve.t Compilation_mode.Per_mode.t
+    ; user_written_requires : (Loc.t * t) list Resolve.Memo.t Compilation_mode.Per_mode.t
+    ; ppx_runtime_deps : t list Resolve.t Compilation_mode.Per_mode.t
+    ; pps : t list Resolve.t Compilation_mode.Per_mode.t
+    ; resolved_selects : Resolved_select.t list Resolve.t Compilation_mode.Per_mode.t
     ; allow_unused_libraries : t list Resolve.t
     ; parameters : (Loc.t * t) list Resolve.t
     ; arguments : t option list
@@ -491,14 +491,14 @@ let info t = t.info
 let project t = t.project
 let implements t = Option.map ~f:Memo.return t.implements
 let parameters t = Resolve.Memo.lift (Resolve.map ~f:(List.map ~f:snd) t.parameters)
-let requires t ~for_ = Memo.return (Compilation_mode.By_mode.get ~for_ t.requires)
-let re_exports t ~for_ = Memo.return (Compilation_mode.By_mode.get ~for_ t.re_exports)
+let requires t ~for_ = Memo.return (Compilation_mode.Per_mode.get ~for_ t.requires)
+let re_exports t ~for_ = Memo.return (Compilation_mode.Per_mode.get ~for_ t.re_exports)
 
 let ppx_runtime_deps t ~for_ =
-  Memo.return (Compilation_mode.By_mode.get ~for_ t.ppx_runtime_deps)
+  Memo.return (Compilation_mode.Per_mode.get ~for_ t.ppx_runtime_deps)
 ;;
 
-let pps t ~for_ = Memo.return (Compilation_mode.By_mode.get ~for_ t.pps)
+let pps t ~for_ = Memo.return (Compilation_mode.Per_mode.get ~for_ t.pps)
 
 let is_local t =
   match Lib_info.obj_dir t.info |> Obj_dir.byte_dir with
@@ -508,7 +508,10 @@ let is_local t =
     (match Path.Build.extract_build_context dir with
      | None -> true
      | Some (name, _) ->
-       not (Context_name.equal (Context_name.of_string name) Private_context.t.name))
+       not
+         (Context_name.equal
+            (Context_name.of_string (Filename.to_string name))
+            Private_context.t.name))
 ;;
 
 let resolve_main_module_name t =
@@ -675,7 +678,7 @@ module Parameterised = struct
   let requires (lib : lib) ~for_ =
     let open Resolve.O in
     let+ deps =
-      Compilation_mode.By_mode.get lib.requires ~for_
+      Compilation_mode.Per_mode.get lib.requires ~for_
       >>= Resolve.List.map ~f:(complement_arguments ~parent:lib)
     in
     let deps = List.filter_opt lib.arguments @ deps in
@@ -848,7 +851,7 @@ module Sub_system = struct
     (* TODO this should continue using [Resolve]. Not doing so
        will prevent generating the [dune-package] rule if the sub system is
        missing *)
-    let module M = Memo.Make_parallel_map (Sub_system_name.Map) in
+    let module M = Memo.Map (Sub_system_name.Map) in
     fun lib ->
       M.parallel_map lib.sub_systems ~f:(fun _name inst ->
         let* (Sub_system0.Instance.T ((module M), t)) = Memo.Lazy.force inst in
@@ -1125,15 +1128,8 @@ let instrumentation_backend instrument_with resolve libname =
            ])
 ;;
 
-module rec Resolve_names : sig
+module Resolve_names : sig
   val find_internal : db -> Lib_name.t -> Status.t Memo.t
-
-  val resolve_dep
-    :  db
-    -> Loc.t * Lib_name.t
-    -> private_deps:private_deps
-    -> lib Resolve.t option Memo.t
-
   val resolve_lib_id : db -> Lib_id.t -> Status.t Memo.t
   val available_internal : db -> Lib_name.t -> bool Memo.t
   val available_by_lib_id_internal : db -> Lib_id.t -> bool Memo.t
@@ -1193,19 +1189,11 @@ module rec Resolve_names : sig
     -> for_:Compilation_mode.t
     -> lib list Resolve.Memo.t
 
-  val check_forbidden
-    :  lib list
-    -> forbidden_libraries:Loc.t Map.t
-    -> for_:Compilation_mode.t
-    -> unit Resolve.Memo.t
-
   val make_instantiate
     :  db Lazy.t
     -> (Lib_name.t -> Path.t Lib_info.t -> hidden:string option -> Status.t Memo.t)
          Staged.t
 end = struct
-  open Resolve_names
-
   let projects_by_package =
     Memo.lazy_ (fun () ->
       let open Memo.O in
@@ -1218,7 +1206,206 @@ end = struct
       >>| Package.Name.Map.of_list_exn)
   ;;
 
-  let resolve_parameters db ~private_deps info =
+  module Resolved = struct
+    type deps =
+      { resolved : (Loc.t * t) list Resolve.t
+      ; selects : Resolved_select.t list
+      ; re_exports : (Loc.t * t) list Resolve.t
+      }
+
+    type t =
+      { requires : lib list Resolve.t
+      ; pps : lib list Resolve.t
+      ; selects : Resolved_select.t list
+      ; re_exports : lib list Resolve.t
+      }
+
+    let user_written { resolved; selects = _; re_exports } =
+      let open Resolve.O in
+      let+ resolved = resolved
+      and+ re_exports = re_exports in
+      resolved @ re_exports
+      |> List.map ~f:(fun (loc, lib) -> lib, loc)
+      |> Map.of_list_multi
+      |> Map.to_list_map ~f:(fun lib locs ->
+        let loc = List.hd locs in
+        loc, lib)
+    ;;
+  end
+
+  module Resolved_builder : sig
+    type t
+
+    val empty : t
+    val add_resolved : t -> Loc.t -> lib Resolve.t -> t
+    val add_re_exports : t -> Loc.t -> lib Resolve.t -> t
+    val add_select : t -> (Loc.t * lib) list Resolve.t -> Resolved_select.t -> t
+    val value : t -> Resolved.deps
+  end = struct
+    open Resolve.O
+
+    type nonrec t = Resolved.deps
+
+    let empty =
+      { Resolved.resolved = Resolve.return []
+      ; selects = []
+      ; re_exports = Resolve.return []
+      }
+    ;;
+
+    let add_resolved_list t resolved =
+      let resolved =
+        let+ resolved = resolved
+        and+ tl = t.Resolved.resolved in
+        List.rev_append resolved tl
+      in
+      { t with Resolved.resolved }
+    ;;
+
+    let add_select (t : t) resolved select =
+      add_resolved_list
+        { t with Resolved.selects = select :: t.Resolved.selects }
+        resolved
+    ;;
+
+    let add_resolved t loc resolved =
+      add_resolved_list
+        t
+        (let+ resolved = resolved in
+         [ loc, resolved ])
+    ;;
+
+    let add_re_exports (t : t) loc lib =
+      let re_exports =
+        let+ hd = lib
+        and+ tl = t.Resolved.re_exports in
+        (loc, hd) :: tl
+      in
+      add_resolved { t with Resolved.re_exports } loc lib
+    ;;
+
+    let value { Resolved.resolved; selects; re_exports } =
+      let resolved =
+        let+ resolved = resolved in
+        List.rev resolved
+      in
+      let re_exports =
+        let+ re_exports = re_exports in
+        List.rev re_exports
+      in
+      { Resolved.resolved; selects; re_exports }
+    ;;
+  end
+
+  module Input = struct
+    type t = Lib_name.t * Path.t Lib_info.t * string option
+
+    let equal (lib_name, info, _) (lib_name', info', _) =
+      let lib_id = Lib_info.lib_id info
+      and lib_id' = Lib_info.lib_id info' in
+      Lib_name.equal lib_name lib_name' && Lib_id.equal lib_id lib_id'
+    ;;
+
+    let hash (x, _, _) = Lib_name.hash x
+    let to_dyn = Dyn.opaque
+  end
+
+  type pp_deps =
+    { pps : t list Resolve.Memo.t
+    ; runtime_deps : t list Resolve.Memo.t
+    }
+
+  module Closure = struct
+    type nonrec t =
+      { db : db option
+      ; forbidden_libraries : Loc.t Map.t
+      }
+
+    let make ~db ~forbidden_libraries = { db; forbidden_libraries }
+
+    module R = struct
+      type state =
+        { result : (lib * Dep_stack.t) list
+        ; visited : Set.t
+        ; unimplemented : Vlib.Unimplemented.t
+        }
+
+      let empty_state =
+        { result = []; visited = Set.empty; unimplemented = Vlib.Unimplemented.empty }
+      ;;
+
+      module M =
+        State.Make
+          (struct
+            type t = state
+          end)
+          (Resolve.Memo)
+
+      module List = Monad.List (M)
+      include M
+    end
+
+    let result computation kind ~for_ =
+      let* state, () = R.run computation R.empty_state in
+      Vlib.associate (List.rev state.result) kind ~for_
+    ;;
+  end
+
+  let rec closure_visit (t : Closure.t) ~stack ~for_ (implements_via, (lib : lib)) =
+    let open Closure in
+    let open R.O in
+    let* state = R.get in
+    if Set.mem state.visited lib
+    then R.return ()
+    else (
+      match Map.find t.forbidden_libraries lib with
+      | Some loc ->
+        let req_by = Dep_stack.to_required_by stack in
+        R.lift
+          (Error.make
+             ~loc
+             [ Pp.textf "Library %S was pulled in." (Lib_name.to_string lib.name)
+             ; Dep_path.pp req_by
+             ])
+      | None ->
+        let* () = R.set { state with visited = Set.add state.visited lib } in
+        let* () =
+          match t.db with
+          | None -> R.return ()
+          | Some db ->
+            (match Lib_info.status lib.info with
+             | Private (_, Some _) -> R.return ()
+             | _ ->
+               R.lift
+                 (let open Memo.O in
+                  find_internal db lib.name
+                  >>= function
+                  | Status.Found lib' ->
+                    if Id.equal lib.unique_id lib'.unique_id
+                    then Resolve.Memo.return ()
+                    else (
+                      let req_by = Dep_stack.to_required_by stack in
+                      Error.overlap ~in_workspace:lib'.info ~installed:(lib.info, req_by))
+                  | found ->
+                    Code_error.raise
+                      "Unexpected find result"
+                      [ "found", Status.to_dyn found
+                      ; "lib.name", Lib_name.to_dyn lib.name
+                      ]))
+        in
+        let* new_stack = R.lift (Dep_stack.push stack ~implements_via lib) in
+        let* deps = R.lift (Resolve.Memo.lift (Parameterised.requires lib ~for_)) in
+        let* unimplemented' = R.lift (Vlib.Unimplemented.add state.unimplemented lib) in
+        let* () = R.modify (fun state -> { state with unimplemented = unimplemented' }) in
+        let* () =
+          R.List.iter deps ~f:(fun l -> closure_visit t (None, l) ~stack:new_stack ~for_)
+        in
+        (match Parameterised.status lib with
+         | Partial -> R.return ()
+         | Not_parameterised | Complete ->
+           R.modify (fun state -> { state with result = (lib, stack) :: state.result })))
+
+  and resolve_parameters db ~private_deps info =
     let open Resolve.Memo.O in
     let* parameters =
       Resolve.Memo.List.filter_map (Lib_info.parameters info) ~f:(fun (loc, name) ->
@@ -1242,9 +1429,8 @@ end = struct
     in
     let+ () = check_duplicates parameters in
     List.map parameters ~f:(fun (loc, _, param) -> loc, param)
-  ;;
 
-  let instantiate_impl db (name, info, hidden) =
+  and instantiate_impl db (name, info, hidden) =
     let db = Lazy.force db in
     let open Memo.O in
     let unique_id = Id.make ~name ~path:(Lib_info.src_dir info) in
@@ -1278,18 +1464,18 @@ end = struct
         let instrumentation_backend =
           instrumentation_backend db.instrument_with resolve_forbid_ignore
         in
-        let modes = Compilation_mode.of_mode_set (Lib_info.modes info) in
-        Memo.parallel_map modes.modes ~f:(fun for_ ->
+        let modes = Compilation_mode.Set.of_lib_mode_set (Lib_info.modes info) in
+        Memo.parallel_map (Compilation_mode.Set.to_list modes) ~f:(fun for_ ->
           Lib_info.preprocess info ~for_
           |> Instrumentation.with_instrumentation ~instrumentation_backend
           >>| fun pps -> for_, Preprocess.Per_module.pps pps)
         |> Memo.map ~f:Resolve.all
-        >>| Compilation_mode.By_mode.of_list ~init:[]
+        >>| Compilation_mode.Per_mode.of_list ~init:[]
       in
       let* parameters = Resolve.Memo.lift parameters in
       let dune_version = Lib_info.dune_version info in
       let resolved =
-        Compilation_mode.By_mode.map pps ~f:(fun ~for_ pps ->
+        Compilation_mode.Per_mode.map pps ~f:(fun ~for_ pps ->
           let open Memo.O in
           let+ resolved =
             Lib_info.requires info ~for_
@@ -1306,7 +1492,7 @@ end = struct
       let open Memo.O in
       let+ ocaml = resolved.ocaml
       and+ melange = resolved.melange in
-      Resolve.return { Compilation_mode.By_mode.ocaml; melange }
+      Resolve.return { Compilation_mode.Per_mode.ocaml; melange }
     in
     let* implements =
       match Lib_info.implements info with
@@ -1368,12 +1554,11 @@ end = struct
                    ])))
     in
     let* requires =
-      Compilation_mode.By_mode.Memo.from_fun (fun ~for_ ->
+      Compilation_mode.Per_mode.Memo.from_fun (fun ~for_ ->
         let open Resolve.Memo.O in
         let* resolved = Memo.return resolved in
-        let* requires =
-          Memo.return (Compilation_mode.By_mode.get ~for_ resolved).requires
-        in
+        let { Resolved.requires; _ } = Compilation_mode.Per_mode.get ~for_ resolved in
+        let* requires = Memo.return requires in
         let+ requires_params = Memo.return parameters
         and+ requires_implements =
           match implements with
@@ -1408,25 +1593,25 @@ end = struct
     in
     let* ppx_runtime_deps =
       let ppx_runtime_deps = Lib_info.ppx_runtime_deps info in
-      Compilation_mode.By_mode.Memo.from_fun (fun ~for_ ->
-        let deps = Compilation_mode.By_mode.get ppx_runtime_deps ~for_ in
+      Compilation_mode.Per_mode.Memo.from_fun (fun ~for_ ->
+        let deps = Compilation_mode.Per_mode.get ppx_runtime_deps ~for_ in
         resolve_simple_deps db ~private_deps deps)
     in
     let user_written_requires =
-      Compilation_mode.By_mode.from_fun (fun ~for_ ->
+      Compilation_mode.Per_mode.from_fun (fun ~for_ ->
         let open Memo.O in
         let+ complex =
           Lib_info.requires info ~for_
           |> resolve_complex_deps db ~private_deps ~parameters:[] ~for_
         in
-        Resolve_names.Resolved.user_written complex)
+        Resolved.user_written complex)
     in
     let* allow_unused_libraries =
       Lib_info.allow_unused_libraries info |> resolve_simple_deps db ~private_deps
     in
     let src_dir = Lib_info.src_dir info in
     let map_error =
-      Compilation_mode.By_mode.map ~f:(fun ~for_:_ x ->
+      Compilation_mode.Per_mode.map ~f:(fun ~for_:_ x ->
         Resolve.push_stack_frame x ~human_readable_description:(fun () ->
           Dep_path.Entry.Lib.pp { name; path = src_dir }))
     in
@@ -1444,19 +1629,19 @@ end = struct
     let rec t =
       lazy
         (let resolved_selects =
-           Compilation_mode.By_mode.from_fun (fun ~for_ ->
+           Compilation_mode.Per_mode.from_fun (fun ~for_ ->
              let open Resolve.O in
-             resolved >>| Compilation_mode.By_mode.get ~for_ >>| fun r -> r.selects)
+             resolved >>| Compilation_mode.Per_mode.get ~for_ >>| fun r -> r.selects)
          in
          let pps =
-           Compilation_mode.By_mode.from_fun (fun ~for_ ->
+           Compilation_mode.Per_mode.from_fun (fun ~for_ ->
              let open Resolve.O in
-             resolved >>| Compilation_mode.By_mode.get ~for_ >>= fun r -> r.pps)
+             resolved >>| Compilation_mode.Per_mode.get ~for_ >>= fun r -> r.pps)
          in
          let re_exports =
-           Compilation_mode.By_mode.from_fun (fun ~for_ ->
+           Compilation_mode.Per_mode.from_fun (fun ~for_ ->
              let open Resolve.O in
-             resolved >>| Compilation_mode.By_mode.get ~for_ >>= fun r -> r.re_exports)
+             resolved >>| Compilation_mode.Per_mode.get ~for_ >>= fun r -> r.re_exports)
          in
          { info
          ; name
@@ -1512,50 +1697,21 @@ end = struct
       | Some reason -> Hidden (Hidden.of_lib t ~reason)
     in
     res
-  ;;
 
-  module Input = struct
-    type t = Lib_name.t * Path.t Lib_info.t * string option
-
-    let equal (lib_name, info, _) (lib_name', info', _) =
-      let lib_id = Lib_info.lib_id info
-      and lib_id' = Lib_info.lib_id info' in
-      Lib_name.equal lib_name lib_name' && Lib_id.equal lib_id lib_id'
-    ;;
-
-    let hash (x, _, _) = Lib_name.hash x
-    let to_dyn = Dyn.opaque
-  end
-
-  let make_instantiate db =
-    let module Non_rec = struct
-      module Rec : sig
-        val memo
-          :  Lib_name.t
-          -> Path.t Lib_info.t
-          -> hidden:string option
-          -> Status.t Memo.t
-      end = struct
-        let memo =
-          let memo =
-            Memo.create
-              "db-instantiate"
-              ~input:(module Input)
-              (instantiate_impl db)
-              ~human_readable_description:(fun (name, info, _hidden) ->
-                Dep_path.Entry.Lib.pp { name; path = Lib_info.src_dir info })
-          in
-          fun name info ~hidden -> Memo.exec memo (name, info, hidden)
-        ;;
-      end
-    end
+  and make_instantiate db =
+    let memo =
+      Memo.create
+        "db-instantiate"
+        ~input:(module Input)
+        (instantiate_impl db)
+        ~human_readable_description:(fun (name, info, _hidden) ->
+          Dep_path.Entry.Lib.pp { name; path = Lib_info.src_dir info })
     in
-    Staged.stage Non_rec.Rec.memo
-  ;;
+    Staged.stage (fun name info ~hidden -> Memo.exec memo (name, info, hidden))
 
-  let instantiate db name info ~hidden = (Lazy.force db.instantiate) name info ~hidden
+  and instantiate db name info ~hidden = (Lazy.force db.instantiate) name info ~hidden
 
-  let resolve_hidden db ~info hidden =
+  and resolve_hidden db ~info hidden =
     let open Memo.O in
     (match db.parent with
      | None -> Memo.return Status.Not_found
@@ -1567,9 +1723,8 @@ end = struct
     | _ ->
       let name = Lib_info.name info in
       instantiate db name info ~hidden:(Some hidden)
-  ;;
 
-  let handle_resolve_result db ~super = function
+  and handle_resolve_result db ~super = function
     | Ignore -> Memo.return Status.Ignore
     | Redirect_in_the_same_db (_, name') -> find_internal db name'
     | Redirect_by_name (db', (_, name')) -> find_internal db' name'
@@ -1583,9 +1738,8 @@ end = struct
        | None -> Memo.return Status.Not_found
        | Some db -> super db)
     | Hidden { lib = info; reason = hidden; path = _ } -> resolve_hidden db ~info hidden
-  ;;
 
-  let handle_resolve_result_with_multiple_results db ~super = function
+  and handle_resolve_result_with_multiple_results db ~super = function
     | [] -> handle_resolve_result ~super db Not_found
     | [ r ] -> handle_resolve_result ~super db r
     | candidates ->
@@ -1626,15 +1780,13 @@ end = struct
                 Status.Invalid (Error.duplicated ~loc_a ~loc_b ~name))
            | (Found _ as lib), _ | _, (Found _ as lib) -> lib
            | _, _ -> acc))
-  ;;
 
-  let find_internal db (name : Lib_name.t) =
+  and find_internal db (name : Lib_name.t) =
     let open Memo.O in
     let super db = find_internal db name in
     db.resolve name >>= handle_resolve_result_with_multiple_results ~super db
-  ;;
 
-  let resolve_dep db (loc, name) ~private_deps : t Resolve.t option Memo.t =
+  and resolve_dep db (loc, name) ~private_deps : t Resolve.t option Memo.t =
     let open Memo.O in
     find_internal db name
     >>= function
@@ -1644,40 +1796,35 @@ end = struct
     | Not_found -> Error.not_found ~loc ~name >>| Option.some
     | Invalid why -> Resolve.Memo.of_result (Error why) >>| Option.some
     | Hidden h -> Hidden.error h ~loc ~name >>| Option.some
-  ;;
 
-  let resolve_lib_id db lib_id =
+  and resolve_lib_id db lib_id =
     let open Memo.O in
     let super db = resolve_lib_id db lib_id in
     db.resolve_lib_id lib_id >>= handle_resolve_result ~super db
-  ;;
 
-  let available_internal db (name : Lib_name.t) =
+  and available_internal db (name : Lib_name.t) =
     let open Memo.O in
     find_internal db name
     >>| function
     | Ignore | Found _ -> true
     | Not_found | Invalid _ | Hidden _ -> false
-  ;;
 
-  let available_by_lib_id_internal db (lib_id : Lib_id.t) =
+  and available_by_lib_id_internal db (lib_id : Lib_id.t) =
     let open Memo.O in
     resolve_lib_id db lib_id
     >>| function
     | Ignore | Found _ -> true
     | Not_found | Invalid _ | Hidden _ -> false
-  ;;
 
-  let resolve_simple_deps db names ~private_deps : t list Resolve.Memo.t =
+  and resolve_simple_deps db names ~private_deps : t list Resolve.Memo.t =
     Resolve.Memo.List.filter_map names ~f:(fun dep ->
       let open Memo.O in
       resolve_dep db ~private_deps dep
       >>| function
       | None -> Resolve.return None
       | Some r -> Resolve.map r ~f:Option.some)
-  ;;
 
-  let re_exports_closure =
+  and re_exports_closure ts ~for_ =
     let module R = struct
       module M =
         State.Make
@@ -1691,109 +1838,21 @@ end = struct
     end
     in
     let open R.O in
-    fun ts ~for_ ->
-      let rec one (t : lib) =
-        let* res, visited = R.get in
-        if Set.mem visited t
-        then R.return ()
-        else
-          let* () = R.set (res, Set.add visited t) in
-          let* re_exports = R.lift (re_exports t ~for_) in
-          let* () = many re_exports in
-          R.modify (fun (res, visited) -> t :: res, visited)
-      and many l = R.List.iter l ~f:one in
-      let open Resolve.Memo.O in
-      let+ (res, _visited), () = R.run (many ts) ([], Set.empty) in
-      List.rev res
-  ;;
+    let rec one (t : lib) =
+      let* res, visited = R.get in
+      if Set.mem visited t
+      then R.return ()
+      else
+        let* () = R.set (res, Set.add visited t) in
+        let* re_exports = R.lift (re_exports t ~for_) in
+        let* () = many re_exports in
+        R.modify (fun (res, visited) -> t :: res, visited)
+    and many l = R.List.iter l ~f:one in
+    let open Resolve.Memo.O in
+    let+ (res, _visited), () = R.run (many ts) ([], Set.empty) in
+    List.rev res
 
-  module Resolved = struct
-    type deps =
-      { resolved : (Loc.t * t) list Resolve.t
-      ; selects : Resolved_select.t list
-      ; re_exports : (Loc.t * t) list Resolve.t
-      }
-
-    type t =
-      { requires : lib list Resolve.t
-      ; pps : lib list Resolve.t
-      ; selects : Resolved_select.t list
-      ; re_exports : lib list Resolve.t
-      }
-
-    let user_written { resolved; selects = _; re_exports } =
-      let open Resolve.O in
-      let+ resolved = resolved
-      and+ re_exports = re_exports in
-      resolved @ re_exports
-      |> List.map ~f:(fun (loc, lib) -> lib, loc)
-      |> Map.of_list_multi
-      |> Map.to_list_map ~f:(fun lib locs ->
-        let loc = List.hd locs in
-        loc, lib)
-    ;;
-
-    module Builder : sig
-      type t
-
-      val empty : t
-      val add_resolved : t -> Loc.t -> lib Resolve.t -> t
-      val add_re_exports : t -> Loc.t -> lib Resolve.t -> t
-      val add_select : t -> (Loc.t * lib) list Resolve.t -> Resolved_select.t -> t
-      val value : t -> deps
-    end = struct
-      open Resolve.O
-
-      type nonrec t = deps
-
-      let empty =
-        { resolved = Resolve.return []; selects = []; re_exports = Resolve.return [] }
-      ;;
-
-      let add_resolved_list t resolved =
-        let resolved =
-          let+ resolved = resolved
-          and+ tl = t.resolved in
-          List.rev_append resolved tl
-        in
-        { t with resolved }
-      ;;
-
-      let add_select (t : t) resolved select =
-        add_resolved_list { t with selects = select :: t.selects } resolved
-      ;;
-
-      let add_resolved t loc resolved =
-        add_resolved_list
-          t
-          (let+ resolved = resolved in
-           [ loc, resolved ])
-      ;;
-
-      let add_re_exports (t : t) loc lib =
-        let re_exports =
-          let+ hd = lib
-          and+ tl = t.re_exports in
-          (loc, hd) :: tl
-        in
-        add_resolved { t with re_exports } loc lib
-      ;;
-
-      let value { resolved; selects; re_exports } =
-        let resolved =
-          let+ resolved = resolved in
-          List.rev resolved
-        in
-        let re_exports =
-          let+ re_exports = re_exports in
-          List.rev re_exports
-        in
-        { resolved; selects; re_exports }
-      ;;
-    end
-  end
-
-  let resolve_select =
+  and resolve_select db ~private_deps { Lib_dep.Select.result_fn; choices; loc } ~for_ =
     let open Memo.O in
     let resolve_set db ~private_deps libs ~for_ =
       resolve_simple_deps ~private_deps db libs
@@ -1807,32 +1866,30 @@ end = struct
          | Error () -> None
          | Ok _closure -> Some ts)
     in
-    fun db ~private_deps { Lib_dep.Select.result_fn; choices; loc } ~for_ ->
-      let+ res, src_fn =
-        let+ select =
-          Memo.List.find_map choices ~f:(fun { required; forbidden; file } ->
-            Lib_name.Set.to_list forbidden
-            |> Memo.List.exists ~f:(fun set ->
-              resolve_set db ~private_deps ~for_ [ loc, set ] >>| Option.is_some)
-            >>= function
-            | true -> Memo.return None
-            | false ->
-              let add_loc x = loc, x in
-              Lib_name.Set.to_list_map required ~f:add_loc
-              |> resolve_set db ~private_deps ~for_
-              >>| Option.map ~f:(fun ts -> List.map ts ~f:add_loc, file))
-        in
-        let get which =
-          match select |> Option.map ~f:which with
-          | Some rs -> Resolve.return rs
-          | None -> Error.no_solution_found_for_select ~loc
-        in
-        get fst, get snd
+    let+ res, src_fn =
+      let+ select =
+        Memo.List.find_map choices ~f:(fun { required; forbidden; file } ->
+          Lib_name.Set.to_list forbidden
+          |> Memo.List.exists ~f:(fun set ->
+            resolve_set db ~private_deps ~for_ [ loc, set ] >>| Option.is_some)
+          >>= function
+          | true -> Memo.return None
+          | false ->
+            let add_loc x = loc, x in
+            Lib_name.Set.to_list_map required ~f:add_loc
+            |> resolve_set db ~private_deps ~for_
+            >>| Option.map ~f:(fun ts -> List.map ts ~f:add_loc, file))
       in
-      res, { Resolved_select.src_fn; dst_fn = result_fn; loc }
-  ;;
+      let get which =
+        match select |> Option.map ~f:which with
+        | Some rs -> Resolve.return rs
+        | None -> Error.no_solution_found_for_select ~loc
+      in
+      get fst, get snd
+    in
+    res, { Resolved_select.src_fn; dst_fn = result_fn; loc }
 
-  let resolve_complex_deps db deps ~private_deps ~parameters ~for_ =
+  and resolve_complex_deps db deps ~private_deps ~parameters ~for_ =
     let open Memo.O in
     let resolve_parameterised_dep (loc, lib) ~arguments =
       resolve_dep db (loc, lib) ~private_deps
@@ -1846,23 +1903,23 @@ end = struct
           arguments
           ~parent_parameters:parameters)
     in
-    Memo.List.fold_left ~init:Resolved.Builder.empty deps ~f:(fun acc (dep : Lib_dep.t) ->
+    Memo.List.fold_left ~init:Resolved_builder.empty deps ~f:(fun acc (dep : Lib_dep.t) ->
       match dep with
       | Re_export lib ->
         let loc = fst lib in
         resolve_parameterised_dep lib ~arguments:[]
         >>| (function
          | None -> acc
-         | Some lib -> Resolved.Builder.add_re_exports acc loc lib)
+         | Some lib -> Resolved_builder.add_re_exports acc loc lib)
       | Direct lib ->
         let loc = fst lib in
         resolve_parameterised_dep lib ~arguments:[]
         >>| (function
          | None -> acc
-         | Some lib -> Resolved.Builder.add_resolved acc loc lib)
+         | Some lib -> Resolved_builder.add_resolved acc loc lib)
       | Select select ->
         let+ resolved, select = resolve_select db ~private_deps select ~for_ in
-        Resolved.Builder.add_select acc resolved select
+        Resolved_builder.add_select acc resolved select
       | Instantiate { loc; lib; arguments; new_name = _ } ->
         let* arguments =
           Memo.List.filter_map arguments ~f:(fun (loc, dep) ->
@@ -1871,21 +1928,15 @@ end = struct
         in
         let acc =
           List.fold_left arguments ~init:acc ~f:(fun acc (_loc, dep) ->
-            Resolved.Builder.add_resolved acc loc dep)
+            Resolved_builder.add_resolved acc loc dep)
         in
         resolve_parameterised_dep (loc, lib) ~arguments
         >>| (function
          | None -> acc
-         | Some lib -> Resolved.Builder.add_resolved acc loc lib))
-    |> Memo.map ~f:Resolved.Builder.value
-  ;;
+         | Some lib -> Resolved_builder.add_resolved acc loc lib))
+    |> Memo.map ~f:Resolved_builder.value
 
-  type pp_deps =
-    { pps : t list Resolve.Memo.t
-    ; runtime_deps : t list Resolve.Memo.t
-    }
-
-  let pp_deps db pps ~dune_version ~private_deps ~for_ =
+  and pp_deps db pps ~dune_version ~private_deps ~for_ =
     let allow_only_ppx_deps =
       match dune_version with
       | Some version -> Dune_lang.Syntax.Version.Infix.(version >= (2, 2))
@@ -1925,15 +1976,14 @@ end = struct
         let* pps = pps in
         Resolve.List.concat_map pps ~f:(fun pp ->
           let open Resolve.O in
-          Compilation_mode.By_mode.get pp.ppx_runtime_deps ~for_
+          Compilation_mode.Per_mode.get pp.ppx_runtime_deps ~for_
           >>= Resolve.List.map ~f:(fun dep ->
             check_private_deps ~loc ~private_deps dep |> Resolve.of_result))
         |> Memo.return
       in
       { runtime_deps; pps }
-  ;;
 
-  let add_pp_runtime_deps
+  and add_pp_runtime_deps
         db
         { Resolved.resolved; selects; re_exports }
         ~private_deps
@@ -1955,9 +2005,8 @@ end = struct
       re_exports_closure (List.concat [ resolved; runtime_deps; parameters ]) ~for_
     and+ pps = pps in
     { Resolved.requires; pps; selects; re_exports }
-  ;;
 
-  let resolve_deps_and_add_runtime_deps
+  and resolve_deps_and_add_runtime_deps
         db
         deps
         ~private_deps
@@ -1969,7 +2018,6 @@ end = struct
     let open Memo.O in
     resolve_complex_deps db ~private_deps ~parameters deps ~for_
     >>= add_pp_runtime_deps db ~private_deps ~parameters ~dune_version ~pps ~for_
-  ;;
 
   (* Compute transitive closure of libraries to figure which ones will trigger
      their default implementation.
@@ -1977,15 +2025,15 @@ end = struct
      Assertion: libraries is a list of virtual libraries with no implementation.
      The goal is to find which libraries can safely be defaulted. *)
 
-  type state =
-    { vlib_default_parent : lib list Map.t
-    ; visited : [ `Visiting | `Visited ] Map.t
-    }
-
-  let resolve_default_libraries =
+  and resolve_default_libraries libraries ~for_ =
     (* Map from a vlib to vlibs that are implemented in the transitive closure
        of its default impl. *)
     let module R = struct
+      type state =
+        { vlib_default_parent : lib list Map.t
+        ; visited : [ `Visiting | `Visited ] Map.t
+        }
+
       module M =
         State.Make
           (struct
@@ -2102,122 +2150,26 @@ end = struct
     in
     (* For each virtual library we know which vlibs will be implemented when
        enabling its default implementation. *)
-    fun libraries ~for_ ->
-      let* status, () =
-        R.run
-          (R.List.iter ~f:(visit ~stack:[] None ~for_) libraries)
-          { visited = Map.empty; vlib_default_parent = Map.empty }
-      in
-      Resolve.Memo.List.filter_map
-        libraries
-        ~f:(library_is_default status.vlib_default_parent)
-  ;;
+    let* status, () =
+      R.run
+        (R.List.iter ~f:(visit ~stack:[] None ~for_) libraries)
+        { visited = Map.empty; vlib_default_parent = Map.empty }
+    in
+    Resolve.Memo.List.filter_map
+      libraries
+      ~f:(library_is_default status.vlib_default_parent)
 
-  module Closure = struct
-    type nonrec t =
-      { db : db option
-      ; forbidden_libraries : Loc.t Map.t
-      }
-
-    let make ~db ~forbidden_libraries = { db; forbidden_libraries }
-
-    module R = struct
-      type state =
-        { result : (lib * Dep_stack.t) list
-        ; visited : Set.t
-        ; unimplemented : Vlib.Unimplemented.t
-        }
-
-      let empty_state =
-        { result = []; visited = Set.empty; unimplemented = Vlib.Unimplemented.empty }
-      ;;
-
-      module M =
-        State.Make
-          (struct
-            type t = state
-          end)
-          (Resolve.Memo)
-
-      module List = Monad.List (M)
-      include M
-    end
-
-    let result computation kind ~for_ =
-      let* state, () = R.run computation R.empty_state in
-      Vlib.associate (List.rev state.result) kind ~for_
-    ;;
-
-    let rec visit (t : t) ~stack ~for_ (implements_via, (lib : lib)) =
-      let open R.O in
-      let* state = R.get in
-      if Set.mem state.visited lib
-      then R.return ()
-      else (
-        match Map.find t.forbidden_libraries lib with
-        | Some loc ->
-          let req_by = Dep_stack.to_required_by stack in
-          R.lift
-            (Error.make
-               ~loc
-               [ Pp.textf "Library %S was pulled in." (Lib_name.to_string lib.name)
-               ; Dep_path.pp req_by
-               ])
-        | None ->
-          let* () = R.set { state with visited = Set.add state.visited lib } in
-          let* () =
-            match t.db with
-            | None -> R.return ()
-            | Some db ->
-              (match Lib_info.status lib.info with
-               | Private (_, Some _) -> R.return ()
-               | _ ->
-                 R.lift
-                   (let open Memo.O in
-                    find_internal db lib.name
-                    >>= function
-                    | Status.Found lib' ->
-                      if Id.equal lib.unique_id lib'.unique_id
-                      then Resolve.Memo.return ()
-                      else (
-                        let req_by = Dep_stack.to_required_by stack in
-                        Error.overlap ~in_workspace:lib'.info ~installed:(lib.info, req_by))
-                    | found ->
-                      Code_error.raise
-                        "Unexpected find result"
-                        [ "found", Status.to_dyn found
-                        ; "lib.name", Lib_name.to_dyn lib.name
-                        ]))
-          in
-          let* new_stack = R.lift (Dep_stack.push stack ~implements_via lib) in
-          let* deps = R.lift (Resolve.Memo.lift (Parameterised.requires lib ~for_)) in
-          let* unimplemented' = R.lift (Vlib.Unimplemented.add state.unimplemented lib) in
-          let* () =
-            R.modify (fun state -> { state with unimplemented = unimplemented' })
-          in
-          let* () =
-            R.List.iter deps ~f:(fun l -> visit t (None, l) ~stack:new_stack ~for_)
-          in
-          (match Parameterised.status lib with
-           | Partial -> R.return ()
-           | Not_parameterised | Complete ->
-             R.modify (fun state -> { state with result = (lib, stack) :: state.result })))
-    ;;
-  end
-
-  let step1_closure db ts ~forbidden_libraries ~for_ =
+  and step1_closure db ts ~forbidden_libraries ~for_ =
     let closure = Closure.make ~db ~forbidden_libraries in
     ( closure
     , Closure.R.List.iter ts ~f:(fun lib ->
-        Closure.visit closure ~stack:Dep_stack.empty (None, lib) ~for_) )
-  ;;
+        closure_visit closure ~stack:Dep_stack.empty (None, lib) ~for_) )
 
-  let compile_closure_with_overlap_checks db ts ~forbidden_libraries ~for_ =
+  and compile_closure_with_overlap_checks db ts ~forbidden_libraries ~for_ =
     let (_ : Closure.t), state = step1_closure db ts ~forbidden_libraries ~for_ in
     Closure.result state `Compile ~for_
-  ;;
 
-  let linking_closure_with_overlap_checks db ts ~forbidden_libraries ~for_ =
+  and linking_closure_with_overlap_checks db ts ~forbidden_libraries ~for_ =
     let closure, state = step1_closure db ts ~forbidden_libraries ~for_ in
     let res =
       let open Closure.R.O in
@@ -2234,16 +2186,15 @@ end = struct
       and fill_impls libs =
         let* () =
           Closure.R.List.iter libs ~f:(fun (via, lib) ->
-            Closure.visit closure (Some via, lib) ~stack:Dep_stack.empty ~for_)
+            closure_visit closure (Some via, lib) ~stack:Dep_stack.empty ~for_)
         in
         impls_via_defaults ()
       in
       state >>> impls_via_defaults ()
     in
     Closure.result res `Link ~for_
-  ;;
 
-  let check_forbidden ts ~forbidden_libraries ~for_ =
+  and check_forbidden ts ~forbidden_libraries ~for_ =
     let (_ : Closure.t), state = step1_closure None ts ~forbidden_libraries ~for_ in
     let+ (_ : lib list) = Closure.result state `Partial_link ~for_ in
     ()
@@ -2285,14 +2236,14 @@ let descriptive_closure (l : lib list) ~with_pps ~for_ : lib list Memo.t =
         and acc = Set.add acc lib in
         let* todo =
           if with_pps
-          then register_work todo (Compilation_mode.By_mode.get ~for_:Ocaml lib.pps)
+          then register_work todo (Compilation_mode.Per_mode.get ~for_:Ocaml lib.pps)
           else Memo.return todo
         in
         let* todo =
-          register_work todo (Compilation_mode.By_mode.get lib.ppx_runtime_deps ~for_)
+          register_work todo (Compilation_mode.Per_mode.get lib.ppx_runtime_deps ~for_)
         in
         let* todo =
-          let requires = Compilation_mode.By_mode.get lib.requires ~for_ in
+          let requires = Compilation_mode.Per_mode.get lib.requires ~for_ in
           register_work todo requires
         in
         work todo acc ~for_)
@@ -2307,18 +2258,18 @@ module Compile = struct
   module Resolved_select = Resolved_select
 
   type nonrec t =
-    { direct_requires : t list Resolve.Memo.t Compilation_mode.By_mode.t
-    ; user_written_requires : (Loc.t * t) list Resolve.Memo.t Compilation_mode.By_mode.t
-    ; requires_link : t list Resolve.t Memo.Lazy.t Compilation_mode.By_mode.t
-    ; pps : t list Resolve.Memo.t Compilation_mode.By_mode.t
-    ; resolved_selects : Resolved_select.t list Resolve.Memo.t Compilation_mode.By_mode.t
+    { direct_requires : t list Resolve.Memo.t Compilation_mode.Per_mode.t
+    ; user_written_requires : (Loc.t * t) list Resolve.Memo.t Compilation_mode.Per_mode.t
+    ; requires_link : t list Resolve.t Memo.Lazy.t Compilation_mode.Per_mode.t
+    ; pps : t list Resolve.Memo.t Compilation_mode.Per_mode.t
+    ; resolved_selects : Resolved_select.t list Resolve.Memo.t Compilation_mode.Per_mode.t
     ; allow_unused_libraries : t list Resolve.Memo.t
     ; sub_systems : Sub_system0.Instance.t Memo.Lazy.t Sub_system_name.Map.t
     }
 
   let for_lib ~allow_overlaps db (t : lib) =
     let requires =
-      Compilation_mode.By_mode.map t.requires ~f:(fun ~for_:_ requires ->
+      Compilation_mode.Per_mode.map t.requires ~f:(fun ~for_:_ requires ->
         (* This makes sure that the default implementation belongs to the same
          package before we build the virtual library *)
         let* () =
@@ -2330,9 +2281,9 @@ module Compile = struct
         in
         Memo.return requires)
     in
-    let requires_link : lib list Resolve.t Memo.Lazy.t Compilation_mode.By_mode.t =
+    let requires_link : lib list Resolve.t Memo.Lazy.t Compilation_mode.Per_mode.t =
       let db = Option.some_if (not allow_overlaps) db in
-      Compilation_mode.By_mode.map requires ~f:(fun ~for_ requires ->
+      Compilation_mode.Per_mode.map requires ~f:(fun ~for_ requires ->
         Memo.lazy_ (fun () ->
           let open Resolve.Memo.O in
           requires
@@ -2345,22 +2296,26 @@ module Compile = struct
     ; user_written_requires = t.user_written_requires
     ; requires_link
     ; resolved_selects =
-        Compilation_mode.By_mode.map t.resolved_selects ~f:(fun ~for_:_ -> Memo.return)
-    ; pps = Compilation_mode.By_mode.map t.pps ~f:(fun ~for_:_ -> Memo.return)
+        Compilation_mode.Per_mode.map t.resolved_selects ~f:(fun ~for_:_ -> Memo.return)
+    ; pps = Compilation_mode.Per_mode.map t.pps ~f:(fun ~for_:_ -> Memo.return)
     ; allow_unused_libraries = Memo.return t.allow_unused_libraries
     ; sub_systems = t.sub_systems
     }
   ;;
 
-  let direct_requires t ~for_ = Compilation_mode.By_mode.get t.direct_requires ~for_
+  let direct_requires t ~for_ = Compilation_mode.Per_mode.get t.direct_requires ~for_
 
   let user_written_requires t ~for_ =
-    Compilation_mode.By_mode.get t.user_written_requires ~for_
+    Compilation_mode.Per_mode.get t.user_written_requires ~for_
   ;;
 
-  let requires_link t ~for_ = Compilation_mode.By_mode.get t.requires_link ~for_
-  let resolved_selects t ~for_ = Compilation_mode.By_mode.get t.resolved_selects ~for_
-  let pps t ~for_ = Compilation_mode.By_mode.get t.pps ~for_
+  let user_written_requires_no_loc t ~for_ =
+    user_written_requires t ~for_ |> Resolve.Memo.map ~f:(List.map ~f:snd)
+  ;;
+
+  let requires_link t ~for_ = Compilation_mode.Per_mode.get t.requires_link ~for_
+  let resolved_selects t ~for_ = Compilation_mode.Per_mode.get t.resolved_selects ~for_
+  let pps t ~for_ = Compilation_mode.Per_mode.get t.pps ~for_
   let allow_unused_libraries t = t.allow_unused_libraries
 
   let sub_systems t =
@@ -2574,7 +2529,7 @@ module DB = struct
           ~dune_version:(Some dune_version)
           ~for_)
     in
-    let requires_link : lib list Resolve.t Memo.Lazy.t Compilation_mode.By_mode.t =
+    let requires_link : lib list Resolve.t Memo.Lazy.t Compilation_mode.Per_mode.t =
       let requires_link =
         Memo.Lazy.create (fun () ->
           let* forbidden_libraries =
@@ -2616,28 +2571,28 @@ module DB = struct
                   (Loc.to_file_colon_line loc)))
       in
       let init = Memo.lazy_ (fun () -> Resolve.Memo.return []) in
-      Compilation_mode.By_mode.of_list ~init [ for_, requires_link ]
+      Compilation_mode.Per_mode.of_list ~init [ for_, requires_link ]
     in
-    let pps : lib list Resolve.Memo.t Compilation_mode.By_mode.t =
+    let pps : lib list Resolve.Memo.t Compilation_mode.Per_mode.t =
       let pps =
         let open Memo.O in
         let+ resolved = Memo.Lazy.force resolved in
         resolved.pps
       in
       let init = Resolve.Memo.return [] in
-      Compilation_mode.By_mode.of_list ~init [ for_, pps ]
+      Compilation_mode.Per_mode.of_list ~init [ for_, pps ]
     in
-    let direct_requires : lib list Resolve.Memo.t Compilation_mode.By_mode.t =
+    let direct_requires : lib list Resolve.Memo.t Compilation_mode.Per_mode.t =
       let direct_requires =
         let open Memo.O in
         let+ resolved = Memo.Lazy.force resolved in
         resolved.requires
       in
       let init = Resolve.Memo.return [] in
-      Compilation_mode.By_mode.of_list ~init [ for_, direct_requires ]
+      Compilation_mode.Per_mode.of_list ~init [ for_, direct_requires ]
     in
     let resolved_selects
-      : Resolved_select.t list Resolve.Memo.t Compilation_mode.By_mode.t
+      : Resolved_select.t list Resolve.Memo.t Compilation_mode.Per_mode.t
       =
       let resolved_selects =
         let open Memo.O in
@@ -2645,13 +2600,13 @@ module DB = struct
         Resolve.return resolved.selects
       in
       let init = Resolve.Memo.return [] in
-      Compilation_mode.By_mode.of_list ~init [ for_, resolved_selects ]
+      Compilation_mode.Per_mode.of_list ~init [ for_, resolved_selects ]
     in
     let allow_unused_libraries =
       Resolve_names.resolve_simple_deps t ~private_deps:Allow_all allow_unused_libraries
     in
     let user_written_requires
-      : (Loc.t * lib) list Resolve.Memo.t Compilation_mode.By_mode.t
+      : (Loc.t * lib) list Resolve.Memo.t Compilation_mode.Per_mode.t
       =
       let resolved_user_written_requires =
         Memo.lazy_ (fun () ->
@@ -2665,7 +2620,7 @@ module DB = struct
         |> Memo.Lazy.force
       in
       let init = Resolve.Memo.return [] in
-      Compilation_mode.By_mode.of_list ~init [ for_, resolved_user_written_requires ]
+      Compilation_mode.Per_mode.of_list ~init [ for_, resolved_user_written_requires ]
     in
     { Compile.direct_requires
     ; user_written_requires
@@ -2686,9 +2641,11 @@ module DB = struct
     let open Memo.O in
     let* l =
       Memo.Lazy.force t.all
-      >>= Memo.parallel_map ~f:(find t)
-      >>| List.filter_opt
-      >>| Set.of_list
+      >>= Memo.map_reduce ~empty:Set.empty ~combine:Set.union ~f:(fun name ->
+        find t name
+        >>| function
+        | None -> Set.empty
+        | Some lib -> Set.singleton lib)
     in
     match recursive, t.parent with
     | true, Some t ->
@@ -2703,18 +2660,19 @@ module DB = struct
 end
 
 let to_resolve_memo
-  :  lib list Resolve.t Compilation_mode.By_mode.t
-  -> lib list Compilation_mode.By_mode.t Resolve.Memo.t
+  :  lib list Resolve.t Compilation_mode.Per_mode.t
+  -> lib list Compilation_mode.Per_mode.t Resolve.Memo.t
   =
   fun t ->
   let open Resolve.Memo.O in
   let+ ocaml = Resolve.Memo.lift t.ocaml
   and+ melange = Resolve.Memo.lift t.melange in
-  { Compilation_mode.By_mode.ocaml; melange }
+  { Compilation_mode.Per_mode.ocaml; melange }
 ;;
 
 let to_dune_lib
       ({ info; _ } as lib)
+      ~(modes : Lib_mode.Map.Set.t)
       ~modules
       ~foreign_objects
       ~melange_runtime_deps
@@ -2730,7 +2688,7 @@ let to_dune_lib
     | _ -> lib.name
   in
   let add_loc =
-    Compilation_mode.By_mode.map ~f:(fun ~for_:_ ->
+    Compilation_mode.Per_mode.map ~f:(fun ~for_:_ ->
       List.map ~f:(fun x -> loc, mangled_name x))
   in
   let obj_dir =
@@ -2742,7 +2700,7 @@ let to_dune_lib
   in
   let modules =
     let install_dir = Obj_dir.dir obj_dir in
-    Compilation_mode.By_mode.map modules ~f:(fun ~for_:_for_ modules ->
+    Compilation_mode.Per_mode.map modules ~f:(fun ~for_:_for_ modules ->
       Option.map modules ~f:(fun modules ->
         Modules.With_vlib.version_installed
           modules
@@ -2777,10 +2735,10 @@ let to_dune_lib
   and+ re_exports = to_resolve_memo lib.re_exports in
   let ppx_runtime_deps = add_loc ppx_runtime_deps in
   let requires =
-    Compilation_mode.By_mode.map requires ~f:(fun ~for_ requires ->
+    Compilation_mode.Per_mode.map requires ~f:(fun ~for_ requires ->
       List.map requires ~f:(fun lib ->
         if
-          List.exists (Compilation_mode.By_mode.get re_exports ~for_) ~f:(fun r ->
+          List.exists (Compilation_mode.Per_mode.get re_exports ~for_) ~f:(fun r ->
             r = lib)
         then Lib_dep.Re_export (loc, mangled_name lib)
         else (
@@ -2796,6 +2754,9 @@ let to_dune_lib
                     | Some arg -> Some (Loc.none, mangled_name arg))
               ; new_name = None
               })))
+  in
+  let requires =
+    if modes.melange then requires else { requires with melange = requires.ocaml }
   in
   let name = mangled_name lib in
   let remove_public_dep_prefix paths =
@@ -2819,6 +2780,7 @@ let to_dune_lib
       ~modules
       ~melange_runtime_deps
       ~public_headers
+      ~modes
   in
   Dune_package.Lib.of_dune_lib ~info ~main_module_name
 ;;

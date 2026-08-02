@@ -1,6 +1,7 @@
 type t =
   | Rpc
   | Gc
+  | Alloc
   | Fd
   | Sandbox
   | Persistent
@@ -21,6 +22,7 @@ type t =
   | Digest
   | Artifact_substitution
   | Thread
+  | Runtime
 
 val to_string : t -> string
 val of_string : string -> t option
@@ -35,4 +37,4 @@ module Set : sig
   val of_list : cat list -> t
 end
 
-val default : t list
+val enabled : unit -> Set.t

@@ -1,0 +1,8 @@
+(alias
+ (name without_dep)
+ (action (run dune_cmd printenv X Y)))
+
+(alias
+ (name with_dep)
+ (deps (env_var X))
+ (action (run dune_cmd printenv X Y)))

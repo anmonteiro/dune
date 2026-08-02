@@ -36,11 +36,11 @@ let config_path_exn rocq_config key =
        (* This should never happen *)
        Code_error.raise "key is not a path" [ key, Rocq_config.Value.to_dyn path ])
   | None ->
-    (* This happens if the output of rocq --config doesn't include the key *)
+    (* This happens if the output of rocq c --config doesn't include the key *)
     User_error.raise
       [ Pp.concat
           ~sep:Pp.space
-          [ Pp.text "key not found from"; User_message.command "rocq --config" ]
+          [ Pp.text "key not found from"; User_message.command "rocq c --config" ]
         |> Pp.hovbox
       ; Pp.text key
       ]
@@ -51,6 +51,7 @@ let build_user_contrib ~vo ~path ~name = { name; path; vo; corelib = false }
 (* Scanning todos: blacklist? *)
 let scan_vo ~dir dir_contents =
   let f (d, kind) =
+    let d = Filename.to_string d in
     match kind with
     (* Skip some files as Rocq does, for now files with '-' *)
     | _ when String.contains d '-' -> None
@@ -84,6 +85,7 @@ let rec scan_path ~(f : ('prefix, 'res) Scan_action.t) ~acc ~prefix ~dir dir_con
   =
   let open Memo.O in
   let f (d, kind) =
+    let d = Filename.to_string d in
     match kind with
     (* We skip directories starting by . , this is mainly to avoid
        .coq-native *)
@@ -144,7 +146,7 @@ let of_rocq_install rocq =
       [ Pp.concat
           ~sep:Pp.space
           [ Pp.text "Skipping installed theories due to"
-          ; User_message.command "rocq --config"
+          ; User_message.command "rocq c --config"
           ; Pp.text "failure:"
           ]
         |> Pp.hovbox
@@ -154,7 +156,7 @@ let of_rocq_install rocq =
         [ Pp.concat
             ~sep:Pp.space
             [ Pp.text "Try running"
-            ; User_message.command "rocq --config"
+            ; User_message.command "rocq c --config"
             ; Pp.text "manually to see the error."
             ]
           |> Pp.hovbox
@@ -186,7 +188,7 @@ let of_rocq_install rocq =
 
 let of_rocq_install context =
   let open Memo.O in
-  let* rocq = Context.which context "rocq" in
+  let* rocq = Context.which context Filename.rocq in
   match rocq with
   | None -> Memo.return []
   | Some rocq -> of_rocq_install rocq

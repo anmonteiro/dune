@@ -1,7 +1,4 @@
-  $ cat >dune-project <<EOF
-  > (lang dune 3.21)
-  > (using rocq 0.11)
-  > EOF
+  $ make_rocq_project 3.21 0.11
 
   $ cat >extract.v <<EOF
   > Definition nb (b : bool) : bool :=
@@ -53,8 +50,6 @@
   extract.mli
   extract.v
   extract.vo
-  extract.vok
-  extract.vos
   foo.exe
   foo.ml
   foo.mli

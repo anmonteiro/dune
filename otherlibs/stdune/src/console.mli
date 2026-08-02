@@ -36,6 +36,12 @@ end
     it separates messages with a blank line when [b = true]. *)
 val separate_messages : bool -> unit
 
+(** [set_directory dir] sets the directory to announce when output is printed.
+    If any output occurs, ["Entering directory '<dir>'"] is printed before the
+    first output, and ["Leaving directory '<dir>'"] is printed at [finish] time.
+    If no output occurs, nothing is printed. *)
+val set_directory : string -> unit
+
 module Backend : sig
   type t = (module Backend)
 
@@ -78,6 +84,9 @@ val finish : unit -> unit
       print_user_message (User_message.make paragraphs)
     ]} *)
 val print : User_message.Style.t Pp.t list -> unit
+
+val maybe_clear_screen : details_hum:string list -> unit
+val init : Terminal_persistence.t -> unit
 
 (** [printf fmt] is a convenient function for debugging. It formats a string and
     then print it raw followed by a newline. It is the same as:
@@ -123,6 +132,16 @@ module Status_line : sig
         Exn.protect f ~finally:(fun () -> remove_overlay id)
       ]} *)
   val with_overlay : t -> f:(unit -> 'a) -> 'a
+
+  type section
+
+  (** Add a section to the current status line. Sections are rendered after the
+      current status line, separated by [" | "], and stay active across [set]
+      and [clear] until removed. *)
+  val add_section : t -> section
+
+  (** Remove a section if it is still active. Do nothing otherwise. *)
+  val remove_section : section -> unit
 
   val refresh : unit -> unit
 end

@@ -1,6 +1,6 @@
-  $ cat > dune-project <<EOF
-  > (lang dune 2.9)
-  > EOF
+Reports unreadable or broken targets after a rule runs.
+
+  $ make_dune_project 2.9
 
   $ cat > dune <<EOF
   > (rule

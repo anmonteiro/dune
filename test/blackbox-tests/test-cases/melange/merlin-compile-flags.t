@@ -1,9 +1,6 @@
 Show that the merlin config knows about melange.compile_flags
 
-  $ cat >dune-project <<EOF
-  > (lang dune 3.8)
-  > (using melange 0.1)
-  > EOF
+  $ make_melange_project 3.8 0.1
 
   $ lib=foo
   $ cat >dune <<EOF
@@ -17,13 +14,13 @@ Show that the merlin config knows about melange.compile_flags
   $ touch bar.ml $lib.ml
   $ dune build @check
 
-  $ dune ocaml merlin dump-config "$PWD" | grep -i "+42"
-   (FLG (-w @1..3@5..28@30..39@43@46..47@49..57@61..62@67@69-40 -strict-sequence -strict-formats -short-paths -keep-locs -g -w +42))
-   (FLG (-w @1..3@5..28@30..39@43@46..47@49..57@61..62@67@69-40 -strict-sequence -strict-formats -short-paths -keep-locs -g -w +42))
-   (FLG (-w @1..3@5..28@30..39@43@46..47@49..57@61..62@67@69-40 -strict-sequence -strict-formats -short-paths -keep-locs -g -w +42))
-   (FLG (-w @1..3@5..28@30..39@43@46..47@49..57@61..62@67@69-40 -strict-sequence -strict-formats -short-paths -keep-locs -g -w +42))
-   (FLG (-w @1..3@5..28@30..39@43@46..47@49..57@61..62@67@69-40 -strict-sequence -strict-formats -short-paths -keep-locs -g -w +42))
-   (FLG (-w @1..3@5..28@30..39@43@46..47@49..57@61..62@67@69-40 -strict-sequence -strict-formats -short-paths -keep-locs -g -w +42))
+  $ dune ocaml merlin dump-config --format=json "$PWD" | jq_dune -r '
+  > merlinEntry("Foo")
+  > | merlinConfigItemsNamed(["FLG"])
+  > | select(.[0] == "FLG" and (.[1] | index("+42")))
+  > | @json'
+  ["FLG",["-w","@1..3@5..28@30..39@43@46..47@49..57@61..62@67@69-40","-strict-sequence","-strict-formats","-short-paths","-keep-locs","-g","-w","+42"]]
+  ["FLG",["-w","@1..3@5..28@30..39@43@46..47@49..57@61..62@67@69-40","-strict-sequence","-strict-formats","-short-paths","-keep-locs","-g","-w","+42"]]
 
   $ cat >dune <<EOF
   > (melange.emit
@@ -34,11 +31,10 @@ Show that the merlin config knows about melange.compile_flags
 
   $ dune build @check
 
-  $ dune ocaml merlin dump-config "$PWD" | grep -i "+42"
-   (FLG (-w @1..3@5..28@30..39@43@46..47@49..57@61..62@67@69-40 -strict-sequence -strict-formats -short-paths -keep-locs -g -w +42))
-   (FLG (-w @1..3@5..28@30..39@43@46..47@49..57@61..62@67@69-40 -strict-sequence -strict-formats -short-paths -keep-locs -g -w +42))
-   (FLG (-w @1..3@5..28@30..39@43@46..47@49..57@61..62@67@69-40 -strict-sequence -strict-formats -short-paths -keep-locs -g -w +42))
-   (FLG (-w @1..3@5..28@30..39@43@46..47@49..57@61..62@67@69-40 -strict-sequence -strict-formats -short-paths -keep-locs -g -w +42))
-   (FLG (-w @1..3@5..28@30..39@43@46..47@49..57@61..62@67@69-40 -strict-sequence -strict-formats -short-paths -keep-locs -g -w +42))
-   (FLG (-w @1..3@5..28@30..39@43@46..47@49..57@61..62@67@69-40 -strict-sequence -strict-formats -short-paths -keep-locs -g -w +42))
-
+  $ dune ocaml merlin dump-config --format=json "$PWD" | jq_dune -r '
+  > merlinEntry("Melange")
+  > | merlinConfigItemsNamed(["FLG"])
+  > | select(.[0] == "FLG" and (.[1] | index("+42")))
+  > | @json'
+  ["FLG",["-w","@1..3@5..28@30..39@43@46..47@49..57@61..62@67@69-40","-strict-sequence","-strict-formats","-short-paths","-keep-locs","-g","-w","+42"]]
+  ["FLG",["-w","@1..3@5..28@30..39@43@46..47@49..57@61..62@67@69-40","-strict-sequence","-strict-formats","-short-paths","-keep-locs","-g","-w","+42"]]

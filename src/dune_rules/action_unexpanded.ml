@@ -485,7 +485,7 @@ let rec expand (t : Dune_lang.Action.t) : Action.t Action_expander.t =
     match string_args with
     | prog :: args ->
       let+ prog, args = expand_run ~force_host prog args in
-      O.Run (prog, Array.Immutable.of_list args)
+      O.Run { prog; args = Appendable_list.of_list args; can_run_in_action_runner = true }
     | [] ->
       User_error.raise
         [ Pp.textf "\"%s\" action must have at least one argument" action_name ]
@@ -566,10 +566,10 @@ let rec expand (t : Dune_lang.Action.t) : Action.t Action_expander.t =
         Copy_line_directive.action context ~src:x ~dst:y))
   | System x ->
     let+ x = E.string x in
-    System.action x
+    O.System x
   | Bash x ->
-    let+ x = E.string x in
-    O.Bash x
+    let+ script = E.string x in
+    O.Bash { script; can_run_in_action_runner = true }
   | Write_file (fn, perm, s) ->
     let+ fn = E.target fn
     and+ s = E.string s in
@@ -629,13 +629,13 @@ let rec expand (t : Dune_lang.Action.t) : Action.t Action_expander.t =
 
 let expand_no_targets t sandbox ~loc ~chdir ~deps:deps_written_by_user ~expander ~what =
   let open Action_builder.O in
-  let deps_builder, expander, sandbox =
+  let env, expander, sandbox =
     Dep_conf_eval.named ~expander sandbox deps_written_by_user
   in
   let expander =
     Expander.set_expanding_what expander (User_action_without_targets { what })
   in
-  let* { Action_builder.With_targets.build; targets } =
+  let* { Action_builder.With_targets.build = action; targets } =
     expand t
     |> Action_expander.run ~chdir ~targets_dir:None ~expander
     |> Action_builder.of_memo
@@ -650,10 +650,11 @@ let expand_no_targets t sandbox ~loc ~chdir ~deps:deps_written_by_user ~expander
           (String.capitalize what)
       ; pp_targets targets
       ];
-  let+ () = deps_builder
-  and+ action = build in
+  let+ sandbox
+  and+ env
+  and+ action in
   let action = Action.Chdir (Path.build chdir, action) in
-  Action.Full.make action ~sandbox
+  Action.Full.make action ~sandbox |> Action.Full.add_env env
 ;;
 
 let expand
@@ -667,7 +668,7 @@ let expand
       ~expander
   =
   let open Action_builder.O in
-  let deps_builder, expander, sandbox =
+  let env, expander, sandbox =
     Dep_conf_eval.named sandbox ~expander deps_written_by_user
   in
   let expander =
@@ -691,7 +692,7 @@ let expand
     in
     Expander.set_expanding_what expander (User_action targets_written_by_user)
   in
-  let+! { Action_builder.With_targets.build; targets } =
+  let+! { Action_builder.With_targets.build = action; targets } =
     expand t |> Action_expander.run ~chdir ~targets_dir:(Some targets_dir) ~expander
   in
   let targets =
@@ -710,9 +711,12 @@ let expand
       Targets.combine targets (Targets.create ~files ~dirs)
   in
   let build =
-    let+ () = deps_builder
-    and+ action = build in
-    Action.Full.make (Action.Chdir (Path.build chdir, action)) ~sandbox
+    let+ sandbox
+    and+ env
+    and+ action in
+    Action.Chdir (Path.build chdir, action)
+    |> Action.Full.make ~sandbox
+    |> Action.Full.add_env env
   in
   Action_builder.with_targets ~targets build
 ;;

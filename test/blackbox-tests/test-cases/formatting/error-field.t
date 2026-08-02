@@ -1,6 +1,6 @@
-  $ cat > dune-project << EOF
-  > (lang dune 3.5)
-  > EOF
+Rejects unknown fields in `(formatting ...)`.
+
+  $ make_dune_project 3.5
 
   $ cat > dune << EOF
   > (env

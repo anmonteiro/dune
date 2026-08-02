@@ -18,7 +18,11 @@ let rocq_syntax =
   Dune_lang.Syntax.create
     ~name:(Syntax.Name.parse "rocq")
     ~desc:"Rocq Prover build language"
-    [ (0, 11), `Since (3, 21); (0, 12), `Since (3, 22) ]
+    [ (0, 11), `Since (3, 21)
+    ; (0, 12), `Since (3, 22)
+    ; (0, 13), `Since (3, 23)
+    ; (0, 14), `Since (3, 24)
+    ]
 ;;
 
 let get_rocq_syntax () = Dune_lang.Syntax.get_exn rocq_syntax
@@ -50,7 +54,7 @@ module Buildable = struct
     { flags : Ordered_set_lang.Unexpanded.t
     ; rocq_lang_version : Dune_sexp.Syntax.Version.t
     ; mode : Rocq_mode.t option
-    ; use_stdlib : bool
+    ; use_corelib : bool
     ; plugins : (Loc.t * Lib_name.t) list (** ocaml libraries *)
     ; theories : (Loc.t * Rocq_lib_name.t) list (** rocq libraries *)
     ; loc : Loc.t
@@ -61,32 +65,73 @@ module Buildable = struct
     let+ loc = loc
     and+ flags = Ordered_set_lang.Unexpanded.field "flags"
     and+ mode = field_o "mode" Rocq_mode.decode
-    and+ use_stdlib = field ~default:true "stdlib" (enum [ "yes", true; "no", false ])
+    and+ stdlib_opt =
+      field_o
+        "stdlib"
+        (Dune_lang.Syntax.deleted_in
+           rocq_syntax
+           (0, 14)
+           ~extra_info:
+             "Use (no_corelib) instead of (stdlib no) or remove the field instead of \
+              writing (stdlib yes)."
+         >>> enum [ "yes", true; "no", false ])
+    and+ no_corelib_opt =
+      field_o "no_corelib" (Dune_lang.Syntax.since rocq_syntax (0, 14) >>> return true)
     and+ plugins = field "plugins" (repeat (located Lib_name.decode)) ~default:[]
     and+ theories = field "theories" (repeat Rocq_lib_name.decode) ~default:[] in
-    { flags; mode; use_stdlib; rocq_lang_version; plugins; theories; loc }
+    let use_corelib =
+      if rocq_lang_version < (0, 14)
+      then Option.value stdlib_opt ~default:true
+      else not (Option.value no_corelib_opt ~default:false)
+    in
+    { flags; mode; use_corelib; rocq_lang_version; plugins; theories; loc }
   ;;
 end
 
 module Extraction = struct
   type t =
-    { (* not a list of modules because we want to preserve whatever case Rocq
-         uses *)
-      extracted_modules : string list
+    { target_fnames : string list
     ; prelude : Loc.t * Rocq_module.Name.t
     ; buildable : Buildable.t
     }
 
-  let ml_target_fnames t =
-    List.concat_map t.extracted_modules ~f:(fun m -> [ m ^ ".ml"; m ^ ".mli" ])
-  ;;
+  let target_fnames t = t.target_fnames
 
   let decode =
     fields
-      (let+ extracted_modules = field "extracted_modules" (repeat string)
+      (let* ver = get_rocq_syntax () in
+       let+ extracted_modules_opt =
+         field_o
+           "extracted_modules"
+           (Dune_lang.Syntax.deleted_in
+              rocq_syntax
+              (0, 13)
+              ~extra_info:
+                "Use (extracted_files ...) instead, listing each .ml and .mli file \
+                 explicitly."
+            >>> repeat string)
+       and+ extracted_files_opt =
+         field_o
+           "extracted_files"
+           (Dune_lang.Syntax.since rocq_syntax (0, 13) >>> repeat string)
        and+ prelude = field "prelude" (located (string >>| Rocq_module.Name.make))
-       and+ buildable = Buildable.decode in
-       { prelude; extracted_modules; buildable })
+       and+ buildable = Buildable.decode
+       and+ loc = loc in
+       let target_fnames =
+         if ver < (0, 13)
+         then (
+           match extracted_modules_opt with
+           | None ->
+             User_error.raise ~loc [ Pp.text "Field \"extracted_modules\" is required" ]
+           | Some modules ->
+             List.concat_map modules ~f:(fun m -> [ m ^ ".ml"; m ^ ".mli" ]))
+         else (
+           match extracted_files_opt with
+           | None ->
+             User_error.raise ~loc [ Pp.text "Field \"extracted_files\" is required" ]
+           | Some files -> files)
+       in
+       { target_fnames; prelude; buildable })
   ;;
 
   include Stanza.Make (struct

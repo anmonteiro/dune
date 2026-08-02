@@ -6,7 +6,7 @@ module Dir_contents : sig
   (** The sorted list of file names with kinds. *)
   val to_list : t -> (Filename.t * File_kind.t) list
 
-  val iter : t -> f:(Filename.t * File_kind.t -> unit) -> unit
+  val iter : t -> f:(Filename.t -> File_kind.t -> unit) -> unit
 end
 
 module Reduced_stats : sig
@@ -18,8 +18,10 @@ module Reduced_stats : sig
 end
 
 (** [init] must be called at initialization. Returns the set of nodes that need
-    to be invalidated because they were accessed before [init] was called. *)
+      to be invalidated because they were accessed before [init] was called. *)
 val init : dune_file_watcher:Dune_scheduler.File_watcher.t option -> Memo.Invalidation.t
+
+val handle_fs_event : Dune_scheduler.Event.Fs_memo_event.t -> Memo.Invalidation.t
 
 (** Check if a source or external file exists and declare a dependency on it. *)
 val file_exists : Path.Outside_build_dir.t -> bool Memo.t
@@ -91,3 +93,8 @@ end
 (** Invalidate all cached [stat] values. This causes all subsequent calls to
     [build_file] or [source_or_external_file] to incur additional [stat] calls. *)
 val invalidate_cached_timestamps : unit -> unit
+
+module Debug : sig
+  val dump_digest_db : Path.t list -> Dyn.t
+  val check_digest_db : Path.t list -> Dyn.t
+end

@@ -20,6 +20,23 @@ module T = struct
           }
       | File_selector of Digest.t (* Digest of the underlying [File_selector.t] *)
       | Universe
+
+    let digest d = function
+      | Env var ->
+        Digest.Manual.int d 0;
+        Digest.Manual.string d var
+      | File digest ->
+        Digest.Manual.int d 1;
+        Digest.Manual.digest d digest
+      | Alias { dir; name } ->
+        Digest.Manual.int d 2;
+        Digest.Manual.string d dir;
+        Digest.Manual.string d name
+      | File_selector digest ->
+        Digest.Manual.int d 3;
+        Digest.Manual.digest d digest
+      | Universe -> Digest.Manual.int d 4
+    ;;
   end
 
   let env e = Env e
@@ -45,15 +62,28 @@ module T = struct
     | Universe, Universe -> Ordering.Eq
   ;;
 
-  let to_dyn t =
-    let open Dyn in
-    match t with
-    | File_selector g -> variant "File_selector" [ File_selector.to_dyn g ]
-    | Env e -> variant "Env" [ string e ]
-    | File f -> variant "File" [ Path.to_dyn f ]
-    | Alias a -> variant "Alias" [ Alias.to_dyn a ]
-    | Universe -> variant "Universe" []
+  let repr =
+    Repr.variant
+      "dep"
+      [ Repr.case "File_selector" File_selector.repr ~proj:(function
+          | File_selector g -> Some g
+          | _ -> None)
+      ; Repr.case "Env" Repr.string ~proj:(function
+          | Env e -> Some e
+          | _ -> None)
+      ; Repr.case "File" Path.repr ~proj:(function
+          | File f -> Some f
+          | _ -> None)
+      ; Repr.case "Alias" (Repr.abstract Alias.to_dyn) ~proj:(function
+          | Alias a -> Some a
+          | _ -> None)
+      ; Repr.case0 "Universe" ~test:(function
+          | Universe -> true
+          | _ -> false)
+      ]
   ;;
+
+  let to_dyn = Repr.to_dyn repr
 end
 
 include T
@@ -61,7 +91,7 @@ include T
 module Map = struct
   module M = Map.Make (T)
   include M
-  include Memo.Make_parallel_map (M)
+  include Memo.Map (M)
 
   let has_universe t = mem t Universe
 end
@@ -95,10 +125,14 @@ module Fact = struct
 
     (* The caller should ensure that [files] and [digests] are listed in the same order *)
     let combined_digest ?empty_dir (files : Path.t list) (digests : Digest.t list) =
-      let files = List.map files ~f:Path.to_string in
-      match empty_dir with
-      | None -> Digest.generic (files, digests)
-      | Some empty_dir -> Digest.generic (empty_dir, files, digests)
+      let d = Digest.Manual.create () in
+      Digest.Manual.option
+        d
+        ~f:(fun d path -> Digest.Manual.repr d Path.Build.repr path)
+        empty_dir;
+      Digest.Manual.list d files ~f:(fun d path -> Digest.Manual.repr d Path.repr path);
+      Digest.Manual.list d digests ~f:Digest.Manual.digest;
+      Digest.Manual.get d
     ;;
 
     let create files ~build_file =
@@ -142,7 +176,10 @@ module Fact = struct
     let empty =
       { files = Path.Set.empty
       ; empty_dirs = Path.Build.Set.empty
-      ; digest = Digest.generic []
+      ; digest =
+          (let d = Digest.Manual.create () in
+           Digest.Manual.list d [] ~f:Digest.Manual.digest;
+           Digest.Manual.get d)
       }
     ;;
 
@@ -160,7 +197,13 @@ module Fact = struct
       | ts ->
         { files = Path.Set.union_map ts ~f:(fun t -> t.files)
         ; empty_dirs = Path.Build.Set.union_map ts ~f:(fun t -> t.empty_dirs)
-        ; digest = Digest.generic (List.map ts ~f:(fun t -> t.digest))
+        ; digest =
+            (let d = Digest.Manual.create () in
+             Digest.Manual.list
+               d
+               (List.map ts ~f:(fun t -> t.digest))
+               ~f:Digest.Manual.digest;
+             Digest.Manual.get d)
         }
     ;;
   end
@@ -203,6 +246,24 @@ module Fact = struct
           ; facts_digest : Digest.t
           }
       | Alias of Digest.t
+
+    let digest d = function
+      | Env (var, value) ->
+        Digest.Manual.int d 0;
+        Digest.Manual.string d var;
+        Digest.Manual.option d ~f:Digest.Manual.string value
+      | File { path_digest; file_digest } ->
+        Digest.Manual.int d 1;
+        Digest.Manual.digest d path_digest;
+        Digest.Manual.digest d file_digest
+      | File_selector { file_selector_digest; facts_digest } ->
+        Digest.Manual.int d 2;
+        Digest.Manual.digest d file_selector_digest;
+        Digest.Manual.digest d facts_digest
+      | Alias digest ->
+        Digest.Manual.int d 3;
+        Digest.Manual.digest d digest
+    ;;
   end
 
   let compare a b =
@@ -265,18 +326,18 @@ module Set = struct
   let digest t digest =
     iter t ~f:(fun dep ->
       match dep with
-      | Env var -> Digest.Manual.generic digest (Stable_for_digest.Env var)
-      | Universe -> Digest.Manual.generic digest Stable_for_digest.Universe
+      | Env var -> Stable_for_digest.digest digest (Stable_for_digest.Env var)
+      | Universe -> Stable_for_digest.digest digest Stable_for_digest.Universe
       | File p ->
-        Digest.Manual.generic
+        Stable_for_digest.digest
           digest
           (Stable_for_digest.File (Path.to_string p |> Digest.string))
       | File_selector fs ->
-        Digest.Manual.generic
+        Stable_for_digest.digest
           digest
           (Stable_for_digest.File_selector (File_selector.digest fs))
       | Alias a ->
-        Digest.Manual.generic
+        Stable_for_digest.digest
           digest
           (Stable_for_digest.Alias
              { dir = Path.Build.to_string (Alias.dir a)
@@ -295,6 +356,7 @@ module Facts = struct
 
   let union a b =
     Map.union a b ~f:(fun _ a b ->
+      (* Conflicting facts for the same dependency are invalid. *)
       assert (a = b);
       Some a)
   ;;
@@ -343,22 +405,24 @@ module Facts = struct
     Map.iteri t ~f:(fun dep fact ->
       match dep with
       | Env var ->
-        Digest.Manual.generic digest (Fact.Stable_for_digest.Env (var, Env.get env var))
+        Fact.Stable_for_digest.digest
+          digest
+          (Fact.Stable_for_digest.Env (var, Env.get env var))
       | Universe -> ()
       | File _ | File_selector _ | Alias _ ->
         (match (fact : Fact.t) with
          | Nothing -> ()
          | File (p, d) ->
-           Digest.Manual.generic
+           Fact.Stable_for_digest.digest
              digest
              (Fact.Stable_for_digest.File
                 { path_digest = Digest.string (Path.to_string p); file_digest = d })
          | File_selector { file_selector_digest; facts } ->
-           Digest.Manual.generic
+           Fact.Stable_for_digest.digest
              digest
              (Fact.Stable_for_digest.File_selector
                 { file_selector_digest; facts_digest = facts.digest })
          | Alias ps ->
-           Digest.Manual.generic digest (Fact.Stable_for_digest.Alias ps.digest)))
+           Fact.Stable_for_digest.digest digest (Fact.Stable_for_digest.Alias ps.digest)))
   ;;
 end
