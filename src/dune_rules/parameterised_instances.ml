@@ -201,19 +201,15 @@ let argument_static_length =
 ;;
 
 let argument_length (_loc, param_name, arg_name) =
-  let param_length = module_name_length param_name in
-  argument_static_length + param_length + module_name_length arg_name
+  argument_static_length + module_name_length param_name + module_name_length arg_name
 ;;
 
 let instance_length prefix { new_name; lib_name; args; _ } =
-  let args_length =
-    List.fold_left args ~init:0 ~f:(fun len arg -> len + argument_length arg)
-  in
   String.length prefix
   + module_name_length new_name
   + String.length module_separator
   + module_name_length lib_name
-  + args_length
+  + List.fold_left args ~init:0 ~f:(fun length arg -> length + argument_length arg)
   + String.length instance_suffix
 ;;
 
@@ -255,24 +251,3 @@ let add_ml_source builder instances =
         add_instance builder nested_module_prefix instance);
       String_builder.add_string builder wrapped_module_end)
 ;;
-
-module For_benchmarks = struct
-  type nonrec t = t
-  type nonrec instance = instance
-
-  let instance ~new_name ~lib_name ~args =
-    let add_loc (param, arg) = Loc.none, param, arg in
-    let args = List.map args ~f:add_loc in
-    { new_name; lib_name; args; loc = Loc.none }
-  ;;
-
-  let simple instance = [ Simple instance ]
-  let wrapped ~name instances = [ Wrapped (Loc.none, name, instances) ]
-  let concat = List.concat
-
-  let to_ml t =
-    let builder = String_builder.create (ml_source_length t) in
-    add_ml_source builder t;
-    String_builder.build_exact_exn builder
-  ;;
-end
