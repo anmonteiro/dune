@@ -839,47 +839,51 @@ module At_rev = struct
   type repo = t
 
   module Directory_entries = struct
-    type t =
-      { files : File.Set.t
-      ; recursive : File.Set.t Path.Local.Table.t
+    type directory =
+      { immediate : File.Set.t
+      ; recursive : File.Set.t
       }
 
+    type t = directory Path.Local.Table.t
+
+    let empty = { immediate = File.Set.empty; recursive = File.Set.empty }
+
     let create files =
-      let recursive = Path.Local.Table.create (File.Set.cardinal files) in
-      (* Build a table mapping each directory path to the set of files under it
-         in the directory hierarchy. *)
+      let directories = Path.Local.Table.create (File.Set.cardinal files) in
       File.Set.iter files ~f:(fun file ->
-        (* Add [file] to the set of files under each directory which is an
-           ancestor of [file]. *)
-        let rec loop = function
-          | None -> ()
-          | Some parent ->
-            let entries =
-              Path.Local.Table.find_or_add recursive parent ~f:(Fun.const File.Set.empty)
-            in
-            Path.Local.Table.set recursive parent (File.Set.add entries file);
-            loop (Path.Local.parent parent)
-        in
-        loop (File.path file |> Path.Local.parent));
-      { files; recursive }
+        match File.path file |> Path.Local.parent with
+        | None -> ()
+        | Some parent ->
+          let { immediate; recursive } =
+            Path.Local.Table.find_or_add directories parent ~f:(Fun.const empty)
+          in
+          Path.Local.Table.set
+            directories
+            parent
+            { immediate = File.Set.add immediate file
+            ; recursive = File.Set.add recursive file
+            };
+          let rec add_to_ancestors = function
+            | None -> ()
+            | Some ancestor ->
+              let { immediate; recursive } =
+                Path.Local.Table.find_or_add directories ancestor ~f:(Fun.const empty)
+              in
+              Path.Local.Table.set
+                directories
+                ancestor
+                { immediate; recursive = File.Set.add recursive file };
+              add_to_ancestors (Path.Local.parent ancestor)
+          in
+          add_to_ancestors (Path.Local.parent parent));
+      directories
     ;;
 
-    let find_recursive { recursive; _ } path =
-      Path.Local.Table.find recursive path |> Option.value ~default:File.Set.empty
-    ;;
-
-    let find_immediate { files; _ } path =
-      (* TODO: there are much better ways of implementing this:
-         1. using libgit or ocamlgit
-         2. possibly using [$ git archive] *)
-      File.Set.filter files ~f:(fun (file : File.t) ->
-        match Path.Local.parent (File.path file) with
-        | None -> false
-        | Some parent -> Path.Local.equal parent path)
-    ;;
-
-    let find t ~recursive path =
-      (if recursive then find_recursive else find_immediate) t path
+    let find directories ~recursive path =
+      match Path.Local.Table.find directories path with
+      | None -> File.Set.empty
+      | Some { immediate; recursive = recursive_entries } ->
+        if recursive then recursive_entries else immediate
     ;;
   end
 
