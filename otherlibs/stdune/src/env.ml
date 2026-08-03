@@ -61,7 +61,27 @@ let to_unix t =
     res
 ;;
 
-let to_unix_with_override t ~var ~value = of_map (Map.set t.vars var value) |> to_unix
+let to_unix_with_override t ~var ~value =
+  match get t var with
+  | None -> of_map (Map.set t.vars var value) |> to_unix
+  | Some old_value when String.equal old_value value -> to_unix t
+  | Some old_value ->
+    let old_entry = binding var old_value in
+    let new_entry = binding var value in
+    let rec replace = function
+      | [] -> None
+      | entry :: rest ->
+        if String.equal entry old_entry
+        then Some (new_entry :: rest)
+        else (
+          match replace rest with
+          | None -> None
+          | Some rest -> Some (entry :: rest))
+    in
+    (match replace (to_unix t) with
+     | Some result -> result
+     | None -> of_map (Map.set t.vars var value) |> to_unix)
+;;
 
 let of_unix arr =
   Array.to_list arr
