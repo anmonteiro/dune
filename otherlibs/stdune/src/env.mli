@@ -27,6 +27,11 @@ val vars : t -> Var.Set.t
 val initial : t
 
 val to_unix : t -> string list
+
+(** [to_unix_with_override t ~var ~value] serializes [t] with [var] set to
+    [value]. *)
+val to_unix_with_override : t -> var:Var.t -> value:string -> string list
+
 val of_unix : string array -> t
 val get : t -> Var.t -> string option
 

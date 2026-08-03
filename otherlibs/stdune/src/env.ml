@@ -61,6 +61,8 @@ let to_unix t =
     res
 ;;
 
+let to_unix_with_override t ~var ~value = of_map (Map.set t.vars var value) |> to_unix
+
 let of_unix arr =
   Array.to_list arr
   |> List.map ~f:(fun s ->
