@@ -79,6 +79,19 @@ module Dynamic = struct
   let to_static (t : 'node t) : 'node Static.t = Static.flatten_seqs (List.rev t)
 end
 
+module Check = struct
+  type 'cycle t =
+    | Unchanged
+    | Changed
+    | Deferred of 'cycle Changed_or_not.t Fiber.t
+
+  let[@inline] to_fiber = function
+    | Unchanged -> Fiber.return Changed_or_not.Unchanged
+    | Changed -> Fiber.return Changed_or_not.Changed
+    | Deferred fiber -> fiber
+  ;;
+end
+
 (* Note that dependencies should be checked in the order in which they were depended on to
    avoid recomputations of dependencies that are no longer relevant, and to eliminate
    spurious dependency cycles. This is why [changed_or_not] checks sequential sections in
@@ -89,7 +102,7 @@ let changed_or_not (t : 'node t) ~f =
     | Empty -> Fiber.return Changed_or_not.Unchanged
     | Singleton node ->
       Counter.add Metrics.Restore.edges 1;
-      f ~ok_to_recompute_eagerly node
+      Check.to_fiber (f ~ok_to_recompute_eagerly node)
     | Seq arr -> seq arr 0
     | Par arr ->
       Fiber.map_reduce_array
@@ -100,16 +113,23 @@ let changed_or_not (t : 'node t) ~f =
           match section with
           | Static.Singleton node ->
             Counter.add Metrics.Restore.edges 1;
-            f ~ok_to_recompute_eagerly:true node
+            Check.to_fiber (f ~ok_to_recompute_eagerly:true node)
           | other -> loop ~ok_to_recompute_eagerly:false other)
   and seq arr index =
     if index < Array.Immutable.length arr
-    then
-      loop ~ok_to_recompute_eagerly:false (Array.Immutable.get arr index)
-      >>= function
-      | Changed_or_not.Unchanged -> seq arr (index + 1)
-      | (Changed | Cancelled _) as res -> Fiber.return res
+    then (
+      match Array.Immutable.get arr index with
+      | Static.Singleton node ->
+        Counter.add Metrics.Restore.edges 1;
+        (match f ~ok_to_recompute_eagerly:false node with
+         | Check.Unchanged -> seq arr (index + 1)
+         | Check.Changed -> Fiber.return Changed_or_not.Changed
+         | Check.Deferred fiber -> fiber >>= continue_seq arr (index + 1))
+      | other -> loop ~ok_to_recompute_eagerly:false other >>= continue_seq arr (index + 1))
     else Fiber.return Changed_or_not.Unchanged
+  and continue_seq arr index = function
+    | Changed_or_not.Unchanged -> seq arr index
+    | (Changed | Cancelled _) as result -> Fiber.return result
   in
   loop ~ok_to_recompute_eagerly:false t
 ;;

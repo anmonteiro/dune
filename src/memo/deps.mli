@@ -11,6 +11,13 @@ type 'node t
 
 val empty : 'node t
 
+module Check : sig
+  type 'cycle t =
+    | Unchanged
+    | Changed
+    | Deferred of 'cycle Changed_or_not.t Fiber.t
+end
+
 (** Like [t] but supports cheap appending of new dependencies. *)
 module Dynamic : sig
   type 'node static := 'node t
@@ -33,12 +40,14 @@ end
     in order and the check stops early at the first [Changed]/[Cancelled]; parallel
     sections are checked concurrently and their results combined.
 
-    [ok_to_recompute_eagerly] is [true] when the dependency is a direct child of a parallel
-    section, telling [f] that it may eagerly recompute a dependency without a cutoff in
-    parallel with its siblings (instead of deferring the recomputation). *)
+    [f] can return [Unchanged] or [Changed] directly when checking a dependency requires no
+    fiber, or [Deferred fiber] otherwise. [ok_to_recompute_eagerly] is [true] when the
+    dependency is a direct child of a parallel section, telling [f] that it may eagerly
+    recompute a dependency without a cutoff in parallel with its siblings (instead of
+    deferring the recomputation). *)
 val changed_or_not
   :  'node t
-  -> f:(ok_to_recompute_eagerly:bool -> 'node -> 'cycle Changed_or_not.t Fiber.t)
+  -> f:(ok_to_recompute_eagerly:bool -> 'node -> 'cycle Check.t)
   -> 'cycle Changed_or_not.t Fiber.t
 
 module For_debugging : sig

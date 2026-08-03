@@ -43,11 +43,15 @@ let cancelled ~dependency_cycle : Collect_errors_monoid.t =
   }
 ;;
 
+let dep_has_changed ~(node : _ Dep_node.t) ~(dep : _ Dep_node.t) =
+  match Run.compare (Dep_node.last_changed_at dep) (Dep_node.last_validated_at node) with
+  | Gt -> true
+  | Eq | Lt -> false
+;;
+
 (* [Changed] if [dep] is newer than [node] and [Unchanged] otherwise. *)
 let dep_changed_or_not ~(node : _ Dep_node.t) ~(dep : _ Dep_node.t) : _ Changed_or_not.t =
-  match Run.compare (Dep_node.last_changed_at dep) (Dep_node.last_validated_at node) with
-  | Gt -> Changed
-  | Eq | Lt -> Unchanged
+  if dep_has_changed ~node ~dep then Changed else Unchanged
 ;;
 
 let rec restore_from_cache
@@ -75,45 +79,48 @@ let rec restore_from_cache
       node.deps
       ~f:(fun[@inline] ~ok_to_recompute_eagerly (Dep_node.T dep) ->
         (* If the [Run.is_current] check succeeds then the node must have been [Cached] in
-           the current run, so there is no need to restore it (which would allocate a
-           fiber). We can compare the timestamps directly. *)
+           the current run, so there is no need to restore it or allocate a fiber. We can
+           compare the timestamps directly. *)
         if Run.is_current (Dep_node.last_validated_at dep)
-        then Fiber.return (dep_changed_or_not ~node ~dep)
+        then
+          if dep_has_changed ~node ~dep then Deps.Check.Changed else Deps.Check.Unchanged
         else
-          consider_and_restore_from_cache_without_adding_dep dep
-          >>= function
-          | Unchanged ->
-            (* Here [dep_changed_or_not] can return [Changed] if the [node] was skipped in
-               the previous run, i.e., it was unreachable, while the [dep] wasn't skipped
-               and changed. *)
-            Fiber.return (dep_changed_or_not ~node ~dep)
-          | Cancelled { dependency_cycle } ->
-            Fiber.return (Changed_or_not.Cancelled { dependency_cycle })
-          | Changed ->
-            (match Spec.has_cutoff dep.spec with
-             | false when not ok_to_recompute_eagerly ->
-               (* If [dep] has no cutoff and [ok_to_recompute_eagerly] is not set, it is
-                  sufficient to check whether [dep] is up to date. We are in the [Changed]
-                  branch, which means [dep] is not up to date, and we therefore must
-                  recompute the [node]. *)
-               Fiber.return Changed_or_not.Changed
-             | _ ->
-               (* If [dep] has a cutoff predicate, it is not sufficient to check whether it
-                  is up to date: even if it isn't, after we recompute it, the resulting
-                  value may remain unchanged, allowing us to skip recomputing the [node].
+          Deps.Check.Deferred
+            (consider_and_restore_from_cache_without_adding_dep dep
+             >>= function
+             | Unchanged ->
+               (* Here [dep_changed_or_not] can return [Changed] if the [node] was skipped
+                  in the previous run, i.e., it was unreachable, while the [dep] wasn't
+                  skipped and changed. *)
+               Fiber.return (dep_changed_or_not ~node ~dep)
+             | Cancelled { dependency_cycle } ->
+               Fiber.return (Changed_or_not.Cancelled { dependency_cycle })
+             | Changed ->
+               (match Spec.has_cutoff dep.spec with
+                | false when not ok_to_recompute_eagerly ->
+                  (* If [dep] has no cutoff and [ok_to_recompute_eagerly] is not set, it is
+                     sufficient to check whether [dep] is up to date. We are in the
+                     [Changed] branch, which means [dep] is not up to date, and we therefore
+                     must recompute the [node]. *)
+                  Fiber.return Changed_or_not.Changed
+                | _ ->
+                  (* If [dep] has a cutoff predicate, it is not sufficient to check whether
+                     it is up to date: even if it isn't, after we recompute it, the resulting
+                     value may remain unchanged, allowing us to skip recomputing the [node].
 
-                  If [dep] has no cutoff but [ok_to_recompute_eagerly] is set (which could
-                  happen if [dep] is a direct child of a [Par] node), we eagerly recompute
-                  [dep] so that its computation runs in parallel with its siblings, instead
-                  of being deferred to the compute phase where it might run sequentially. We
-                  still report [Changed] in this case since there is no cutoff to check. *)
-               consider_and_compute_without_adding_dep dep
-               >>| (function
-                | Ok () ->
-                  (match Spec.has_cutoff dep.spec with
-                   | false -> Changed_or_not.Changed
-                   | true -> dep_changed_or_not ~node ~dep)
-                | Error dependency_cycle -> Cancelled { dependency_cycle })))
+                     If [dep] has no cutoff but [ok_to_recompute_eagerly] is set (which could
+                     happen if [dep] is a direct child of a [Par] node), we eagerly recompute
+                     [dep] so that its computation runs in parallel with its siblings,
+                     instead of being deferred to the compute phase where it might run
+                     sequentially. We still report [Changed] in this case since there is no
+                     cutoff to check. *)
+                  consider_and_compute_without_adding_dep dep
+                  >>| (function
+                   | Ok () ->
+                     (match Spec.has_cutoff dep.spec with
+                      | false -> Changed_or_not.Changed
+                      | true -> dep_changed_or_not ~node ~dep)
+                   | Error dependency_cycle -> Cancelled { dependency_cycle }))))
 
 and compute : 'i 'o. ('i, 'o) Dep_node.t -> unit Fiber.t =
   fun node ->
