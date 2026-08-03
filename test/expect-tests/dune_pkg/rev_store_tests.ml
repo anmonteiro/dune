@@ -17,6 +17,36 @@ let () =
   Dune_tests_common.init ()
 ;;
 
+let%expect_test "immediate and recursive directory entries" =
+  let entries =
+    [ "root"; "a/one"; "a/two"; "a/b/three"; "a/b/c/four"; "other/five" ]
+    |> List.map ~f:Path.Local.of_string
+    |> Rev_store.At_rev.For_tests.make_directory_entries
+  in
+  let print ~recursive path =
+    Rev_store.At_rev.For_tests.directory_entries
+      entries
+      ~recursive
+      (Path.Local.of_string path)
+    |> Rev_store.File.Set.iter ~f:(fun file ->
+      Rev_store.File.path file |> Path.Local.to_string |> print_endline)
+  in
+  print ~recursive:false ".";
+  print ~recursive:false "a";
+  print ~recursive:true "a";
+  print ~recursive:false "missing";
+  [%expect
+    {|
+    root
+    a/one
+    a/two
+    a/b/c/four
+    a/b/three
+    a/one
+    a/two
+    |}]
+;;
+
 let%expect_test "fetching non-existent object twice returns consistent results" =
   (* This test checks that fetching a non-existent object twice returns
      consistent errors. *)

@@ -92,6 +92,19 @@ module At_rev : sig
   module Config : sig
     val parse : string -> (string * string option * string * string) option
   end
+
+  (** Build directory entries without creating a Git repository. *)
+  module For_tests : sig
+    type directory_entries
+
+    val make_directory_entries : Path.Local.t list -> directory_entries
+
+    val directory_entries
+      :  directory_entries
+      -> recursive:bool
+      -> Path.Local.t
+      -> File.Set.t
+  end
 end
 
 (** Resolve the revision in the given remote. The [revision] can be any
