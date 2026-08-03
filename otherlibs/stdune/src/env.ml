@@ -52,6 +52,15 @@ let binding var value =
   Bytes.unsafe_to_string result
 ;;
 
+let unix_entry_has_var_caseless entry var =
+  let var_length = String.length var in
+  let rec loop i =
+    i = var_length
+    || (Char.lowercase_ascii entry.[i] = Char.lowercase_ascii var.[i] && loop (i + 1))
+  in
+  String.length entry > var_length && entry.[var_length] = '=' && loop 0
+;;
+
 let to_unix t =
   match t.unix with
   | Some v -> v
@@ -63,20 +72,40 @@ let to_unix t =
 
 let to_unix_with_override t ~var ~value =
   match get t var with
-  | None -> of_map (Map.set t.vars var value) |> to_unix
+  | None ->
+    if Sys.win32
+    then of_map (Map.set t.vars var value) |> to_unix
+    else binding var value :: to_unix t
   | Some old_value when String.equal old_value value -> to_unix t
   | Some old_value ->
-    let old_entry = binding var old_value in
     let new_entry = binding var value in
-    let rec replace = function
-      | [] -> None
-      | entry :: rest ->
-        if String.equal entry old_entry
-        then Some (new_entry :: rest)
-        else (
-          match replace rest with
-          | None -> None
-          | Some rest -> Some (entry :: rest))
+    let replace =
+      if Sys.win32
+      then (
+        let rec loop = function
+          | [] -> None
+          | entry :: rest ->
+            if unix_entry_has_var_caseless entry var
+            then Some (new_entry :: rest)
+            else (
+              match loop rest with
+              | None -> None
+              | Some rest -> Some (entry :: rest))
+        in
+        loop)
+      else (
+        let old_entry = binding var old_value in
+        let rec loop = function
+          | [] -> None
+          | entry :: rest ->
+            if String.equal entry old_entry
+            then Some (new_entry :: rest)
+            else (
+              match loop rest with
+              | None -> None
+              | Some rest -> Some (entry :: rest))
+        in
+        loop)
     in
     (match replace (to_unix t) with
      | Some result -> result
