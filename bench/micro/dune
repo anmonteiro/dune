@@ -55,3 +55,24 @@
  (allow_overlapping_dependencies)
  (modules path_bench_main)
  (libraries path_bench core_bench.inline_benchmarks))
+
+(library
+ (name source_dir_scan_bench)
+ (modules source_dir_scan_bench)
+ (library_flags -linkall)
+ (preprocess
+  (pps ppx_bench))
+ (libraries
+  dune_engine
+  fiber
+  memo
+  source
+  stdune
+  unix
+  core_bench.inline_benchmarks))
+
+(executable
+ (name source_dir_scan_bench_main)
+ (allow_overlapping_dependencies)
+ (modules source_dir_scan_bench_main)
+ (libraries source_dir_scan_bench core_bench.inline_benchmarks))

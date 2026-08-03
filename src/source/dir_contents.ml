@@ -137,3 +137,7 @@ let of_source_path_memo =
 ;;
 
 let of_source_path = Memo.exec of_source_path_memo
+
+module For_benchmarks = struct
+  let of_source_path = of_source_path_impl
+end

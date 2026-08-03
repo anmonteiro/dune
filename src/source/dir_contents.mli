@@ -16,3 +16,7 @@ val dirs : t -> File.t Filename.Array.Map.t
 val files : t -> Filename.Array.Set.t
 val to_dyn : t -> Dyn.t
 val of_source_path : Path.Source.t -> (t, Unix_error.Detailed.t) result Memo.t
+
+module For_benchmarks : sig
+  val of_source_path : Path.Source.t -> (t, Unix_error.Detailed.t) result Memo.t
+end
