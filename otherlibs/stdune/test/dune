@@ -3,6 +3,7 @@
  (modules
   :standard
   \
+  env_tests
   path_external_build_tests
   path_tests
   proc_linux_tests
@@ -23,6 +24,14 @@
   ppx_inline_test.config)
  (preprocess
   (pps ppx_expect)))
+
+(library
+ (name stdune_env_tests)
+ (modules env_tests)
+ (inline_tests)
+ (libraries stdune ppx_inline_test.config)
+ (preprocess
+  (pps ppx_inline_test)))
 
 (library
  (name stdune_path_tests)
@@ -88,4 +97,5 @@
 (alias
  (name runtest-windows)
  (deps
+  (alias runtest-stdune_env_tests)
   (alias runtest-stdune_external_build_tests)))

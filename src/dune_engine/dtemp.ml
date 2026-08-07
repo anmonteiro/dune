@@ -7,9 +7,9 @@ let file ~prefix ~suffix =
   Temp.temp_in_dir File ~dir:(Lazy.force temp_dir) ~suffix ~prefix
 ;;
 
-let add_to_env env =
+let to_unix env =
   let value = Lazy.force temp_dir_value in
-  Env.add env ~var:Env.Var.temp_dir ~value
+  Env.to_unix_with_override env ~var:Env.Var.temp_dir ~value
 ;;
 
 let destroy = Temp.destroy
