@@ -838,11 +838,60 @@ end
 module At_rev = struct
   type repo = t
 
+  module Directory_entries = struct
+    type directory =
+      { immediate : File.Set.t
+      ; recursive : File.Set.t
+      }
+
+    type t = directory Path.Local.Table.t
+
+    let empty = { immediate = File.Set.empty; recursive = File.Set.empty }
+
+    let create files =
+      let directories = Path.Local.Table.create (File.Set.cardinal files) in
+      File.Set.iter files ~f:(fun file ->
+        match File.path file |> Path.Local.parent with
+        | None -> ()
+        | Some parent ->
+          let { immediate; recursive } =
+            Path.Local.Table.find_or_add directories parent ~f:(Fun.const empty)
+          in
+          Path.Local.Table.set
+            directories
+            parent
+            { immediate = File.Set.add immediate file
+            ; recursive = File.Set.add recursive file
+            };
+          let rec add_to_ancestors = function
+            | None -> ()
+            | Some ancestor ->
+              let { immediate; recursive } =
+                Path.Local.Table.find_or_add directories ancestor ~f:(Fun.const empty)
+              in
+              Path.Local.Table.set
+                directories
+                ancestor
+                { immediate; recursive = File.Set.add recursive file };
+              add_to_ancestors (Path.Local.parent ancestor)
+          in
+          add_to_ancestors (Path.Local.parent parent));
+      directories
+    ;;
+
+    let find directories ~recursive path =
+      match Path.Local.Table.find directories path with
+      | None -> File.Set.empty
+      | Some { immediate; recursive = recursive_entries } ->
+        if recursive then recursive_entries else immediate
+    ;;
+  end
+
   type t =
     { repo : repo
     ; revision : Object.t
     ; files : File.Set.t
-    ; recursive_directory_entries : File.Set.t Path.Local.Table.t
+    ; directory_entries : Directory_entries.t
     ; submodules : Object.t Path.Local.Map.t
     }
 
@@ -1021,74 +1070,33 @@ module At_rev = struct
       >>| List.cons files
       >>| File.Set.union_all
     in
-    let recursive_directory_entries =
-      let recursive_directory_entries =
-        Path.Local.Table.create (File.Set.cardinal files)
-      in
-      (* Build a table mapping each directory path to the set of files under it
-         in the directory hierarchy. *)
-      File.Set.iter files ~f:(fun file ->
-        (* Add [file] to the set of files under each directory which is an
-           ancestor of [file]. *)
-        let rec loop = function
-          | None -> ()
-          | Some parent ->
-            let recursive_directory_entries_of_parent =
-              Path.Local.Table.find_or_add
-                recursive_directory_entries
-                parent
-                ~f:(Fun.const File.Set.empty)
-            in
-            let recursive_directory_entries_of_parent =
-              File.Set.add recursive_directory_entries_of_parent file
-            in
-            Path.Local.Table.set
-              recursive_directory_entries
-              parent
-              recursive_directory_entries_of_parent;
-            loop (Path.Local.parent parent)
-        in
-        loop (File.path file |> Path.Local.parent));
-      recursive_directory_entries
-    in
-    { repo; revision; files; recursive_directory_entries; submodules = commit_paths }
+    let directory_entries = Directory_entries.create files in
+    { repo; revision; files; directory_entries; submodules = commit_paths }
   ;;
 
-  let content
-        { repo; revision; files = _; recursive_directory_entries = _; submodules = _ }
-        path
-    =
+  let content { repo; revision; files = _; directory_entries = _; submodules = _ } path =
     show repo [ `Path (revision, path) ]
   ;;
 
-  let directory_entries_recursive t path =
-    Path.Local.Table.find t.recursive_directory_entries path
-    |> Option.value ~default:File.Set.empty
+  let directory_entries { directory_entries; _ } ~recursive path =
+    Directory_entries.find directory_entries ~recursive path
   ;;
 
-  let directory_entries_immediate t path =
-    (* TODO: there are much better ways of implementing this:
-       1. using libgit or ocamlgit
-       2. possibly using [$ git archive] *)
-    File.Set.filter t.files ~f:(fun (file : File.t) ->
-      match Path.Local.parent (File.path file) with
-      | None -> false
-      | Some p -> Path.Local.equal p path)
-  ;;
+  module For_tests = struct
+    type directory_entries = Directory_entries.t
 
-  let directory_entries t ~recursive path =
-    (if recursive then directory_entries_recursive else directory_entries_immediate)
-      t
-      path
-  ;;
+    let make_directory_entries paths =
+      let hash = Object.of_sha1_unsafe (String.make 40 '0') in
+      List.fold_left paths ~init:File.Set.empty ~f:(fun files path ->
+        File.Set.add files (File.Direct { path; size = 0; hash }))
+      |> Directory_entries.create
+    ;;
+
+    let directory_entries = Directory_entries.find
+  end
 
   let check_out
-        { repo = { dir; _ }
-        ; revision
-        ; files = _
-        ; recursive_directory_entries = _
-        ; submodules
-        }
+        { repo = { dir; _ }; revision; files = _; directory_entries = _; submodules }
         ~target
     =
     let git = git () in

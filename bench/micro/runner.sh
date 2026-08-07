@@ -7,6 +7,7 @@ declare -A benchmarks=(
   [thread_pool]="thread_pool_bench:thread_pool_bench_main"
   [digest]="digest_bench:digest_bench_main"
   [path]="path_bench:path_bench_main"
+  [rev_store]="rev_store_bench:rev_store_bench_main"
 )
 
 if [[ -z "${benchmarks[$1]}" ]]; then
