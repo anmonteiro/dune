@@ -79,3 +79,62 @@ let%expect_test "dependency structure of Memo combinators" =
   print_deps "nested_empty" (seq (par (seq (par e))));
   [%expect {| nested_empty: Empty |}]
 ;;
+
+let%expect_test "restore repeated sequential dependencies" =
+  let value = ref 1 in
+  let leaf =
+    Memo.lazy_node ~name:"leaf" ~cutoff:Int.equal (fun () ->
+      printfn "compute leaf";
+      Memo.return !value)
+  in
+  let top =
+    Memo.lazy_node ~name:"top" ~cutoff:Int.equal (fun () ->
+      printfn "compute top";
+      let rec loop count sum =
+        match count with
+        | 0 -> Memo.return sum
+        | count ->
+          let* value = read leaf in
+          loop (count - 1) (sum + value)
+      in
+      loop 3 0)
+  in
+  let run_top () = printfn "top = %d" (run (read top)) in
+  run_top ();
+  [%expect
+    {|
+    compute top
+    compute leaf
+    top = 3
+    |}];
+  Memo.reset Memo.Invalidation.empty;
+  run_top ();
+  [%expect {| top = 3 |}];
+  Memo.reset (Memo.Node.invalidate ~reason:Memo.Invalidation.Reason.Test leaf);
+  run_top ();
+  [%expect
+    {|
+    compute leaf
+    top = 3
+    |}];
+  value := 2;
+  Memo.reset (Memo.Node.invalidate ~reason:Memo.Invalidation.Reason.Test leaf);
+  run_top ();
+  [%expect
+    {|
+    compute leaf
+    compute top
+    top = 6
+    |}];
+  value := 3;
+  Memo.reset (Memo.Node.invalidate ~reason:Memo.Invalidation.Reason.Test leaf);
+  printfn "leaf = %d" (run (read leaf));
+  run_top ();
+  [%expect
+    {|
+    compute leaf
+    leaf = 3
+    compute top
+    top = 9
+    |}]
+;;

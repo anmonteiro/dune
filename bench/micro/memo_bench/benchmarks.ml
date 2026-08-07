@@ -118,6 +118,24 @@ let%bench_fun "20-reads (create and compute)" = twenty_reads.create_and_compute 
 let%bench_fun "20-reads (incr and recompute)" = twenty_reads.incr_and_recompute ()
 let%bench_fun "20-reads (restore from cache)" = twenty_reads.restore_from_cache ()
 
+let many_sequential_deps =
+  Case.create (fun () ->
+    let v = Var.create 0 in
+    let deps =
+      Memo.memoize
+        (List.fold_left
+           ~init:(Memo.return 0)
+           (List.init 1_000 ~f:(fun _i -> ()))
+           ~f:(fun acc () ->
+             Memo.bind acc ~f:(fun acc -> Memo.map (Var.read v) ~f:(fun v -> acc + v))))
+    in
+    v, Memo.bind (Var.read v) ~f:(fun _ -> deps))
+;;
+
+let%bench_fun "1000 repeated current deps (restore from cache)" =
+  many_sequential_deps.restore_from_cache ()
+;;
+
 let clique =
   Case.create (fun () ->
     let v = Var.create 0 in
