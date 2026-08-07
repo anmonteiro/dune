@@ -288,6 +288,7 @@ module Group = struct
     { alias : Module.t
     ; modules : node Module_name.Map.t
     ; name : Module_name.t
+    ; dep_closure : Module.t list Lazy.t
     }
 
   and node =
@@ -295,6 +296,33 @@ module Group = struct
     | Module of Module.t
 
   let alias t = t.alias
+
+  let closure_node = function
+    | Module m -> [ m ]
+    | Group g -> Lazy.force g.dep_closure
+  ;;
+
+  let make ~alias ~modules ~name =
+    let dep_closure =
+      lazy
+        (let lib_interface =
+           match Module_name.Map.find modules name with
+           | None | Some (Group _) -> alias
+           | Some (Module m) -> m
+         in
+         match Module.kind lib_interface with
+         | Alias _ ->
+           (* XXX ocamldep can't currently give us precise dependencies for
+              modules under [(include_subdirs qualified)] directories. For that
+              reason we currently depend on everything under the sub-directory. *)
+           let closure =
+             Module_name.Map.values modules |> List.concat_map ~f:closure_node
+           in
+           lib_interface :: closure
+         | _ -> [ alias; lib_interface ])
+    in
+    { alias; modules; name; dep_closure }
+  ;;
 
   module Of_trie = struct
     let of_trie ~obj_dir ~mangle ~interface ~rev_path trie =
@@ -304,23 +332,24 @@ module Group = struct
           | None | Some (Module_trie.Map _) -> false
           | Some (Leaf _) -> true
         in
-        { alias =
-            Mangle.make_alias_module
-              mangle
-              ~has_lib_interface
-              ~obj_dir
-              ~interface
-              (List.rev rev_path)
-        ; name = interface
-        ; modules =
-            Module_name.Map.mapi trie ~f:(fun name (m : 'a Module_trie.node) ->
-              let rev_path = Nonempty_list.(name :: rev_path) in
-              match m with
-              | Map m -> Group (loop name (Nonempty_list.to_list rev_path) m)
-              | Leaf m ->
-                let m = Module.set_path m (Nonempty_list.rev rev_path) in
-                Module (Mangle.wrap_module mangle m ~interface:(Some interface)))
-        }
+        let alias =
+          Mangle.make_alias_module
+            mangle
+            ~has_lib_interface
+            ~obj_dir
+            ~interface
+            (List.rev rev_path)
+        in
+        let modules =
+          Module_name.Map.mapi trie ~f:(fun name (m : 'a Module_trie.node) ->
+            let rev_path = Nonempty_list.(name :: rev_path) in
+            match m with
+            | Map m -> Group (loop name (Nonempty_list.to_list rev_path) m)
+            | Leaf m ->
+              let m = Module.set_path m (Nonempty_list.rev rev_path) in
+              Module (Mangle.wrap_module mangle m ~interface:(Some interface)))
+        in
+        make ~alias ~modules ~name:interface
       in
       loop interface rev_path trie
     ;;
@@ -338,7 +367,7 @@ module Group = struct
       trie
   ;;
 
-  let rec fold { alias; modules; name = _ } ~f ~init =
+  let rec fold { alias; modules; name = _; dep_closure = _ } ~f ~init =
     let init = f alias init in
     fold_modules modules ~f ~init
 
@@ -349,7 +378,8 @@ module Group = struct
       | Group t -> fold t ~f ~init)
   ;;
 
-  let rec exists { alias; modules; name = _ } ~f = f alias || exists_modules modules ~f
+  let rec exists { alias; modules; name = _; dep_closure = _ } ~f =
+    f alias || exists_modules modules ~f
 
   and exists_modules modules ~f =
     Module_name.Map.exists modules ~f:(function
@@ -357,7 +387,7 @@ module Group = struct
       | Group g -> exists g ~f)
   ;;
 
-  let rec to_dyn { alias; modules; name } =
+  let rec to_dyn { alias; modules; name; dep_closure = _ } =
     let open Dyn in
     record
       [ "alias", Module.to_dyn alias
@@ -372,10 +402,10 @@ module Group = struct
     | Group g -> variant "group" [ to_dyn g ]
   ;;
 
-  let rec map ({ alias; modules; name = _ } as t) ~f =
+  let rec map { alias; modules; name; dep_closure = _ } ~f =
     let alias = f alias in
     let modules = map_modules modules ~f in
-    { t with alias; modules }
+    make ~alias ~modules ~name
 
   and map_modules modules ~f =
     Module_name.Map.map modules ~f:(function
@@ -396,7 +426,7 @@ module Group = struct
        and+ modules =
          field ~default:Module_name.Map.empty "modules" (decode_modules ~src_dir)
        and+ name = field "name" Module_name.decode in
-       { alias; modules; name }
+       make ~alias ~modules ~name
 
   and decode_modules ~src_dir =
     let open Dune_lang.Decoder in
@@ -415,7 +445,7 @@ module Group = struct
     Module_name.Map.of_list_exn modules
   ;;
 
-  let rec encode { alias; modules; name } ~src_dir =
+  let rec encode { alias; modules; name; dep_closure = _ } ~src_dir =
     let open Dune_lang.Encoder in
     record_fields
       [ field_l "alias" sexp (Module.encode ~src_dir alias)
@@ -451,11 +481,11 @@ module Group = struct
   let parents (t : t) m = parents_modules [ t ] t.modules m |> List.rev
 
   module Memo_traversals = struct
-    let rec parallel_map ({ alias; modules; name = _ } as t) ~f =
+    let rec parallel_map { alias; modules; name; dep_closure = _ } ~f =
       let+ alias, modules =
         Memo.fork_and_join (fun () -> f alias) (fun () -> parallel_map_modules modules ~f)
       in
-      { t with alias; modules }
+      make ~alias ~modules ~name
 
     and parallel_map_modules modules ~f =
       Parallel_map.parallel_map modules ~f:(fun _ n ->
@@ -484,24 +514,6 @@ module Group = struct
   ;;
 
   module Find_dep = struct
-    let rec closure_group g =
-      let lib_interface = lib_interface g in
-      match Module.kind lib_interface with
-      | Alias _ ->
-        (* XXX ocamldep can't currently give us precise dependencies for
-           modules under [(include_subdirs qualified)] directories. For that
-           reason we currently depend on everything under the sub-directory. *)
-        let closure =
-          Module_name.Map.values g.modules |> List.concat_map ~f:closure_node
-        in
-        lib_interface :: closure
-      | _ -> [ g.alias; lib_interface ]
-
-    and closure_node = function
-      | Module m -> [ m ]
-      | Group g -> closure_group g
-    ;;
-
     let find_dep_of_parents parents name =
       match
         List.find_map parents ~f:(fun (parent, name') ->
@@ -513,21 +525,36 @@ module Group = struct
       | Some `Parent_cycle -> Error `Parent_cycle
       | Some (`Found m) -> Ok (closure_node m)
     ;;
+
+    let find_deps_of_parents parents ~of_ names =
+      List.map names ~f:(fun name ->
+        let result =
+          if Module_name.equal name of_ then Ok [] else find_dep_of_parents parents name
+        in
+        name, result)
+    ;;
   end
 
-  let find_dep t ~of_ name =
+  let find_deps t ~of_ names =
     match Module.kind of_ with
-    | Alias _ -> Ok []
+    | Alias _ -> List.map names ~f:(fun name -> name, Ok [])
     | Wrapped_compat ->
       let li = lib_interface t in
-      Ok (if Module_name.equal name (Module.name li) then [ li ] else [])
+      let of_ = Module.name of_ in
+      List.map names ~f:(fun name ->
+        ( name
+        , Ok
+            (if Module_name.equal name of_
+             then []
+             else if Module_name.equal name (Module.name li)
+             then [ li ]
+             else []) ))
     | _ ->
-      (* TODO don't recompute this *)
       let parents =
         parents_modules [ t ] t.modules of_
         |> List.map ~f:(fun g -> g.modules, Some g.name)
       in
-      Find_dep.find_dep_of_parents parents name
+      Find_dep.find_deps_of_parents parents ~of_:(Module.name of_) names
   ;;
 
   module For_alias = struct
@@ -614,16 +641,19 @@ module Unwrapped = struct
 
   let parents t m = Group.parents_modules [] t m
 
-  let find_dep t ~of_ name =
+  let find_deps t ~of_ names =
     match Module.kind of_ with
-    | Alias _ -> Ok []
-    | Wrapped_compat -> assert false
+    | Alias _ -> List.map names ~f:(fun name -> name, Ok [])
+    | Wrapped_compat ->
+      Code_error.raise
+        "Modules.Unwrapped.find_deps: wrapped compatibility module"
+        [ "module", Module.to_dyn of_ ]
     | _ ->
       let parents =
         (t, None)
         :: List.map (parents t of_) ~f:(fun (g : Group.t) -> g.modules, Some g.name)
       in
-      Group.Find_dep.find_dep_of_parents parents name
+      Group.Find_dep.find_deps_of_parents parents ~of_:(Module.name of_) names
   ;;
 
   let fold t ~init ~f = Group.fold_modules t ~init ~f
@@ -753,7 +783,7 @@ module Wrapped = struct
   ;;
 
   let find t name = Group.find t.group name
-  let find_dep t ~of_ name = Group.find_dep t.group ~of_ name
+  let find_deps t ~of_ names = Group.find_deps t.group ~of_ names
   let alias_for t m = Group.alias_for t.group m
 end
 
@@ -1125,45 +1155,70 @@ module With_vlib = struct
        | None -> modules_find vlib name)
   ;;
 
-  exception Parent_cycle
-
-  let find_dep =
-    let from_impl_or_lib = List.map ~f:(fun m -> `Impl_or_lib, m) in
-    let find_dep_result =
-      List.filter_map ~f:(fun (from, m) ->
-        match from with
-        | `Impl_or_lib -> Some m
-        | `Vlib -> Option.some_if (Module.visibility m = Public) m)
+  let find_deps t ~of_ names =
+    let result_mismatch () =
+      Code_error.raise "Modules.With_vlib.find_deps: result mismatch" []
     in
-    let raise_parent_cycle = function
-      | Ok s -> from_impl_or_lib s
-      | Error `Parent_cycle -> raise_notrace Parent_cycle
+    let find_deps_in_modules t names =
+      match t.modules with
+      | Singleton _ ->
+        List.map names ~f:(fun name ->
+          ( name
+          , Ok
+              (if Module.name of_ = name
+               then []
+               else modules_find t name |> Option.to_list) ))
+      | Unwrapped w -> Unwrapped.find_deps w ~of_ names
+      | Wrapped w -> Wrapped.find_deps w ~of_ names
+      | Stdlib s ->
+        List.map names ~f:(fun name ->
+          ( name
+          , Ok
+              (if Module.name of_ = name
+               then []
+               else Stdlib.find_dep s ~of_ name |> Option.to_list) ))
     in
-    let find_dep t ~of_ name : Module.t list =
-      if Module.name of_ = name
-      then []
-      else (
-        let result =
-          match t.modules with
-          | Singleton _ -> modules_find t name |> Option.to_list |> from_impl_or_lib
-          | Unwrapped w -> Unwrapped.find_dep w ~of_ name |> raise_parent_cycle
-          | Wrapped w -> Wrapped.find_dep w ~of_ name |> raise_parent_cycle
-          | Stdlib s -> Stdlib.find_dep s ~of_ name |> Option.to_list |> from_impl_or_lib
-        in
-        find_dep_result result)
+    let rec flatten acc = function
+      | [] -> Ok (List.rev acc)
+      | (_, Ok modules) :: results -> flatten (List.rev_append modules acc) results
+      | (name, Error `Parent_cycle) :: _ -> Error (`Parent_cycle name)
     in
-    fun t ~of_ name ->
-      try
-        Ok
-          (match t with
-           | Modules t -> find_dep t ~of_ name
-           | Impl { vlib; impl; _ } ->
-             (match find_dep impl ~of_ name with
-              | [] -> find_dep vlib ~of_ name |> List.map ~f:(fun m -> `Vlib, m)
-              | xs -> from_impl_or_lib xs)
-             |> find_dep_result)
-      with
-      | Parent_cycle -> Error `Parent_cycle
+    match t with
+    | Modules t -> flatten [] (find_deps_in_modules t names)
+    | Impl { vlib; impl; _ } ->
+      let impl_results = find_deps_in_modules impl names in
+      let rec missing_names acc = function
+        | [] -> List.rev acc
+        | (name, Ok []) :: results -> missing_names (name :: acc) results
+        | (_, (Ok (_ :: _) | Error `Parent_cycle)) :: results -> missing_names acc results
+      in
+      let vlib_results =
+        let names = missing_names [] impl_results in
+        find_deps_in_modules vlib names
+      in
+      let rec merge acc impl_results vlib_results =
+        match impl_results with
+        | [] ->
+          if List.is_empty vlib_results then Ok (List.rev acc) else result_mismatch ()
+        | (name, Error `Parent_cycle) :: _ -> Error (`Parent_cycle name)
+        | (name, Ok []) :: impl_results ->
+          (match vlib_results with
+           | [] -> result_mismatch ()
+           | (vlib_name, result) :: vlib_results ->
+             if not (Module_name.equal name vlib_name)
+             then result_mismatch ()
+             else (
+               match result with
+               | Error `Parent_cycle -> Error (`Parent_cycle name)
+               | Ok modules ->
+                 let modules =
+                   List.filter modules ~f:(fun m -> Module.visibility m = Public)
+                 in
+                 merge (List.rev_append modules acc) impl_results vlib_results))
+        | (_, Ok (_ :: _ as modules)) :: impl_results ->
+          merge (List.rev_append modules acc) impl_results vlib_results
+      in
+      merge [] impl_results vlib_results
   ;;
 
   let implicit_deps t ~of_ =
@@ -1255,7 +1310,8 @@ module With_vlib = struct
                  Option.some_if (Module.visibility vlib = Public) vlib
                  |> Option.map ~f:(fun m -> Group.Module m))
            in
-           Some { impl with Group.modules })
+           let { Group.alias; name; _ } = impl in
+           Some (Group.make ~alias ~modules ~name))
     in
     fun t ~init ~normal ~alias ->
       t
