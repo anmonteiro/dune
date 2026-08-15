@@ -69,3 +69,35 @@ The runtime_dep index.txt was copied to the build folder
   $ node _build/default/output/main.js
   hello from file
   
+
+Renaming runtime dependencies is not supported
+
+  $ mkdir renamed-runtime-deps
+  $ cd renamed-runtime-deps
+  $ make_melange_project 3.25 1.0
+
+  $ cat > dune <<EOF
+  > (melange.emit
+  >  (alias output-a)
+  >  (emit_stdlib false)
+  >  (promote (until-clean) (into output_a))
+  >  (target output_a)
+  >  (runtime_deps (index_a.html as index.html)))
+  > (melange.emit
+  >  (alias output-b)
+  >  (emit_stdlib false)
+  >  (promote (until-clean) (into output_b))
+  >  (target output_b)
+  >  (runtime_deps (index_b.html as index.html)))
+  > EOF
+
+  $ echo index-a > index_a.html
+  $ echo index-b > index_b.html
+  $ echo 'let () = ()' > main.ml
+
+  $ dune build @output-a @output-b
+  File "dune", line 6, characters 15-43:
+  6 |  (runtime_deps (index_a.html as index.html)))
+                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  Error: Unexpected list
+  [1]
