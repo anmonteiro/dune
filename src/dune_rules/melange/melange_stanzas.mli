@@ -1,5 +1,11 @@
 open Import
 
+module Runtime_deps : sig
+  type t =
+    | Dependency of Dep_conf.t
+    | File_binding of File_binding.Unexpanded.t
+end
+
 (** Stanza to produce JavaScript targets from Melange libraries *)
 module Emit : sig
   type t =
@@ -12,7 +18,7 @@ module Emit : sig
     ; libraries : Lib_dep.t list
     ; package : Package.t option
     ; preprocess : Preprocess.preprocess
-    ; runtime_deps : Loc.t * Dep_conf.t list
+    ; runtime_deps : Loc.t * Runtime_deps.t list
     ; lint : Preprocess.Without_instrumentation.t Preprocess.Per_module.t
     ; promote : Rule_mode.Promote.t option
     ; compile_flags : Ordered_set_lang.Unexpanded.t
