@@ -48,17 +48,15 @@ files in its Melange object directory.
   >   dist/node_modules/repro.foo/errors.js > deps.json
 
 The selectors must cover the directory where Dune installed the Melange
-objects. Both assertions currently fail.
+objects.
 
   $ jq_dune -e '
   >   [.[] | depsGlobEntriesWithPredicate("*.cmj")
   >    | select(.dir | endswith("/repro/foo/melange"))]
   >   | length == 1
   > ' deps.json > /dev/null
-  [1]
   $ jq_dune -e '
   >   [.[] | depsGlobEntriesWithPredicate("*.cmi")
   >    | select(.dir | endswith("/repro/foo/melange"))]
   >   | length == 1
   > ' deps.json > /dev/null
-  [1]
