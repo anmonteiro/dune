@@ -230,7 +230,11 @@ In that file, ``%{melange.emit:output}`` expands to ``output/lib``. In a
   sources. These runtime dependencies can include assets like CSS files, images,
   fonts, external JavaScript files, etc. ``runtime_deps`` adhere to the formats
   in :doc:`concepts/dependency-spec`. For example
-  ``(runtime_deps ./path/to/file.css (glob_files_rec ./fonts/*))``.
+  ``(runtime_deps ./path/to/file.css (glob_files_rec ./fonts/*))``. Starting
+  with Dune 3.25, individual files can be renamed when copied by using
+  ``(source as destination)``. The destination is relative to the
+  ``melange.emit`` target directory and cannot escape it. For example,
+  ``(runtime_deps (index.production.html as index.html))``.
 
 - ``(emit_stdlib <bool>)`` allows the user to specify whether the Melange
   standard library should be included as a dependency of the stanza or not. The

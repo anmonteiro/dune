@@ -1,6 +1,31 @@
 open Import
 open Dune_lang.Decoder
 
+module Runtime_deps = struct
+  type t =
+    | Dependency of Dep_conf.t
+    | File_binding of File_binding.Unexpanded.t
+
+  let decode =
+    peek_exn
+    >>= function
+    | List (_, [ _; Atom (_, A "as"); _ ]) ->
+      let+ binding = File_binding.Unexpanded.decode
+      and+ dune_version = Syntax.get_exn Stanza.syntax in
+      if dune_version < (3, 25)
+      then
+        Syntax.Error.since
+          (File_binding.Unexpanded.loc binding)
+          Stanza.syntax
+          (3, 25)
+          ~what:"Using (source as destination) in runtime_deps";
+      File_binding binding
+    | _ ->
+      let+ dependency = Dep_conf.decode_no_files in
+      Dependency dependency
+  ;;
+end
+
 module Emit = struct
   type t =
     { loc : Loc.t
@@ -12,7 +37,7 @@ module Emit = struct
     ; libraries : Lib_dep.t list
     ; package : Package.t option
     ; preprocess : Preprocess.preprocess
-    ; runtime_deps : Loc.t * Dep_conf.t list
+    ; runtime_deps : Loc.t * Runtime_deps.t list
     ; lint : Preprocess.Without_instrumentation.t Preprocess.Per_module.t
     ; promote : Rule_mode.Promote.t option
     ; compile_flags : Ordered_set_lang.Unexpanded.t
@@ -119,10 +144,7 @@ module Emit = struct
          field "libraries" (Lib_dep.L.decode ~allow_re_export:false) ~default:[]
        and+ package = Stanza_pkg.field_opt () >>| Option.map ~f:snd
        and+ runtime_deps =
-         field
-           "runtime_deps"
-           (located (repeat Dep_conf.decode_no_files))
-           ~default:(loc, [])
+         field "runtime_deps" (located (repeat Runtime_deps.decode)) ~default:(loc, [])
        and+ preprocess, preprocessor_deps = Preprocess.preprocess_fields
        and+ lint = field "lint" Lint.decode ~default:Lint.default
        and+ promote = field_o "promote" Rule_mode_decoder.Promote.decode

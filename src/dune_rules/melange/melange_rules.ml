@@ -629,12 +629,48 @@ let setup_emit_cmj_rules
 ;;
 
 module Runtime_deps = struct
+  type copy =
+    { src : Path.t
+    ; dst : Path.Build.t
+    ; promotion_src : Path.t
+    }
+
   type targets =
-    { copy : (Path.t * Path.Build.t) list
+    { copy : copy list
     ; deps : Path.t list
     }
 
   let empty = { copy = []; deps = [] }
+  let make_copy src dst = { src; dst; promotion_src = src }
+
+  let invalid_destination ~loc dst =
+    User_error.raise
+      ~loc
+      [ Pp.textf
+          "The destination path %s must be relative to the Melange target directory."
+          (String.maybe_quoted dst)
+      ]
+  ;;
+
+  let destination ~loc dst =
+    let original = dst in
+    match Path.Local.of_string dst with
+    | dst when Path.Local.equal dst Path.Local.root -> invalid_destination ~loc original
+    | dst -> dst
+    | exception User_error.E _ -> invalid_destination ~loc original
+  ;;
+
+  let expand_file_binding ~expander ~dir ~target_dir binding =
+    let src = File_binding.Unexpanded.src binding in
+    let dst_swv = File_binding.Unexpanded.dst binding |> Option.value_exn in
+    let dst_loc = String_with_vars.loc dst_swv in
+    let+ src = Expander.No_deps.expand_path expander src
+    and+ dst = Expander.No_deps.expand_str expander dst_swv in
+    let dst = destination ~loc:dst_loc dst in
+    let promotion_src = Path.Build.append_local dir dst |> Path.build in
+    let dst = Path.Build.append_local target_dir dst in
+    { src; dst; promotion_src }
+  ;;
 
   let targets =
     let raise_external_dep_error src ~for_ =
@@ -651,43 +687,65 @@ module Runtime_deps = struct
       Lib_file_deps.raise_disallowed_external_path ~loc (Lib_info.name lib_info) src
     in
     fun sctx ~dir ~output ~for_ (mel : Melange_stanzas.Emit.t) ->
-      let+ deps =
+      let* deps, file_bindings =
         match for_ with
         | `Emit ->
           let* expander = Super_context.expander sctx ~dir in
           let loc, runtime_deps = mel.runtime_deps in
-          Lib_file_deps.eval ~expander ~loc ~paths:Allow_all runtime_deps
-        | `Library lib_info ->
-          (match Lib_info.melange_runtime_deps lib_info with
-           | External paths -> Memo.return (Path.Set.of_list paths)
-           | Local (loc, dep_conf) ->
-             let dir = Lib_info.src_dir (Lib_info.as_local_exn lib_info) in
-             let* expander = Super_context.expander sctx ~dir in
-             Lib_file_deps.eval ~expander ~loc ~paths:Allow_all dep_conf)
-      in
-      match output with
-      | Output_kind.Public_library { lib_dir; target_dir; output_dir } ->
-        Path.Set.fold ~init:empty deps ~f:(fun src ({ copy; deps = _ } as acc) ->
-          let copy =
-            match Path.as_external src with
-            | None ->
-              let output_dir = Path.Build.append_local target_dir output_dir in
-              (src, lib_output_path ~output_dir ~lib_dir src) :: copy
-            | Some src_e ->
-              (match Path.as_external lib_dir with
-               | Some lib_dir_e when Path.External.is_descendant src_e ~of_:lib_dir_e ->
-                 let output_dir = Path.Build.append_local target_dir output_dir in
-                 (src, lib_output_path ~output_dir ~lib_dir src) :: copy
-               | Some _ | None -> raise_external_dep_error src ~for_)
+          let runtime_deps, file_bindings =
+            List.partition_map runtime_deps ~f:(function
+              | Melange_stanzas.Runtime_deps.Dependency dependency -> Left dependency
+              | Melange_stanzas.Runtime_deps.File_binding binding -> Right binding)
           in
-          { acc with copy })
-      | Private_library_or_emit target_dir ->
-        Path.Set.fold ~init:empty deps ~f:(fun src ({ copy; deps } as acc) ->
-          match Path.as_in_build_dir src with
-          | None -> { acc with deps = src :: deps }
-          | Some src_build ->
-            let dst = Melange.output_path ~target_dir src_build in
-            { acc with copy = (src, dst) :: copy })
+          let+ deps = Lib_file_deps.eval ~expander ~loc ~paths:Allow_all runtime_deps
+          and+ file_bindings =
+            match output with
+            | Output_kind.Private_library_or_emit target_dir ->
+              Memo.parallel_map file_bindings ~f:(fun binding ->
+                expand_file_binding ~expander ~dir ~target_dir binding)
+            | Public_library _ ->
+              Code_error.raise
+                "A melange.emit stanza unexpectedly has public library output"
+                []
+          in
+          deps, file_bindings
+        | `Library lib_info ->
+          let+ deps =
+            match Lib_info.melange_runtime_deps lib_info with
+            | External paths -> Memo.return (Path.Set.of_list paths)
+            | Local (loc, dep_conf) ->
+              let dir = Lib_info.src_dir (Lib_info.as_local_exn lib_info) in
+              let* expander = Super_context.expander sctx ~dir in
+              Lib_file_deps.eval ~expander ~loc ~paths:Allow_all dep_conf
+          in
+          deps, []
+      in
+      let targets =
+        match output with
+        | Output_kind.Public_library { lib_dir; target_dir; output_dir } ->
+          Path.Set.fold ~init:empty deps ~f:(fun src ({ copy; deps = _ } as acc) ->
+            let copy =
+              match Path.as_external src with
+              | None ->
+                let output_dir = Path.Build.append_local target_dir output_dir in
+                make_copy src (lib_output_path ~output_dir ~lib_dir src) :: copy
+              | Some src_e ->
+                (match Path.as_external lib_dir with
+                 | Some lib_dir_e when Path.External.is_descendant src_e ~of_:lib_dir_e ->
+                   let output_dir = Path.Build.append_local target_dir output_dir in
+                   make_copy src (lib_output_path ~output_dir ~lib_dir src) :: copy
+                 | Some _ | None -> raise_external_dep_error src ~for_)
+            in
+            { acc with copy })
+        | Private_library_or_emit target_dir ->
+          Path.Set.fold ~init:empty deps ~f:(fun src ({ copy; deps } as acc) ->
+            match Path.as_in_build_dir src with
+            | None -> { acc with deps = src :: deps }
+            | Some src_build ->
+              let dst = Melange.output_path ~target_dir src_build in
+              { acc with copy = make_copy src dst :: copy })
+      in
+      Memo.return { targets with copy = List.rev_append file_bindings targets.copy }
   ;;
 end
 
@@ -705,7 +763,7 @@ let setup_runtime_assets_rules
   Runtime_deps.targets sctx ~dir ~output ~for_ mel
   >>= fun { Runtime_deps.copy; deps } ->
   let loc = mel.loc in
-  Memo.parallel_map copy ~f:(fun (src, dst) ->
+  Memo.parallel_map copy ~f:(fun { Runtime_deps.src; dst; promotion_src } ->
     let mode =
       compute_promote_in_source
         ~promote_in_source
@@ -713,7 +771,7 @@ let setup_runtime_assets_rules
         ~dir
         ~output
         ~mode
-        ~src
+        ~src:promotion_src
         ~dst
     in
     Memo.Option.bind
