@@ -716,6 +716,10 @@ let setup_runtime_assets_rules
         ~src
         ~dst
     in
+    let add_copy_rule dst builder =
+      let+ () = add_rule sctx ~loc ~dir ~mode builder in
+      dst
+    in
     Memo.Option.bind
       (Path.as_in_build_dir src)
       ~f:(Dir_status.find_directory_target_ancestor ~jsoo_enabled:Jsoo_rules.jsoo_enabled)
@@ -729,17 +733,14 @@ let setup_runtime_assets_rules
         | Some (Ok false) | Some (Error _) | None ->
           Left dst, Action_builder.copy ~src ~dst
       in
-      let+ () = add_rule sctx ~loc ~dir ~mode builder in
-      dst
+      add_copy_rule dst builder
     | Some directory_target_ancestor ->
       let new_src = Path.build directory_target_ancestor in
       let dst =
         let rel = Path.reach ~from:src new_src in
         Path.Build.relative dst rel
       in
-      let builder = Action_builder.copy_dir ~src:new_src ~dst in
-      let+ () = add_rule sctx ~loc ~dir ~mode builder in
-      Right dst)
+      add_copy_rule (Right dst) (Action_builder.copy_dir ~src:new_src ~dst))
   >>| List.partition_map ~f:Fun.id
   >>= fun (file_deps, directory_targets) ->
   let+ () =
