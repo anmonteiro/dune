@@ -87,7 +87,7 @@ let lib_output_path ~output_dir ~lib_dir src =
 let js_outputs_of_module ~module_systems ~output m =
   match module_systems with
   | [] -> []
-  | _ ->
+  | _ :: _ ->
     let dst_dir =
       let src_dir =
         Module.source m ~ml_kind:Impl
