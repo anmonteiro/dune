@@ -1173,6 +1173,15 @@ let modules_of_stanzas =
           >>= function
           | false -> Memo.return `Skip
           | true ->
+            let with_select_deps libraries ~for_ =
+              Generated_modules.with_lib_select_deps
+                modules
+                ~dir
+                ~dialects
+                ~include_subdirs
+                ~for_
+                libraries
+            in
             (match Stanza.repr stanza with
              | Library.T lib ->
                (* jeremiedimino: this [Resolve.get] means that if the user writes an
@@ -1181,15 +1190,7 @@ let modules_of_stanzas =
                 [Or_exn.t] a bit longer. *)
                let+ sources, modules =
                  let lookup_vlib = lookup_vlib ~loc:lib.buildable.loc in
-                 let modules =
-                   Generated_modules.with_lib_select_deps
-                     modules
-                     ~dir
-                     ~dialects
-                     ~include_subdirs
-                     ~for_
-                     lib.buildable.libraries
-                 in
+                 let modules = with_select_deps lib.buildable.libraries ~for_ in
                  make_lib_modules
                    ~expander
                    ~dir
@@ -1205,39 +1206,15 @@ let modules_of_stanzas =
                let obj_dir = Library.obj_dir lib ~dir in
                `Library { Per_stanza.stanza = lib; sources; modules; dir; obj_dir }
              | Executables.T exes ->
-               let modules =
-                 Generated_modules.with_lib_select_deps
-                   modules
-                   ~dir
-                   ~dialects
-                   ~include_subdirs
-                   ~for_
-                   exes.buildable.libraries
-               in
+               let modules = with_select_deps exes.buildable.libraries ~for_ in
                make_executables ~dir ~expander ~modules ~project exes
              | Tests.T tests ->
-               let modules =
-                 Generated_modules.with_lib_select_deps
-                   modules
-                   ~dir
-                   ~dialects
-                   ~include_subdirs
-                   ~for_
-                   tests.exes.buildable.libraries
-               in
+               let modules = with_select_deps tests.exes.buildable.libraries ~for_ in
                make_tests ~dir ~expander ~modules ~project tests
              | Melange_stanzas.Emit.T mel ->
                let obj_dir = Obj_dir.make_melange_emit ~dir ~name:mel.target in
                let+ sources, modules =
-                 let modules =
-                   Generated_modules.with_lib_select_deps
-                     modules
-                     ~dir
-                     ~dialects
-                     ~include_subdirs
-                     ~for_:Melange
-                     mel.libraries
-                 in
+                 let modules = with_select_deps mel.libraries ~for_:Melange in
                  let version = Dune_project.dune_version project in
                  Modules_field_evaluator.eval
                    ~expander
