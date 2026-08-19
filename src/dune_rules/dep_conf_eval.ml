@@ -221,6 +221,12 @@ let package loc pkg_name (context : Build_context.t) ~dune_version =
       }
 ;;
 
+let project_dune_version expander =
+  Action_builder.of_memo
+    (let open Memo.O in
+     Dune_load.find_project ~dir:(Expander.dir expander) >>| Dune_project.dune_version)
+;;
+
 let rec dep expander : Dep_conf.t -> _ = function
   | Include s ->
     (* TODO this is wrong. we shouldn't allow bindings here if we are in an
@@ -297,13 +303,7 @@ let rec dep expander : Dep_conf.t -> _ = function
          let* pkg_name = expand_package_name expander p in
          let context = Build_context.create ~name:(Expander.context expander) in
          let loc = String_with_vars.loc p in
-         let* dune_version =
-           Action_builder.of_memo
-           @@
-           let open Memo.O in
-           Dune_load.find_project ~dir:(Expander.dir expander)
-           >>| Dune_project.dune_version
-         in
+         let* dune_version = project_dune_version expander in
          package loc pkg_name context ~dune_version
        in
        [])
@@ -353,12 +353,7 @@ and combined_package_deps_builder expander pkgs =
       | Some (Local _) -> Action_builder.return ()
       | Some (Build build) -> build
       | Some (Installed _) | None ->
-        let* dune_version =
-          Action_builder.of_memo
-            (let open Memo.O in
-             Dune_load.find_project ~dir:(Expander.dir expander)
-             >>| Dune_project.dune_version)
-        in
+        let* dune_version = project_dune_version expander in
         package loc pkg_name context ~dune_version)
   in
   env
