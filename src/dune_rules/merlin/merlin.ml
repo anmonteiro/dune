@@ -63,6 +63,7 @@ module Processed = struct
     { stdlib_dir : Path.t option
     ; source_root : Path.t
     ; obj_dirs : Path.Set.t
+    ; cmt_dirs : Path.Set.t
     ; src_dirs : Path.Set.t
     ; hidden_obj_dirs : Path.Set.t
     ; hidden_src_dirs : Path.Set.t
@@ -88,6 +89,7 @@ module Processed = struct
       [ Repr.field "stdlib_dir" (Repr.option Path.repr) ~get:(fun t -> t.stdlib_dir)
       ; Repr.field "source_root" Path.repr ~get:(fun t -> t.source_root)
       ; Repr.field "obj_dirs" path_set_repr ~get:(fun t -> t.obj_dirs)
+      ; Repr.field "cmt_dirs" path_set_repr ~get:(fun t -> t.cmt_dirs)
       ; Repr.field "src_dirs" path_set_repr ~get:(fun t -> t.src_dirs)
       ; Repr.field "hidden_obj_dirs" path_set_repr ~get:(fun t -> t.hidden_obj_dirs)
       ; Repr.field "hidden_src_dirs" path_set_repr ~get:(fun t -> t.hidden_src_dirs)
@@ -105,7 +107,15 @@ module Processed = struct
     { opens : Module_name.t list
     ; module_ : Module.t
     ; reader : string list option
+    ; kind : Ml_kind.t
     }
+
+  type per_file_config =
+    { exact : module_config Path.Build.Map.t
+    ; extensionless : module_config list Path.Build.Map.t
+    }
+
+  let ml_kind_repr = Repr.view Repr.string ~to_:Ml_kind.to_string
 
   let module_config_repr =
     Repr.record
@@ -113,15 +123,35 @@ module Processed = struct
       [ Repr.field "opens" (Repr.list Module_name.repr) ~get:(fun t -> t.opens)
       ; Repr.field "module_" (Repr.abstract Module.to_dyn) ~get:(fun t -> t.module_)
       ; Repr.field "reader" (Repr.option (Repr.list Repr.string)) ~get:(fun t -> t.reader)
+      ; Repr.field "kind" ml_kind_repr ~get:(fun t -> t.kind)
+      ]
+  ;;
+
+  let per_file_config_repr =
+    Repr.record
+      "merlin-per-file-config"
+      [ Repr.field
+          "exact"
+          (Repr.abstract (Path.Build.Map.to_dyn (Repr.to_dyn module_config_repr)))
+          ~get:(fun t -> t.exact)
+      ; Repr.field
+          "extensionless"
+          (Repr.abstract
+             (Path.Build.Map.to_dyn (Dyn.list (Repr.to_dyn module_config_repr))))
+          ~get:(fun t -> t.extensionless)
       ]
   ;;
 
   (* ...but modules can have different preprocessing specifications*)
-  type t =
+  type configuration =
     { config : config
-    ; per_file_config : module_config Path.Build.Map.t
+    ; per_file_config : per_file_config
     ; pp_config : pp_flag option Module_name.Per_item.t
+    ; is_default : bool
+    ; for_ : Compilation_mode.t
     }
+
+  type t = configuration Nonempty_list.t
 
   type output_format =
     [ `Text
@@ -154,21 +184,22 @@ module Processed = struct
     ;;
   end
 
-  let repr =
+  let configuration_repr =
     Repr.record
-      "merlin-processed"
+      "merlin-processed-configuration"
       [ Repr.field "config" config_repr ~get:(fun t -> t.config)
-      ; Repr.field
-          "per_file_config"
-          (Repr.abstract (Path.Build.Map.to_dyn (Repr.to_dyn module_config_repr)))
-          ~get:(fun t -> t.per_file_config)
+      ; Repr.field "per_file_config" per_file_config_repr ~get:(fun t ->
+          t.per_file_config)
       ; Repr.field
           "pp_config"
           (Module_name.Per_item.repr (Repr.option pp_flag_repr))
           ~get:(fun t -> t.pp_config)
+      ; Repr.field "is_default" Repr.bool ~get:(fun t -> t.is_default)
+      ; Repr.field "for_" Compilation_mode.repr ~get:(fun t -> t.for_)
       ]
   ;;
 
+  let repr = Repr.view (Repr.list configuration_repr) ~to_:Nonempty_list.to_list
   let to_dyn = Repr.to_dyn repr
 
   module D = struct
@@ -176,7 +207,7 @@ module Processed = struct
 
     let name = "merlin-conf"
     let sharing = false
-    let version = 8
+    let version = 10
 
     let repr =
       Repr.view Repr.string ~to_:(fun _ -> "Use [dune ocaml dump-dot-merlin] instead")
@@ -216,6 +247,7 @@ module Processed = struct
         { stdlib_dir
         ; source_root
         ; obj_dirs
+        ; cmt_dirs
         ; src_dirs
         ; hidden_obj_dirs
         ; hidden_src_dirs
@@ -238,6 +270,7 @@ module Processed = struct
     let source_root = [ make_directive_of_path "SOURCE_ROOT" source_root ] in
     let exclude_query_dir = [ Sexp.List [ Atom "EXCLUDE_QUERY_DIR" ] ] in
     let obj_dirs = Path.Set.to_list_map obj_dirs ~f:(make_directive_of_path "B") in
+    let cmt_dirs = Path.Set.to_list_map cmt_dirs ~f:(make_directive_of_path "CMT") in
     let src_dirs = Path.Set.to_list_map src_dirs ~f:(make_directive_of_path "S") in
     let hidden_obj_dirs =
       Path.Set.to_list_map hidden_obj_dirs ~f:(make_directive_of_path "BH")
@@ -300,6 +333,7 @@ module Processed = struct
          ; source_root
          ; exclude_query_dir
          ; obj_dirs
+         ; cmt_dirs
          ; src_dirs
          ; hidden_obj_dirs
          ; hidden_src_dirs
@@ -329,6 +363,7 @@ module Processed = struct
         pp_configs
         flags
         obj_dirs
+        cmt_dirs
         src_dirs
         hidden_obj_dirs
         hidden_src_dirs
@@ -344,6 +379,7 @@ module Processed = struct
       printf "STDLIB %s\n" (serialize_path stdlib_dir));
     printf "SOURCE_ROOT %s\n" (serialize_path source_root);
     Path.Set.iter obj_dirs ~f:(fun p -> printf "B %s\n" (serialize_path p));
+    Path.Set.iter cmt_dirs ~f:(fun p -> printf "CMT %s\n" (serialize_path p));
     Path.Set.iter src_dirs ~f:(fun p -> printf "S %s\n" (serialize_path p));
     Path.Set.iter hidden_obj_dirs ~f:(fun p -> printf "BH %s\n" (serialize_path p));
     Path.Set.iter hidden_src_dirs ~f:(fun p -> printf "SH %s\n" (serialize_path p));
@@ -376,15 +412,59 @@ module Processed = struct
     Buffer.contents b
   ;;
 
-  let get { per_file_config; pp_config; config } ~file =
+  type match_kind =
+    | Exact_or_copy
+    | Extensionless
+
+  type source_kind =
+    | Implementation
+    | Interface
+
+  type file_configuration =
+    { for_ : Compilation_mode.t
+    ; is_default : bool
+    ; kind : source_kind
+    ; counterpart : Path.t option
+    ; directives : Sexp.t
+    }
+
+  let select_extensionless candidates ~file =
+    let extension = Path.Build.extension file |> Filename.Extension.Or_empty.to_string in
+    let matching_extension =
+      List.filter candidates ~f:(fun { module_; kind; opens = _; reader = _ } ->
+        match Module.source_without_pp module_ ~ml_kind:kind with
+        | None -> false
+        | Some source ->
+          String.equal
+            extension
+            (Path.extension source |> Filename.Extension.Or_empty.to_string))
+    in
+    match matching_extension with
+    | [ candidate ] -> Some candidate
+    | [] ->
+      (match candidates with
+       | [ candidate ] -> Some candidate
+       | [] | _ :: _ :: _ -> None)
+    | _ :: _ :: _ -> None
+  ;;
+
+  let get_configuration
+        { per_file_config = { exact; extensionless }
+        ; pp_config
+        ; config
+        ; is_default = _
+        ; for_ = _
+        }
+        ~file
+    =
     let open Option.O in
-    let+ { module_; opens; reader } =
-      let find file = Path.Build.Map.find per_file_config file in
+    let+ match_kind, ({ module_; opens; reader; kind = _ } as module_config) =
+      let find file = Path.Build.Map.find exact file in
       match find file with
-      | Some _ as s -> s
+      | Some config -> Some (Exact_or_copy, config)
       | None ->
         (match Copy_line_directive.DB.follow_while file ~f:find with
-         | Some _ as s -> s
+         | Some config -> Some (Exact_or_copy, config)
          | None ->
            (* Fallback to handle preprocessed files (where the preprocessor has
               the file extensison changed).
@@ -394,16 +474,94 @@ module Processed = struct
               This is too rough but, really, preprocessors should emit copy
               line directives instead and then Dune should have the database
               similar to Copy_line_directive to handle this. *)
-           Path.Build.Map.find per_file_config (remove_extension file))
+           Path.Build.Map.find extensionless (remove_extension file)
+           >>= select_extensionless ~file
+           |> Option.map ~f:(fun config -> Extensionless, config))
     in
     let pp = Module_name.Per_item.get pp_config (Module.name module_) in
     let unit_name = Module_name.Unique.to_string (Module.obj_name module_) in
-    to_sexp ~unit_name ~opens ~pp ~reader config
+    match_kind, module_config, to_sexp ~unit_name ~opens ~pp ~reader config
   ;;
 
-  let dump_entries { per_file_config; pp_config; config } : Dump_entry.t list =
-    Path.Build.Map.to_list per_file_config
-    |> List.map ~f:(fun (source_path, { module_; opens; reader }) ->
+  let matching_configurations configurations ~file =
+    let exact, extensionless =
+      Nonempty_list.to_list configurations
+      |> List.fold_left ~init:([], []) ~f:(fun (exact, extensionless) configuration ->
+        match get_configuration configuration ~file with
+        | None -> exact, extensionless
+        | Some (Exact_or_copy, module_config, directives) ->
+          (configuration, module_config, directives) :: exact, extensionless
+        | Some (Extensionless, module_config, directives) ->
+          exact, (configuration, module_config, directives) :: extensionless)
+    in
+    match exact with
+    | _ :: _ -> List.rev exact
+    | [] -> List.rev extensionless
+  ;;
+
+  let configurations t ~file =
+    matching_configurations t ~file
+    |> List.map
+         ~f:
+           (fun
+             ( { for_; is_default; config = _; per_file_config = _; pp_config = _ }
+             , { module_; kind; opens = _; reader = _ }
+             , directives )
+           ->
+           let counterpart_kind =
+             match kind with
+             | Ml_kind.Impl -> Ml_kind.Intf
+             | Intf -> Ml_kind.Impl
+           in
+           let counterpart =
+             Module.source_without_pp module_ ~ml_kind:counterpart_kind
+             |> Option.map ~f:Path.drop_optional_build_context
+           in
+           let kind =
+             match kind with
+             | Ml_kind.Impl -> Implementation
+             | Intf -> Interface
+           in
+           { for_; is_default; kind; counterpart; directives })
+    |> Nonempty_list.of_list
+  ;;
+
+  let get t ~file =
+    match configurations t ~file with
+    | None -> None
+    | Some configurations ->
+      let rec choose fallback = function
+        | [] -> fallback
+        | configuration :: configurations ->
+          if configuration.is_default
+          then Some configuration.directives
+          else
+            choose
+              (Option.first_some fallback (Some configuration.directives))
+              configurations
+      in
+      choose None (Nonempty_list.to_list configurations)
+  ;;
+
+  let dump_entries
+        { per_file_config = { exact; extensionless }
+        ; pp_config
+        ; config
+        ; is_default = _
+        ; for_ = _
+        }
+    : Dump_entry.t list
+    =
+    let extensionless =
+      Path.Build.Map.to_list extensionless
+      |> List.filter_map ~f:(fun (path, configurations) ->
+        Option.map (List.hd_opt configurations) ~f:(fun configuration ->
+          path, configuration))
+    in
+    Path.Build.Map.to_list exact @ extensionless
+    |> Path.Build.Map.of_list_reduce ~f:(fun existing _ -> existing)
+    |> Path.Build.Map.to_list
+    |> List.map ~f:(fun (source_path, { module_; opens; reader; kind = _ }) ->
       let module_name = Module.name module_ in
       let unit_name = Module_name.Unique.to_string (Module.obj_name module_) in
       let pp = Module_name.Per_item.get pp_config module_name in
@@ -428,7 +586,10 @@ module Processed = struct
   let print_file path =
     match load_file path with
     | Error msg -> Printf.eprintf "%s\n" msg
-    | Ok t -> dump_entries t |> List.iter ~f:print_entry
+    | Ok configurations ->
+      Nonempty_list.to_list_map configurations ~f:dump_entries
+      |> List.concat
+      |> List.iter ~f:print_entry
   ;;
 
   let print_files format paths =
@@ -439,7 +600,8 @@ module Processed = struct
          Result.List.map paths ~f:(fun path ->
            match load_file path with
            | Error msg -> Error msg
-           | Ok t -> Ok (dump_entries t))
+           | Ok configurations ->
+             Ok (Nonempty_list.to_list_map configurations ~f:dump_entries |> List.concat))
        with
        | Error msg -> Printf.eprintf "%s\n" msg
        | Ok entries ->
@@ -452,78 +614,95 @@ module Processed = struct
   let print_generic_dot_merlin paths =
     match Result.List.map paths ~f:load_file with
     | Error msg -> Printf.eprintf "%s\n" msg
-    | Ok [] -> Printf.eprintf "No merlin configuration found.\n"
-    | Ok (init :: tl) ->
-      let ( pp_configs
-          , obj_dirs
-          , src_dirs
-          , hidden_obj_dirs
-          , hidden_src_dirs
-          , flags
-          , extensions
-          , indexes )
-        =
-        (* We merge what is easy to merge and ignore the rest *)
-        List.fold_left
-          tl
-          ~init:
-            ( [ init.pp_config ]
-            , init.config.obj_dirs
-            , init.config.src_dirs
-            , init.config.hidden_obj_dirs
-            , init.config.hidden_src_dirs
-            , [ init.config.flags ]
-            , init.config.extensions
-            , init.config.indexes )
-          ~f:
-            (fun
-              ( acc_pp
-              , acc_obj
-              , acc_src
-              , acc_hidden_obj
-              , acc_hidden_src
-              , acc_flags
-              , acc_ext
-              , acc_indexes )
-              { per_file_config = _
-              ; pp_config
-              ; config =
-                  { stdlib_dir = _
-                  ; source_root = _
-                  ; obj_dirs
-                  ; src_dirs
-                  ; hidden_obj_dirs
-                  ; hidden_src_dirs
-                  ; flags
-                  ; extensions
-                  ; indexes
-                  ; parameters = _
-                  }
-              }
-            ->
-            ( pp_config :: acc_pp
-            , Path.Set.union acc_obj obj_dirs
-            , Path.Set.union acc_src src_dirs
-            , Path.Set.union acc_hidden_obj hidden_obj_dirs
-            , Path.Set.union acc_hidden_src hidden_src_dirs
-            , flags :: acc_flags
-            , extensions @ acc_ext
-            , indexes @ acc_indexes ))
+    | Ok containers ->
+      let configurations =
+        List.map containers ~f:(fun configurations ->
+          List.find
+            (Nonempty_list.to_list configurations)
+            ~f:(fun (configuration : configuration) -> configuration.is_default)
+          |> Option.value ~default:(Nonempty_list.hd configurations))
       in
-      Printf.printf
-        "%s\n"
-        (to_dot_merlin
-           init.config.stdlib_dir
-           init.config.source_root
-           pp_configs
-           flags
-           obj_dirs
-           src_dirs
-           hidden_obj_dirs
-           hidden_src_dirs
-           extensions
-           indexes
-           init.config.parameters)
+      (match configurations with
+       | [] -> Printf.eprintf "No merlin configuration found.\n"
+       | init :: tl ->
+         let ( pp_configs
+             , obj_dirs
+             , cmt_dirs
+             , src_dirs
+             , hidden_obj_dirs
+             , hidden_src_dirs
+             , flags
+             , extensions
+             , indexes )
+           =
+           (* We merge what is easy to merge and ignore the rest *)
+           List.fold_left
+             tl
+             ~init:
+               ( [ init.pp_config ]
+               , init.config.obj_dirs
+               , init.config.cmt_dirs
+               , init.config.src_dirs
+               , init.config.hidden_obj_dirs
+               , init.config.hidden_src_dirs
+               , [ init.config.flags ]
+               , init.config.extensions
+               , init.config.indexes )
+             ~f:
+               (fun
+                 ( acc_pp
+                 , acc_obj
+                 , acc_cmt
+                 , acc_src
+                 , acc_hidden_obj
+                 , acc_hidden_src
+                 , acc_flags
+                 , acc_ext
+                 , acc_indexes )
+                 { per_file_config = _
+                 ; pp_config
+                 ; is_default = _
+                 ; for_ = _
+                 ; config =
+                     { stdlib_dir = _
+                     ; source_root = _
+                     ; obj_dirs
+                     ; cmt_dirs
+                     ; src_dirs
+                     ; hidden_obj_dirs
+                     ; hidden_src_dirs
+                     ; flags
+                     ; extensions
+                     ; indexes
+                     ; parameters = _
+                     }
+                 }
+               ->
+               ( pp_config :: acc_pp
+               , Path.Set.union acc_obj obj_dirs
+               , Path.Set.union acc_cmt cmt_dirs
+               , Path.Set.union acc_src src_dirs
+               , Path.Set.union acc_hidden_obj hidden_obj_dirs
+               , Path.Set.union acc_hidden_src hidden_src_dirs
+               , flags :: acc_flags
+               , extensions @ acc_ext
+               , indexes @ acc_indexes ))
+         in
+         Printf.printf
+           "%s\n"
+           (to_dot_merlin
+              init.config.stdlib_dir
+              init.config.source_root
+              pp_configs
+              flags
+              obj_dirs
+              cmt_dirs
+              src_dirs
+              hidden_obj_dirs
+              hidden_src_dirs
+              extensions
+              indexes
+              init.config.parameters))
   ;;
 end
 
@@ -704,16 +883,27 @@ module Unprocessed = struct
   let add_lib_dirs sctx ~for_ libs =
     Memo.map_reduce
       libs
-      ~empty:(Path.Set.empty, Path.Set.empty)
-      ~combine:(fun (src_dirs1, obj_dirs1) (src_dirs2, obj_dirs2) ->
-        Path.Set.union src_dirs1 src_dirs2, Path.Set.union obj_dirs1 obj_dirs2)
+      ~empty:(Path.Set.empty, Path.Set.empty, Path.Set.empty)
+      ~combine:(fun (src_dirs1, obj_dirs1, cmt_dirs1) (src_dirs2, obj_dirs2, cmt_dirs2) ->
+        ( Path.Set.union src_dirs1 src_dirs2
+        , Path.Set.union obj_dirs1 obj_dirs2
+        , Path.Set.union cmt_dirs1 cmt_dirs2 ))
       ~f:(fun lib ->
         let+ src_dirs = src_dirs sctx lib ~for_ in
-        let obj_dir =
-          let info = Lib.info lib in
-          obj_dir_of_lib `Public for_ (Lib_info.obj_dir info)
+        let obj_dir = Lib.info lib |> Lib_info.obj_dir in
+        let public_obj_dir = obj_dir_of_lib `Public for_ obj_dir in
+        let cmi_kind : Lib_mode.Cm_kind.t =
+          match for_ with
+          | Ocaml -> Ocaml Cmi
+          | Melange -> Melange Cmi
         in
-        src_dirs, Path.Set.singleton obj_dir)
+        let cmt_dir = Obj_dir.cm_dir obj_dir cmi_kind Public in
+        let cmt_dirs =
+          if Path.equal public_obj_dir cmt_dir
+          then Path.Set.empty
+          else Path.Set.singleton cmt_dir
+        in
+        src_dirs, Path.Set.singleton public_obj_dir, cmt_dirs)
     |> Action_builder.of_memo
   ;;
 
@@ -738,6 +928,7 @@ module Unprocessed = struct
         ~dir
         ~more_src_dirs
         ~expander
+        ~is_default
     =
     let open Action_builder.O in
     let context = Super_context.context sctx in
@@ -787,8 +978,9 @@ module Unprocessed = struct
       in
       let+ flags = flags
       and+ indexes = Ocaml_index.context_indexes context ~for_:t.config.for_
-      and+ deps_src_dirs, deps_obj_dirs = add_lib_dirs sctx ~for_ requires_compile
-      and+ hidden_src_dirs, hidden_obj_dirs =
+      and+ deps_src_dirs, deps_obj_dirs, deps_cmt_dirs =
+        add_lib_dirs sctx ~for_ requires_compile
+      and+ hidden_src_dirs, hidden_obj_dirs, hidden_cmt_dirs =
         let requires_hidden = Resolve.peek requires_hidden |> Result.value ~default:[] in
         add_lib_dirs sctx ~for_ requires_hidden
       in
@@ -797,11 +989,13 @@ module Unprocessed = struct
         Path.Set.of_list_map ~f:Path.source more_src_dirs |> Path.Set.union deps_src_dirs
       in
       let obj_dirs = Path.Set.union deps_obj_dirs objs_dirs in
+      let cmt_dirs = Path.Set.union deps_cmt_dirs hidden_cmt_dirs in
       let source_root = Path.Source.root |> Path.source in
       { Processed.stdlib_dir
       ; source_root
       ; src_dirs
       ; obj_dirs
+      ; cmt_dirs
       ; hidden_src_dirs
       ; hidden_obj_dirs
       ; flags
@@ -810,42 +1004,84 @@ module Unprocessed = struct
       ; parameters
       }
     and+ pp_config = pp_config t context ~expander in
-    let per_file_config =
+    let exact, extensionless =
       (* And copy for each module the resulting pp flags *)
       modules
       |> Modules.With_vlib.drop_vlib
-      |> Modules.fold ~init:[] ~f:(fun m init ->
-        Module.sources_without_pp m
-        |> Path.Build.Set.of_list_map ~f:(fun src -> Path.as_in_build_dir_exn src)
-        |> Path.Build.Set.fold ~init ~f:(fun src acc ->
-          let config =
-            { Processed.module_ = Module.set_pp m None
-            ; opens = Modules.With_vlib.local_open modules m
-            ; reader =
-                String.Map.find
-                  readers
-                  (Filename.Extension.Or_empty.to_string (Path.Build.extension src))
-            }
-          in
-          (* we add the config with and without the extension, the latter is
-             needed for a fallback in this file's [get] function. *)
-          let src_without_extension = remove_extension src in
-          (src, config) :: (src_without_extension, config) :: acc))
-      |> Path.Build.Map.of_list_reduce ~f:(fun existing _ -> existing)
+      |> Modules.fold ~init:([], []) ~f:(fun m init ->
+        List.fold_left Ml_kind.all ~init ~f:(fun (exact, extensionless) kind ->
+          match Module.source_without_pp m ~ml_kind:kind with
+          | None -> exact, extensionless
+          | Some source ->
+            let source = Path.as_in_build_dir_exn source in
+            let config =
+              { Processed.module_ = Module.set_pp m None
+              ; opens = Modules.With_vlib.local_open modules m
+              ; reader =
+                  String.Map.find
+                    readers
+                    (Filename.Extension.Or_empty.to_string (Path.Build.extension source))
+              ; kind
+              }
+            in
+            (source, config) :: exact, (remove_extension source, config) :: extensionless))
     in
-    { Processed.pp_config; config; per_file_config }
+    let per_file_config =
+      { Processed.exact =
+          Path.Build.Map.of_list_reduce exact ~f:(fun existing _ -> existing)
+      ; extensionless = Path.Build.Map.of_list_multi extensionless
+      }
+    in
+    { Processed.pp_config; config; per_file_config; is_default; for_ = t.config.for_ }
   ;;
 end
 
-let dot_merlin sctx ~dir ~more_src_dirs ~expander (t : Unprocessed.t) =
-  let merlin_file = Merlin_ident.merlin_file_path dir t.ident in
+type group =
+  { ident : Merlin_ident.t
+  ; default : Unprocessed.t
+  ; alternatives : Unprocessed.t list
+  }
+
+let group ~(default : Unprocessed.t) ~(alternatives : Unprocessed.t list) =
+  List.iter alternatives ~f:(fun (alternative : Unprocessed.t) ->
+    if not (Merlin_ident.equal default.ident alternative.ident)
+    then Code_error.raise "Merlin.group: configurations have different identifiers" []);
+  let modes =
+    default.config.for_ :: List.map alternatives ~f:(fun t -> t.Unprocessed.config.for_)
+  in
+  let rec check_modes seen = function
+    | [] -> ()
+    | mode :: modes ->
+      if List.exists seen ~f:(Compilation_mode.equal mode)
+      then Code_error.raise "Merlin.group: configurations have duplicate modes" []
+      else check_modes (mode :: seen) modes
+  in
+  check_modes [] modes;
+  { ident = default.ident; default; alternatives }
+;;
+
+let dot_merlin sctx ~dir ~more_src_dirs ~expander { ident; default; alternatives } =
+  let merlin_file = Merlin_ident.merlin_file_path dir ident in
   let* () =
     Rules.Produce.Alias.add_deps
       (Alias.make Alias0.check ~dir)
       (Action_builder.path (Path.build merlin_file))
   in
+  let configurations =
+    let open Action_builder.O in
+    let process configuration ~is_default =
+      Unprocessed.process configuration sctx ~dir ~more_src_dirs ~expander ~is_default
+    in
+    let+ default = process default ~is_default:true
+    and+ alternatives =
+      List.map alternatives ~f:(fun configuration ->
+        process configuration ~is_default:false)
+      |> Action_builder.all
+    in
+    (default :: alternatives : Processed.t)
+  in
   let action =
-    Unprocessed.process t sctx ~dir ~more_src_dirs ~expander
+    configurations
     |> Action_builder.map ~f:Processed.Persist.to_string
     |> Action_builder.with_no_targets
     |> Action_builder.With_targets.write_file_dyn merlin_file
@@ -853,10 +1089,10 @@ let dot_merlin sctx ~dir ~more_src_dirs ~expander (t : Unprocessed.t) =
   Super_context.add_rule sctx ~dir action
 ;;
 
-let add_rules sctx ~dir ~more_src_dirs ~expander merlin =
+let add_rules sctx ~dir ~more_src_dirs ~expander group =
   Memo.when_
     (Context.merlin (Super_context.context sctx))
-    (fun () -> dot_merlin sctx ~more_src_dirs ~expander ~dir merlin)
+    (fun () -> dot_merlin sctx ~more_src_dirs ~expander ~dir group)
 ;;
 
 let more_src_dirs dir_contents ~source_dirs =

@@ -50,6 +50,8 @@ export XDG_CACHE_HOME="$PWD/.cache"
 export XDG_CONFIG_HOME="$PWD/.config"
 export XDG_DATA_HOME="$PWD/.local/share"
 export XDG_STATE_HOME="$PWD/.local/state"
+# Use sandbox-local data unless a test sets up a runtime directory.
+unset XDG_RUNTIME_DIR
 
 setup_xdg_runtime_dir () {
     export XDG_RUNTIME_DIR="${TMPDIR:-$PWD}/.xdg-runtime"
@@ -1338,6 +1340,23 @@ query_ocaml_merlin_sexp() {
   output=$(mktemp "${TMPDIR:-.}/merlin-output.XXXXXX")
   query_ocaml_merlin "$@" > "$output"
   dune internal sexp-pp --format=csexp --compact "$output"
+  rm -f "$output"
+}
+
+query_ocaml_merlin_configurations() {
+  file="$1"
+  shift
+  query=$(mktemp "${TMPDIR:-.}/merlin-query.XXXXXX")
+  printf '(File-Configurations "%s")\n' "$file" \
+    | dune internal sexp-to-csexp > "$query"
+  dune ocaml-merlin "$@" < "$query"
+  rm -f "$query"
+}
+
+query_ocaml_merlin_configurations_pp() {
+  output=$(mktemp "${TMPDIR:-.}/merlin-output.XXXXXX")
+  query_ocaml_merlin_configurations "$@" > "$output"
+  dune internal sexp-pp --format=csexp "$output"
   rm -f "$output"
 }
 

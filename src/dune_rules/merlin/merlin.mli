@@ -34,6 +34,18 @@ module Processed : sig
   val pp_args : pp_flag -> string
   val load_file : Path.t -> (t, string) result
 
+  type source_kind =
+    | Implementation
+    | Interface
+
+  type file_configuration =
+    { for_ : Compilation_mode.t
+    ; is_default : bool
+    ; kind : source_kind
+    ; counterpart : Path.t option
+    ; directives : Sexp.t
+    }
+
   (** [print_file path] reads the configuration at path [path] and print it as a
       s-expression *)
   val print_file : Path.t -> unit
@@ -45,6 +57,7 @@ module Processed : sig
   val print_generic_dot_merlin : Path.t list -> unit
 
   val get : t -> file:Path.Build.t -> Sexp.t option
+  val configurations : t -> file:Path.Build.t -> file_configuration Nonempty_list.t option
 end
 
 val make
@@ -65,6 +78,9 @@ val make
        "-parameter"; "P2"]` where P1 and P2 are the parameters. *)
   -> t
 
+type group
+
+val group : default:t -> alternatives:t list -> group
 val more_src_dirs : Dir_contents.t -> source_dirs:Path.Source.t list -> Path.Source.t list
 
 (** Add rules for generating the merlin configuration of a specific stanza
@@ -74,7 +90,7 @@ val add_rules
   -> dir:Path.Build.t
   -> more_src_dirs:Path.Source.t list
   -> expander:Expander.t
-  -> t
+  -> group
   -> unit Memo.t
 
 val pp_config
