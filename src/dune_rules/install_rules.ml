@@ -198,12 +198,13 @@ end = struct
 
   let doc_install_files ~loc mld_contents =
     List.rev_map mld_contents ~f:(fun (mld : Doc_sources.mld) ->
-      Install.Entry.Unexpanded.make
+      make_entry
+        None
         ~kind:Install.Entry.Unexpanded.File
         ~dst:(sprintf "odoc-pages/%s" (Path.Local.to_string mld.in_doc))
+        ~loc
         Section.Doc
-        mld.path
-      |> Install.Entry.Sourced.Unexpanded.create ~loc)
+        mld.path)
   ;;
 
   let lib_install_files
@@ -455,11 +456,7 @@ end = struct
     and+ execs = lib_ppxs ctx ~scope ~lib
     and+ dll_files =
       dll_files ~modes:ocaml ~dynlink:lib.dynlink ~ctx info
-      >>| List.rev_map ~f:(fun a ->
-        let entry =
-          Install.Entry.Unexpanded.make ~kind:Install.Entry.Unexpanded.File Stublibs a
-        in
-        Install.Entry.Sourced.Unexpanded.create ~loc entry)
+      >>| List.rev_map ~f:(make_entry ~kind:Install.Entry.Unexpanded.File Stublibs)
     in
     let install_c_headers =
       List.rev_map lib.install_c_headers ~f:(fun (loc, base) ->
