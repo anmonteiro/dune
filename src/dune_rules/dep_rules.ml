@@ -153,45 +153,50 @@ let ooi_deps
       ~sctx
       ~dir
       ~obj_dir
+      ~vlib_obj_dir
       ~dune_version
       ~vlib_obj_map
+      ~(for_ : Compilation_mode.t)
       ~(ml_kind : Ml_kind.t)
       (sourced_module : Modules.Sourced_module.t)
   =
   let m = Modules.Sourced_module.to_module sourced_module in
-  let+ read =
-    let unit =
-      let cm_kind =
-        match ml_kind with
-        | Intf -> Cm_kind.Cmi
-        | Impl -> vimpl |> Vimpl.impl_cm_kind
-      in
-      Obj_dir.Module.cm_file_exn obj_dir m ~kind:(Ocaml cm_kind) |> Path.build
-    in
-    let sandbox =
-      if dune_version >= (3, 3) then Some Sandbox_config.needs_sandboxing else None
-    in
-    let+ ocaml =
-      let ctx = Super_context.context sctx in
-      Context.ocaml ctx
-    in
+  let sandbox =
+    if dune_version >= (3, 3) then Some Sandbox_config.needs_sandboxing else None
+  in
+  let+ ocaml =
+    let ctx = Super_context.context sctx in
+    Context.ocaml ctx
+  in
+  let read unit =
     Ocamlobjinfo.rules ocaml ~sandbox ~dir ~units:[ unit ]
     |> Action_builder.map ~f:(function
       | [ x ] -> x
       | [] | _ :: _ -> assert false)
+    |> Action_builder.memoize "ocamlobjinfo"
+    |> Action_builder.map ~f:(fun (ooi : Ocamlobjinfo.t) ->
+      Module_name.Unique.Set.to_list ooi.intf
+      |> List.filter_map ~f:(fun dep ->
+        if Module.obj_name m = dep
+        then None
+        else
+          Module_name.Unique.Map.find vlib_obj_map dep
+          |> Option.map ~f:Modules.Sourced_module.to_module))
   in
-  let read =
-    Action_builder.memoize
-      "ocamlobjinfo"
-      (let open Action_builder.O in
-       let+ (ooi : Ocamlobjinfo.t) = read in
-       Module_name.Unique.Set.to_list ooi.intf
-       |> List.filter_map ~f:(fun dep ->
-         if Module.obj_name m = dep
-         then None
-         else Module_name.Unique.Map.find vlib_obj_map dep))
-  in
-  read
+  match for_, ml_kind with
+  | Ocaml, Intf ->
+    Obj_dir.Module.cm_file_exn obj_dir m ~kind:(Ocaml Cmi) |> Path.build |> read
+  | Ocaml, Impl ->
+    let cm_kind = Vimpl.impl_cm_kind vimpl in
+    Obj_dir.Module.cm_file_exn obj_dir m ~kind:(Ocaml cm_kind) |> Path.build |> read
+  | Melange, Intf ->
+    Obj_dir.Module.cm_file_exn obj_dir m ~kind:(Melange Cmi) |> Path.build |> read
+  | Melange, Impl ->
+    let cmt =
+      Obj_dir.Module.cmt_file vlib_obj_dir m ~ml_kind:Impl ~cm_kind:(Melange Cmj)
+      |> Option.value_exn
+    in
+    Action_builder.if_file_exists cmt ~then_:(read cmt) ~else_:(Action_builder.return [])
 ;;
 
 let wrapped_compat_deps modules m =
@@ -341,30 +346,36 @@ let transitive_deps_of t ~ml_kind unit =
             (Ml_kind.to_string ml_kind))
 ;;
 
-let make_imported_vlib_deps ~obj_dir ~vimpl ~dir ~sctx ~sandbox ~for_ : imported_vlib_deps
+let make_imported_vlib_deps
+      ~obj_dir
+      ~vimpl
+      ~dir
+      ~sctx
+      ~sandbox
+      ~(for_ : Compilation_mode.t)
+  : imported_vlib_deps
   =
   let vlib = Vimpl.vlib vimpl in
   match Lib.Local.of_lib vlib with
   | None ->
     let vlib_obj_map = Vimpl.vlib_obj_map vimpl in
+    let vlib_obj_dir = Lib.info vlib |> Lib_info.obj_dir in
     let dune_version =
       let impl = Vimpl.impl vimpl in
       Dune_project.dune_version impl.project
     in
     let deps_of sourced_module ~ml_kind =
-      let+ deps =
-        ooi_deps
-          ~vimpl
-          ~sctx
-          ~dir
-          ~obj_dir
-          ~dune_version
-          ~vlib_obj_map
-          ~ml_kind
-          sourced_module
-      in
-      Action_builder.map deps ~f:(fun deps ->
-        List.map deps ~f:Modules.Sourced_module.to_module)
+      ooi_deps
+        ~vimpl
+        ~sctx
+        ~dir
+        ~obj_dir
+        ~vlib_obj_dir
+        ~dune_version
+        ~vlib_obj_map
+        ~for_
+        ~ml_kind
+        sourced_module
     in
     deps_of
   | Some lib ->
