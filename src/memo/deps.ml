@@ -15,14 +15,15 @@ module Static = struct
     | Seq of 'node t Array.Immutable.t
     | Par of 'node t Array.Immutable.t
 
-  (* Flatten a chronological list of sections into a sequence, flattening nested [Seq]s:
-     (x ; (y ; z)) = (x ; y ; z). *)
-  let flatten_seqs (sections : 'node t list) : 'node t =
+  (* Flatten a reverse-chronological list of sections into a sequence, flattening nested
+     [Seq]s: (x ; (y ; z)) = (x ; y ; z). *)
+  let flatten_rev_seqs (sections : 'node t list) : 'node t =
     let flat =
-      List.concat_map sections ~f:(function
-        | Empty -> []
-        | Seq arr -> Array.Immutable.to_list arr
-        | (Singleton _ | Par _) as t -> [ t ])
+      List.fold_left sections ~init:[] ~f:(fun acc section ->
+        match section with
+        | Empty -> acc
+        | Seq arr -> Array.Immutable.fold_right arr ~init:acc ~f:List.cons
+        | (Singleton _ | Par _) as section -> section :: acc)
     in
     match flat with
     | [] -> Empty
@@ -38,13 +39,13 @@ module Static = struct
       if i < 0
       then acc
       else (
-        let elements =
+        let acc =
           match f i with
-          | Empty -> []
-          | Par arr -> Array.Immutable.to_list arr
-          | (Singleton _ | Seq _) as t -> [ t ]
+          | Empty -> acc
+          | Par arr -> Array.Immutable.fold_right arr ~init:acc ~f:List.cons
+          | (Singleton _ | Seq _) as section -> section :: acc
         in
-        loop (i - 1) (elements @ acc))
+        loop (i - 1) acc)
     in
     match loop (num_threads - 1) [] with
     | [] -> Empty
@@ -79,9 +80,12 @@ module Dynamic = struct
     | section -> section :: t
   ;;
 
-  (* The list is most-recent-first, so reverse it to chronological order before flattening
-     the sequence. *)
-  let to_static (t : 'node t) : 'node Static.t = Static.flatten_seqs (List.rev t)
+  let to_static (t : 'node t) : 'node Static.t =
+    match t with
+    | [] -> Static.Empty
+    | [ section ] -> section
+    | _ :: _ :: _ -> Static.flatten_rev_seqs t
+  ;;
 end
 
 (* Note that dependencies should be checked in the order in which they were depended on to

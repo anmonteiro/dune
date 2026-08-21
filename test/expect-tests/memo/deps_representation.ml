@@ -52,20 +52,28 @@ let%expect_test "dependency structure of Memo combinators" =
       ; Singleton (Some "c", ())
       ]
     |}];
-  (* A single-thread parallel section is not wrapped in [Par], and nested [Seq]s are
-     flattened, so the result is one flat [Seq] in chronological order. *)
+  (* Nested sequential and parallel sections are flattened without changing their order. *)
+  let parallel ms = Memo.map (Memo.all_concurrently ms) ~f:ignore in
   print_deps
-    "flatten_seqs"
+    "flatten_nested_seq"
     (let* () = read a in
-     let* (_ : unit list) =
-       Memo.parallel_map [ () ] ~f:(fun () ->
-         let* () = read b in
-         read c)
-     in
-     Memo.return ());
+     parallel
+       [ (let* () = read b in
+          read c)
+       ; Memo.return ()
+       ]);
   [%expect
     {|
-    flatten_seqs: Seq
+    flatten_nested_seq: Seq
+      [ Singleton (Some "a", ())
+      ; Singleton (Some "b", ())
+      ; Singleton (Some "c", ())
+      ]
+    |}];
+  print_deps "flatten_nested_par" (parallel [ parallel [ read a; read b ]; read c ]);
+  [%expect
+    {|
+    flatten_nested_par: Par
       [ Singleton (Some "a", ())
       ; Singleton (Some "b", ())
       ; Singleton (Some "c", ())
