@@ -95,4 +95,9 @@ not turn copied artifacts into a Virt-to-Reverse module dependency cycle.
   >    | select(startswith("_build/default/impl/.impl.objs/melange/"))]
   >   | unique[]
   > ' deps.json
+  _build/default/impl/.impl.objs/melange/vlib__Helper.cmi
+  _build/default/impl/.impl.objs/melange/vlib__Helper.cmj
+  _build/default/impl/.impl.objs/melange/vlib__Reverse.cmi
+  _build/default/impl/.impl.objs/melange/vlib__Unused.cmi
+  _build/default/impl/.impl.objs/melange/vlib__Unused.cmj
   _build/default/impl/.impl.objs/melange/vlib__Virt.cmi
