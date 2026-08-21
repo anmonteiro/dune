@@ -29,12 +29,10 @@ stage copied objects when binary annotations are unavailable.
   > let answer = Helper.answer
   > EOF
   $ cat > producer/vlib/helper.ml <<'EOF'
-  > type t = int
   > let answer = 42
   > EOF
   $ cat > producer/vlib/helper.mli <<'EOF'
-  > type t
-  > val answer : t
+  > val answer : int
   > EOF
   $ cat > producer/vlib/unused.ml <<'EOF'
   > let ignored = 0

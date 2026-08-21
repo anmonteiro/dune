@@ -16,7 +16,7 @@ The virtual library and its implementation are both Melange-only.
   >  (name vlib)
   >  (public_name repro.vlib)
   >  (modes melange)
-  >  (private_modules helper leaf unused)
+  >  (private_modules helper leaf type_only type_runtime unused)
   >  (virtual_modules virt other))
   > EOF
   $ cat > producer/vlib/virt.mli <<'EOF'
@@ -26,13 +26,28 @@ The virtual library and its implementation are both Melange-only.
   > val run : unit -> int
   > EOF
   $ cat > producer/vlib/shared.ml <<'EOF'
+  > type t = Type_only.t
   > let answer = Helper.answer + Other.run ()
   > EOF
   $ cat > producer/vlib/helper.ml <<'EOF'
   > let answer = Leaf.answer
   > EOF
+  $ cat > producer/vlib/helper.mli <<'EOF'
+  > val answer : int
+  > EOF
   $ cat > producer/vlib/leaf.ml <<'EOF'
   > let answer = 42
+  > EOF
+  $ cat > producer/vlib/type_only.ml <<'EOF'
+  > type t = int
+  > let ignored = Type_runtime.value
+  > EOF
+  $ cat > producer/vlib/type_only.mli <<'EOF'
+  > type t = int
+  > val ignored : int
+  > EOF
+  $ cat > producer/vlib/type_runtime.ml <<'EOF'
+  > let value = 0
   > EOF
   $ cat > producer/vlib/unused.ml <<'EOF'
   > let ignored = 0
@@ -57,6 +72,7 @@ The virtual library and its implementation are both Melange-only.
   >  (implements repro.vlib))
   > EOF
   $ cat > consumer/impl/virt.ml <<'EOF'
+  > let _coerce (x : Shared.t) : int = x
   > let run () = Shared.answer
   > EOF
   $ cat > consumer/impl/other.ml <<'EOF'
@@ -98,6 +114,10 @@ CMT, including private modules but excluding unused ones.
   >             or endswith("vlib__Leaf.cmj")
   >             or endswith("vlib__Other.cmi")
   >             or endswith("vlib__Other.cmj")
+  >             or endswith("vlib__Type_only.cmi")
+  >             or endswith("vlib__Type_only.cmj")
+  >             or endswith("vlib__Type_runtime.cmi")
+  >             or endswith("vlib__Type_runtime.cmj")
   >             or endswith("vlib__Unused.cmi")
   >             or endswith("vlib__Unused.cmj")
   >             or endswith("vlib__Virt.cmi")
