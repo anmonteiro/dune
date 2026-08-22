@@ -114,9 +114,9 @@ input gets an output block so Dune can associate results positionally.
   >  (libraries impl))
   > EOF
 
-The current implementation ignores melobjinfo. In particular, following a CMI
-edge to Helper hides Helper's implementation dependency on the private Leaf
-module.
+melobjinfo is run once for all CMJs. An implementation edge to Helper follows
+Helper's private Leaf dependency, while an interface edge to Type_only does not
+follow its implementation dependency on Type_runtime.
 
   $ PATH="$PWD/fake-bin:$PATH" \
   > OCAMLPATH="$PWD/prefix/lib:$OCAMLPATH" \
@@ -124,7 +124,7 @@ module.
   $ dune trace cat --trace-file "$PWD/trace" \
   > | jq_dune -s \
   >   '[.[] | processesBrief | select(.prog == "melobjinfo")] | length'
-  0
+  1
 
   $ PATH="$PWD/fake-bin:$PATH" \
   > OCAMLPATH="$PWD/prefix/lib:$OCAMLPATH" \
@@ -151,6 +151,8 @@ module.
   > ' deps.json
   _build/default/impl/.impl.objs/melange/vlib__Helper.cmi
   _build/default/impl/.impl.objs/melange/vlib__Helper.cmj
+  _build/default/impl/.impl.objs/melange/vlib__Leaf.cmi
+  _build/default/impl/.impl.objs/melange/vlib__Leaf.cmj
   _build/default/impl/.impl.objs/melange/vlib__Other.cmi
   _build/default/impl/.impl.objs/melange/vlib__Other.cmj
   _build/default/impl/.impl.objs/melange/vlib__Type_only.cmi

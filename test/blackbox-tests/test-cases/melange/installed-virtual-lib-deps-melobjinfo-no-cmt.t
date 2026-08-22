@@ -82,8 +82,8 @@ when an installed Melange virtual library has no binary annotations.
   >  (libraries impl))
   > EOF
 
-The current implementation ignores melobjinfo and conservatively stages every
-copied object when CMTs are unavailable.
+melobjinfo is preferred over conservative staging, so unrelated Reverse and
+Unused objects are excluded even though CMTs are unavailable.
 
   $ PATH="$PWD/fake-bin:$PATH" \
   > OCAMLPATH="$PWD/prefix/lib:$OCAMLPATH" \
@@ -91,7 +91,7 @@ copied object when CMTs are unavailable.
   $ dune trace cat --trace-file "$PWD/trace" \
   > | jq_dune -s \
   >   '[.[] | processesBrief | select(.prog == "melobjinfo")] | length'
-  0
+  1
 
   $ PATH="$PWD/fake-bin:$PATH" \
   > OCAMLPATH="$PWD/prefix/lib:$OCAMLPATH" \
@@ -112,7 +112,4 @@ copied object when CMTs are unavailable.
   > ' deps.json
   _build/default/impl/.impl.objs/melange/vlib__Helper.cmi
   _build/default/impl/.impl.objs/melange/vlib__Helper.cmj
-  _build/default/impl/.impl.objs/melange/vlib__Reverse.cmi
-  _build/default/impl/.impl.objs/melange/vlib__Unused.cmi
-  _build/default/impl/.impl.objs/melange/vlib__Unused.cmj
   _build/default/impl/.impl.objs/melange/vlib__Virt.cmi
