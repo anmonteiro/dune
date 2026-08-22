@@ -11,6 +11,16 @@ let melc sctx ~loc ~dir =
     "melc"
 ;;
 
+let melobjinfo sctx ~loc ~dir =
+  Super_context.resolve_program_memo
+    sctx
+    ~loc
+    ~dir
+    ~where:Original_path
+    ~hint:"opam install melange"
+    "melobjinfo"
+;;
+
 let available sctx ~dir =
   let+ melc = melc sctx ~loc:None ~dir in
   Result.is_ok melc

@@ -199,6 +199,126 @@ let ooi_deps
     Action_builder.if_file_exists cmt ~then_:(read cmt) ~else_:(Action_builder.return [])
 ;;
 
+let make_melange_imported_vlib_deps
+      ~melobjinfo
+      ~sctx
+      ~dir
+      ~vlib_obj_dir
+      ~dune_version
+      ~vlib_obj_map
+  =
+  let modules =
+    Module_name.Unique.Map.values vlib_obj_map
+    |> List.map ~f:Modules.Sourced_module.to_module
+  in
+  let module_files kind =
+    List.filter_map modules ~f:(fun m ->
+      Obj_dir.Module.cm_file vlib_obj_dir m ~kind |> Option.map ~f:(fun path -> m, path))
+  in
+  let cmi_files = module_files (Melange Cmi) in
+  let cmj_files = module_files (Melange Cmj) in
+  let sandbox =
+    if dune_version >= (3, 3) then Some Sandbox_config.needs_sandboxing else None
+  in
+  let deps_map files results kind =
+    let expected = List.length files in
+    let actual = List.length results in
+    if expected <> actual
+    then
+      Code_error.raise
+        "unexpected number of object-info results"
+        [ "expected", Dyn.int expected; "actual", Dyn.int actual ];
+    List.combine files results
+    |> List.fold_left ~init:Module_name.Unique.Map.empty ~f:(fun deps ((m, _), ooi) ->
+      Module_name.Unique.Map.set deps (Module.obj_name m) (Ml_kind.Dict.get ooi kind))
+  in
+  let transitive_deps cmi_deps cmj_deps m =
+    let root = Module.obj_name m in
+    let rec visit seen_intf seen_impl deps = function
+      | [] -> deps
+      | (dep, ml_kind) :: rest ->
+        let seen =
+          match ml_kind with
+          | Ml_kind.Intf -> seen_intf
+          | Impl -> seen_impl
+        in
+        if Module_name.Unique.Set.mem seen dep
+        then visit seen_intf seen_impl deps rest
+        else (
+          let seen_intf, seen_impl =
+            match ml_kind with
+            | Ml_kind.Intf -> Module_name.Unique.Set.add seen_intf dep, seen_impl
+            | Impl -> seen_intf, Module_name.Unique.Set.add seen_impl dep
+          in
+          match Module_name.Unique.Map.find vlib_obj_map dep with
+          | None -> visit seen_intf seen_impl deps rest
+          | Some sourced_module ->
+            let module_ = Modules.Sourced_module.to_module sourced_module in
+            let deps =
+              if Module_name.Unique.equal dep root
+              then deps
+              else Module_name.Unique.Set.add deps dep
+            in
+            let rest =
+              match Module.kind module_ with
+              | Root | Alias _ -> rest
+              | _ ->
+                let intf_deps =
+                  Module_name.Unique.Map.find cmi_deps dep
+                  |> Option.value ~default:Module_name.Unique.Set.empty
+                  |> Module_name.Unique.Set.to_list
+                  |> List.map ~f:(fun dep -> dep, Ml_kind.Intf)
+                in
+                let impl_deps =
+                  match ml_kind with
+                  | Ml_kind.Intf -> []
+                  | Impl ->
+                    Module_name.Unique.Map.find cmj_deps dep
+                    |> Option.value ~default:Module_name.Unique.Set.empty
+                    |> Module_name.Unique.Set.to_list
+                    |> List.map ~f:(fun dep -> dep, Ml_kind.Impl)
+                in
+                impl_deps @ intf_deps @ rest
+            in
+            visit seen_intf seen_impl deps rest)
+    in
+    visit
+      Module_name.Unique.Set.empty
+      Module_name.Unique.Set.empty
+      Module_name.Unique.Set.empty
+      [ root, Ml_kind.Impl ]
+    |> Module_name.Unique.Set.to_list
+    |> List.filter_map ~f:(fun dep ->
+      Module_name.Unique.Map.find vlib_obj_map dep
+      |> Option.map ~f:Modules.Sourced_module.to_module)
+  in
+  let deps =
+    Memo.lazy_ ~name:"installed-melange-vlib-deps" (fun () ->
+      let* ocaml = Context.ocaml (Super_context.context sctx)
+      and* melobjinfo = melobjinfo in
+      let open Action_builder.O in
+      let deps =
+        let+ cmi_results =
+          Ocamlobjinfo.rules ocaml ~sandbox ~dir ~units:(List.map cmi_files ~f:snd)
+        and+ cmj_results =
+          match cmj_files with
+          | [] -> Action_builder.return []
+          | _ ->
+            Melobjinfo.rules melobjinfo ~sandbox ~dir ~units:(List.map cmj_files ~f:snd)
+        in
+        ( deps_map cmi_files cmi_results Ml_kind.Intf
+        , deps_map cmj_files cmj_results Ml_kind.Impl )
+      in
+      Memo.return (Action_builder.memoize "installed Melange vlib deps" deps))
+  in
+  fun sourced_module ->
+    let* deps = Memo.Lazy.force deps in
+    let m = Modules.Sourced_module.to_module sourced_module in
+    Action_builder.map deps ~f:(fun (cmi_deps, cmj_deps) ->
+      transitive_deps cmi_deps cmj_deps m)
+    |> Memo.return
+;;
+
 let wrapped_compat_deps modules m =
   let inner = Modules.compat_for_exn (Modules.With_vlib.drop_vlib modules) m in
   match Modules.With_vlib.lib_interface modules with
@@ -377,6 +497,24 @@ let make_imported_vlib_deps
   | None ->
     let vlib_obj_map = Vimpl.vlib_obj_map vimpl in
     let vlib_obj_dir = Lib.info vlib |> Lib_info.obj_dir in
+    let dune_version =
+      let impl = Vimpl.impl vimpl in
+      Dune_project.dune_version impl.project
+    in
+    let melobjinfo =
+      Memo.lazy_ ~name:"melobjinfo" (fun () ->
+        Melange_binary.melobjinfo sctx ~loc:None ~dir)
+      |> Memo.Lazy.force
+    in
+    let melange_impl_deps =
+      make_melange_imported_vlib_deps
+        ~melobjinfo
+        ~sctx
+        ~dir
+        ~vlib_obj_dir
+        ~dune_version
+        ~vlib_obj_map
+    in
     let impl_deps_if_cmt_missing =
       (match for_ with
        | Ocaml -> Action_builder.return ()
@@ -397,30 +535,39 @@ let make_imported_vlib_deps
            @ Obj_dir.Module.L.cm_files obj_dir vlib_modules ~kind:(Melange Cmj)
          in
          let open Action_builder.O in
-         let* cmts_exist =
-           List.map cmts ~f:Action_builder.file_exists |> Action_builder.all
-         in
-         if List.for_all cmts_exist ~f:Fun.id
-         then Action_builder.return ()
-         else Action_builder.paths files)
+         let* melobjinfo = Action_builder.of_memo melobjinfo in
+         (match melobjinfo with
+          | Ok _ -> Action_builder.return ()
+          | Error _ ->
+            let* cmts_exist =
+              List.map cmts ~f:Action_builder.file_exists |> Action_builder.all
+            in
+            if List.for_all cmts_exist ~f:Fun.id
+            then Action_builder.return ()
+            else Action_builder.paths files))
       |> Action_builder.memoize "imported vlib object deps if CMT missing"
     in
-    let dune_version =
-      let impl = Vimpl.impl vimpl in
-      Dune_project.dune_version impl.project
-    in
-    let deps_of sourced_module ~ml_kind =
-      ooi_deps
-        ~vimpl
-        ~sctx
-        ~dir
-        ~obj_dir
-        ~vlib_obj_dir
-        ~dune_version
-        ~vlib_obj_map
-        ~for_
-        ~ml_kind
-        sourced_module
+    let deps_of sourced_module ~(ml_kind : Ml_kind.t) =
+      let fallback_deps =
+        ooi_deps
+          ~vimpl
+          ~sctx
+          ~dir
+          ~obj_dir
+          ~vlib_obj_dir
+          ~dune_version
+          ~vlib_obj_map
+          ~for_
+          ~ml_kind
+          sourced_module
+      in
+      match for_, ml_kind with
+      | Melange, Impl ->
+        let* melobjinfo = melobjinfo in
+        (match melobjinfo with
+         | Ok _ -> melange_impl_deps sourced_module
+         | Error _ -> fallback_deps)
+      | Ocaml, _ | Melange, Intf -> fallback_deps
     in
     { deps_of; impl_deps_if_cmt_missing }
   | Some lib ->
