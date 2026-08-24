@@ -54,6 +54,7 @@ module Private_context = Private_context
 module Odoc = Odoc
 module Library = Library
 module Melange = Melange
+module Melange_rules = Melange_rules
 module Executables = Executables
 module Tests = Tests
 module Stanzas = Stanzas
