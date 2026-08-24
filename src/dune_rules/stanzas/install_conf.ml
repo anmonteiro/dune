@@ -48,6 +48,11 @@ let decode =
          , Option.value dirs ~default:[]
          , Option.value source_trees ~default:[] )
      in
+     if List.is_empty files && List.is_empty dirs && List.is_empty source_trees
+     then
+       User_error.raise
+         ~loc
+         [ Pp.text "At least one of dirs, files, or source_trees must be non-empty" ];
      (match section with
       | loc, Section Misc ->
         User_error.raise
