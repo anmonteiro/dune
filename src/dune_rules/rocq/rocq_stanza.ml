@@ -97,6 +97,21 @@ module Extraction = struct
 
   let target_fnames t = t.target_fnames
 
+  let filenames field =
+    let filename =
+      let+ loc, filename = located string in
+      match Filename.of_string filename with
+      | Some _ -> filename
+      | None ->
+        User_error.raise ~loc [ Pp.textf "Entries in field %S must be filenames" field ]
+    in
+    let+ loc = loc
+    and+ filenames = repeat filename in
+    match filenames with
+    | [] -> User_error.raise ~loc [ Pp.textf "Field %S must not be empty" field ]
+    | _ :: _ -> filenames
+  ;;
+
   let decode =
     fields
       (let* ver = get_rocq_syntax () in
@@ -109,11 +124,11 @@ module Extraction = struct
               ~extra_info:
                 "Use (extracted_files ...) instead, listing each .ml and .mli file \
                  explicitly."
-            >>> repeat string)
+            >>> filenames "extracted_modules")
        and+ extracted_files_opt =
          field_o
            "extracted_files"
-           (Dune_lang.Syntax.since rocq_syntax (0, 13) >>> repeat string)
+           (Dune_lang.Syntax.since rocq_syntax (0, 13) >>> filenames "extracted_files")
        and+ prelude = field "prelude" (located (string >>| Rocq_module.Name.make))
        and+ buildable = Buildable.decode
        and+ loc = loc in
