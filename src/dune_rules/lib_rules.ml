@@ -177,7 +177,6 @@ let ocamlmklib
         ~f:(cclibs ocaml.lib_config.ccomp_type ~flag:"-ldopt")
     in
     fun ~custom ~sandbox targets ->
-      let ctx = Super_context.context sctx in
       [ Command.Args.A "-g"
       ; (if custom then A "-custom" else Command.Args.empty)
       ; A "-o"
