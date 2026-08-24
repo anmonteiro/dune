@@ -247,11 +247,11 @@ let copy_files sctx ~dir ~expander ~src_dir (def : Copy_files.t) =
            (Path.Source.to_string_maybe_quoted src_dir));
   let src_in_src = Path.parent_exn glob_in_src in
   let glob = Path.basename glob_in_src |> Filename.to_string |> Glob.of_string_exn loc in
+  let context = Super_context.context sctx in
   let src_in_build =
     match Path.as_in_source_tree src_in_src with
     | None -> src_in_src
     | Some src_in_src ->
-      let context = Super_context.context sctx in
       Path.Build.append_source (Context.build_dir context) src_in_src |> Path.build
   in
   let* exists_or_generated =
@@ -297,10 +297,8 @@ let copy_files sctx ~dir ~expander ~src_dir (def : Copy_files.t) =
     Filename_set.filenames files
     |> Filename.Array.Set.to_list
     |> Memo.parallel_iter ~f:(fun basename ->
-      let basename = Filename.to_string basename in
-      let file_src = Path.relative src_in_build basename in
-      let file_dst = Path.Build.relative dir basename in
-      let context = Super_context.context sctx in
+      let file_src = Path.relative_fname src_in_build basename in
+      let file_dst = Path.Build.relative_fname dir basename in
       Super_context.add_rule
         sctx
         ~loc

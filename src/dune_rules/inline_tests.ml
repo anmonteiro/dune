@@ -131,14 +131,16 @@ end
 
 module Info = Inline_tests_info.Tests
 
+let library_name_binding lib_name =
+  Pform.Map.singleton
+    (Pform.Var Library_name)
+    [ Value.String (Lib_name.Local.to_string lib_name) ]
+;;
+
 let flags ~(info : Info.t) ~expander ~backends ~lib_name ~partition =
   let expander =
+    let bindings = library_name_binding lib_name in
     let bindings =
-      let bindings =
-        Pform.Map.singleton
-          (Pform.Var Library_name)
-          [ Value.String (Lib_name.Local.to_string lib_name) ]
-      in
       match partition with
       | None -> bindings
       | Some p -> Pform.Map.add_exn bindings (Pform.Var Partition) [ Value.String p ]
@@ -162,12 +164,7 @@ let partition_flags ~expander ~lib_name ~(backends : Backend.t list) =
     let flags =
       let open Action_builder.O in
       let expander =
-        let bindings =
-          Pform.Map.singleton
-            (Pform.Var Library_name)
-            [ Value.String (Lib_name.Local.to_string lib_name) ]
-        in
-        Expander.add_bindings expander ~bindings
+        Expander.add_bindings expander ~bindings:(library_name_binding lib_name)
       in
       List.map
         flags
@@ -202,6 +199,7 @@ include Sub_system.Register_end_point (struct
       in
       let dune_version = Scope.project scope |> Dune_project.dune_version in
       let runner_name = Inline_tests_info.inline_test_runner in
+      let exe_target = Exe_target.executables Nonempty_list.[ loc, "t" ] in
       let main_module =
         let name = Module_name.of_checked_string "main" in
         Module.generated ~kind:Impl ~for_ ~src_dir:inline_test_dir [ name ]
@@ -271,7 +269,7 @@ include Sub_system.Register_end_point (struct
           in
           Ocaml_flags.append_common ocaml_flags [ "-w"; "-24"; "-g" ]
         in
-        let obj_dir = Obj_dir.make_exe ~dir:inline_test_dir ~name:"t" in
+        let obj_dir = Obj_dir.make_for_exe_target ~dir:inline_test_dir exe_target in
         let modules = Modules.With_vlib.singleton_exe main_module in
         let runner_libs =
           let lib_db = Scope.libs scope in

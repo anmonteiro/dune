@@ -107,7 +107,15 @@ module Processed = struct
     { opens : Module_name.t list
     ; module_ : Module.t
     ; reader : string list option
+    ; kind : Ml_kind.t
     }
+
+  type per_file_config =
+    { exact : module_config Path.Build.Map.t
+    ; extensionless : module_config list Path.Build.Map.t
+    }
+
+  let ml_kind_repr = Repr.view Repr.string ~to_:Ml_kind.to_string
 
   let module_config_repr =
     Repr.record
@@ -115,15 +123,34 @@ module Processed = struct
       [ Repr.field "opens" (Repr.list Module_name.repr) ~get:(fun t -> t.opens)
       ; Repr.field "module_" (Repr.abstract Module.to_dyn) ~get:(fun t -> t.module_)
       ; Repr.field "reader" (Repr.option (Repr.list Repr.string)) ~get:(fun t -> t.reader)
+      ; Repr.field "kind" ml_kind_repr ~get:(fun t -> t.kind)
+      ]
+  ;;
+
+  let per_file_config_repr =
+    Repr.record
+      "merlin-per-file-config"
+      [ Repr.field
+          "exact"
+          (Repr.abstract (Path.Build.Map.to_dyn (Repr.to_dyn module_config_repr)))
+          ~get:(fun t -> t.exact)
+      ; Repr.field
+          "extensionless"
+          (Repr.abstract
+             (Path.Build.Map.to_dyn (Dyn.list (Repr.to_dyn module_config_repr))))
+          ~get:(fun t -> t.extensionless)
       ]
   ;;
 
   (* ...but modules can have different preprocessing specifications*)
-  type t =
+  type configuration =
     { config : config
-    ; per_file_config : module_config Path.Build.Map.t
+    ; per_file_config : per_file_config
     ; pp_config : pp_flag option Module_name.Per_item.t
+    ; for_ : Compilation_mode.t
     }
+
+  type t = configuration Nonempty_list.t
 
   type output_format =
     [ `Text
@@ -156,21 +183,21 @@ module Processed = struct
     ;;
   end
 
-  let repr =
+  let configuration_repr =
     Repr.record
       "merlin-processed"
       [ Repr.field "config" config_repr ~get:(fun t -> t.config)
-      ; Repr.field
-          "per_file_config"
-          (Repr.abstract (Path.Build.Map.to_dyn (Repr.to_dyn module_config_repr)))
-          ~get:(fun t -> t.per_file_config)
+      ; Repr.field "per_file_config" per_file_config_repr ~get:(fun t ->
+          t.per_file_config)
       ; Repr.field
           "pp_config"
           (Module_name.Per_item.repr (Repr.option pp_flag_repr))
           ~get:(fun t -> t.pp_config)
+      ; Repr.field "for_" Compilation_mode.repr ~get:(fun t -> t.for_)
       ]
   ;;
 
+  let repr = Repr.view (Repr.list configuration_repr) ~to_:Nonempty_list.to_list
   let to_dyn = Repr.to_dyn repr
 
   module D = struct
@@ -178,7 +205,7 @@ module Processed = struct
 
     let name = "merlin-conf"
     let sharing = false
-    let version = 9
+    let version = 11
 
     let repr =
       Repr.view Repr.string ~to_:(fun _ -> "Use [dune ocaml dump-dot-merlin] instead")
@@ -383,15 +410,54 @@ module Processed = struct
     Buffer.contents b
   ;;
 
-  let get { per_file_config; pp_config; config } ~file =
+  type match_kind =
+    | Exact_or_copy
+    | Extensionless
+
+  type source_kind =
+    | Implementation
+    | Interface
+
+  type file_configuration =
+    { for_ : Compilation_mode.t
+    ; is_default : bool
+    ; kind : source_kind
+    ; counterpart : Path.t option
+    ; directives : Sexp.t
+    }
+
+  let select_extensionless candidates ~file =
+    let extension = Path.Build.extension file |> Filename.Extension.Or_empty.to_string in
+    let matching_extension =
+      List.filter candidates ~f:(fun { module_; kind; opens = _; reader = _ } ->
+        match Module.source_without_pp module_ ~ml_kind:kind with
+        | None -> false
+        | Some source ->
+          String.equal
+            extension
+            (Path.extension source |> Filename.Extension.Or_empty.to_string))
+    in
+    match matching_extension with
+    | [ candidate ] -> Some candidate
+    | [] ->
+      (match candidates with
+       | [ candidate ] -> Some candidate
+       | [] | _ :: _ :: _ -> None)
+    | _ :: _ :: _ -> None
+  ;;
+
+  let get_configuration
+        { per_file_config = { exact; extensionless }; pp_config; config; for_ = _ }
+        ~file
+    =
     let open Option.O in
-    let+ { module_; opens; reader } =
-      let find file = Path.Build.Map.find per_file_config file in
+    let+ match_kind, ({ module_; opens; reader; kind = _ } as module_config) =
+      let find file = Path.Build.Map.find exact file in
       match find file with
-      | Some _ as s -> s
+      | Some config -> Some (Exact_or_copy, config)
       | None ->
         (match Copy_line_directive.DB.follow_while file ~f:find with
-         | Some _ as s -> s
+         | Some config -> Some (Exact_or_copy, config)
          | None ->
            (* Fallback to handle preprocessed files (where the preprocessor has
               the file extensison changed).
@@ -401,16 +467,84 @@ module Processed = struct
               This is too rough but, really, preprocessors should emit copy
               line directives instead and then Dune should have the database
               similar to Copy_line_directive to handle this. *)
-           Path.Build.Map.find per_file_config (remove_extension file))
+           Path.Build.Map.find extensionless (remove_extension file)
+           >>= select_extensionless ~file
+           |> Option.map ~f:(fun config -> Extensionless, config))
     in
     let pp = Module_name.Per_item.get pp_config (Module.name module_) in
     let unit_name = Module_name.Unique.to_string (Module.obj_name module_) in
-    to_sexp ~unit_name ~opens ~pp ~reader config
+    match_kind, module_config, to_sexp ~unit_name ~opens ~pp ~reader config
   ;;
 
-  let dump_entries { per_file_config; pp_config; config } : Dump_entry.t list =
-    Path.Build.Map.to_list per_file_config
-    |> List.map ~f:(fun (source_path, { module_; opens; reader }) ->
+  let matching_configurations (default :: alternatives : t) ~file =
+    let configurations =
+      (true, default)
+      :: List.map alternatives ~f:(fun configuration -> false, configuration)
+    in
+    let exact, extensionless =
+      List.fold_left
+        configurations
+        ~init:([], [])
+        ~f:(fun (exact, extensionless) (is_default, configuration) ->
+          match get_configuration configuration ~file with
+          | None -> exact, extensionless
+          | Some (Exact_or_copy, module_config, directives) ->
+            (is_default, configuration, module_config, directives) :: exact, extensionless
+          | Some (Extensionless, module_config, directives) ->
+            exact, (is_default, configuration, module_config, directives) :: extensionless)
+    in
+    match exact with
+    | _ :: _ -> List.rev exact
+    | [] -> List.rev extensionless
+  ;;
+
+  let configurations t ~file =
+    matching_configurations t ~file
+    |> List.map
+         ~f:
+           (fun
+             ( is_default
+             , { for_; config = _; per_file_config = _; pp_config = _ }
+             , { module_; kind; opens = _; reader = _ }
+             , directives )
+           ->
+           let counterpart_kind =
+             match kind with
+             | Ml_kind.Impl -> Ml_kind.Intf
+             | Intf -> Ml_kind.Impl
+           in
+           let counterpart =
+             Module.source_without_pp module_ ~ml_kind:counterpart_kind
+             |> Option.map ~f:Path.drop_optional_build_context
+           in
+           let kind =
+             match kind with
+             | Ml_kind.Impl -> Implementation
+             | Intf -> Interface
+           in
+           { for_; is_default; kind; counterpart; directives })
+    |> Nonempty_list.of_list
+  ;;
+
+  let get t ~file =
+    Option.map (configurations t ~file) ~f:(fun configurations ->
+      (Nonempty_list.hd configurations).directives)
+  ;;
+
+  let dump_entries
+        { per_file_config = { exact; extensionless }; pp_config; config; for_ = _ }
+    : Dump_entry.t list
+    =
+    let extensionless =
+      Path.Build.Map.to_list extensionless
+      |> List.filter_map ~f:(fun (path, configurations) ->
+        Option.map (List.hd_opt configurations) ~f:(fun configuration ->
+          path, configuration))
+    in
+    Path.Build.Map.to_list exact @ extensionless
+    |> Path.Build.Map.of_list_reduce ~f:(fun existing _ -> existing)
+    |> Path.Build.Map.to_list
+    |> List.map ~f:(fun (source_path, { module_; opens; reader; kind = _ }) ->
       let module_name = Module.name module_ in
       let unit_name = Module_name.Unique.to_string (Module.obj_name module_) in
       let pp = Module_name.Per_item.get pp_config module_name in
@@ -435,7 +569,10 @@ module Processed = struct
   let print_file path =
     match load_file path with
     | Error msg -> Printf.eprintf "%s\n" msg
-    | Ok t -> dump_entries t |> List.iter ~f:print_entry
+    | Ok configurations ->
+      Nonempty_list.to_list_map configurations ~f:dump_entries
+      |> List.concat
+      |> List.iter ~f:print_entry
   ;;
 
   let print_files format paths =
@@ -446,7 +583,8 @@ module Processed = struct
          Result.List.map paths ~f:(fun path ->
            match load_file path with
            | Error msg -> Error msg
-           | Ok t -> Ok (dump_entries t))
+           | Ok configurations ->
+             Ok (Nonempty_list.to_list_map configurations ~f:dump_entries |> List.concat))
        with
        | Error msg -> Printf.eprintf "%s\n" msg
        | Ok entries ->
@@ -457,7 +595,10 @@ module Processed = struct
   ;;
 
   let print_generic_dot_merlin paths =
-    match Result.List.map paths ~f:load_file with
+    match
+      Result.List.map paths ~f:(fun path ->
+        Result.map (load_file path) ~f:Nonempty_list.hd)
+    with
     | Error msg -> Printf.eprintf "%s\n" msg
     | Ok [] -> Printf.eprintf "No merlin configuration found.\n"
     | Ok (init :: tl) ->
@@ -497,6 +638,7 @@ module Processed = struct
               , acc_indexes )
               { per_file_config = _
               ; pp_config
+              ; for_ = _
               ; config =
                   { stdlib_dir = _
                   ; source_root = _
@@ -837,42 +979,61 @@ module Unprocessed = struct
       ; parameters
       }
     and+ pp_config = pp_config t context ~expander in
-    let per_file_config =
+    let exact, extensionless =
       (* And copy for each module the resulting pp flags *)
       modules
       |> Modules.With_vlib.drop_vlib
-      |> Modules.fold ~init:[] ~f:(fun m init ->
-        Module.sources_without_pp m
-        |> Path.Build.Set.of_list_map ~f:(fun src -> Path.as_in_build_dir_exn src)
-        |> Path.Build.Set.fold ~init ~f:(fun src acc ->
-          let config =
-            { Processed.module_ = Module.set_pp m None
-            ; opens = Modules.With_vlib.local_open modules m
-            ; reader =
-                String.Map.find
-                  readers
-                  (Filename.Extension.Or_empty.to_string (Path.Build.extension src))
-            }
-          in
-          (* we add the config with and without the extension, the latter is
-             needed for a fallback in this file's [get] function. *)
-          let src_without_extension = remove_extension src in
-          (src, config) :: (src_without_extension, config) :: acc))
-      |> Path.Build.Map.of_list_reduce ~f:(fun existing _ -> existing)
+      |> Modules.fold ~init:([], []) ~f:(fun m init ->
+        List.fold_left Ml_kind.all ~init ~f:(fun (exact, extensionless) kind ->
+          match Module.source_without_pp m ~ml_kind:kind with
+          | None -> exact, extensionless
+          | Some source ->
+            let source = Path.as_in_build_dir_exn source in
+            let config =
+              { Processed.module_ = Module.set_pp m None
+              ; opens = Modules.With_vlib.local_open modules m
+              ; reader =
+                  String.Map.find
+                    readers
+                    (Filename.Extension.Or_empty.to_string (Path.Build.extension source))
+              ; kind
+              }
+            in
+            (source, config) :: exact, (remove_extension source, config) :: extensionless))
     in
-    { Processed.pp_config; config; per_file_config }
+    let per_file_config =
+      { Processed.exact =
+          Path.Build.Map.of_list_reduce exact ~f:(fun existing _ -> existing)
+      ; extensionless = Path.Build.Map.of_list_multi extensionless
+      }
+    in
+    { Processed.pp_config; config; per_file_config; for_ = t.config.for_ }
   ;;
 end
 
-let dot_merlin sctx ~dir ~more_src_dirs ~expander (t : Unprocessed.t) =
-  let merlin_file = Merlin_ident.merlin_file_path dir t.ident in
+type group = Unprocessed.t Nonempty_list.t
+
+let group ~default ~alternatives = (default :: alternatives : group)
+
+let dot_merlin sctx ~dir ~more_src_dirs ~expander (default :: alternatives : group) =
+  let { Unprocessed.ident; _ } = default in
+  let merlin_file = Merlin_ident.merlin_file_path dir ident in
   let* () =
     Rules.Produce.Alias.add_deps
       (Alias.make Alias0.check ~dir)
       (Action_builder.path (Path.build merlin_file))
   in
+  let configurations =
+    let open Action_builder.O in
+    let process configuration =
+      Unprocessed.process configuration sctx ~dir ~more_src_dirs ~expander
+    in
+    let+ default = process default
+    and+ alternatives = List.map alternatives ~f:process |> Action_builder.all in
+    (default :: alternatives : Processed.t)
+  in
   let action =
-    Unprocessed.process t sctx ~dir ~more_src_dirs ~expander
+    configurations
     |> Action_builder.map ~f:Processed.Persist.to_string
     |> Action_builder.with_no_targets
     |> Action_builder.With_targets.write_file_dyn merlin_file
@@ -880,10 +1041,10 @@ let dot_merlin sctx ~dir ~more_src_dirs ~expander (t : Unprocessed.t) =
   Super_context.add_rule sctx ~dir action
 ;;
 
-let add_rules sctx ~dir ~more_src_dirs ~expander merlin =
+let add_rules sctx ~dir ~more_src_dirs ~expander group =
   Memo.when_
     (Context.merlin (Super_context.context sctx))
-    (fun () -> dot_merlin sctx ~more_src_dirs ~expander ~dir merlin)
+    (fun () -> dot_merlin sctx ~more_src_dirs ~expander ~dir group)
 ;;
 
 let more_src_dirs dir_contents ~source_dirs =

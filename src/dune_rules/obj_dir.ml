@@ -7,8 +7,8 @@ module Paths = struct
 
   let library_native_dir ~obj_dir = Path.Build.relative obj_dir "native"
   let library_byte_dir ~obj_dir = Path.Build.relative obj_dir "byte"
-  let jsoo_dirname = "jsoo"
-  let library_jsoo_dir ~obj_dir = Path.Build.relative obj_dir jsoo_dirname
+  let jsoo_dirname = Filename.of_string_exn "jsoo"
+  let library_jsoo_dir ~obj_dir = Path.Build.relative_fname obj_dir jsoo_dirname
   let library_melange_dir ~obj_dir = Path.Build.relative obj_dir "melange"
   let library_public_cmi_ocaml_dir ~obj_dir = Path.Build.relative obj_dir "public_cmi"
 
@@ -16,16 +16,19 @@ module Paths = struct
     Path.Build.relative obj_dir "public_cmi_melange"
   ;;
 
-  (* Use "eobjs" rather than "objs" to avoid a potential conflict with a library
-     of the same name *)
-  let executable_object_directory ~dir name =
-    Path.Build.relative dir ("." ^ name ^ ".eobjs")
-  ;;
-
-  let melange_object_directory ~dir name =
-    (* Use "mobjs" rather than "objs" to avoid a potential conflict with a
-       library / executable of the same name *)
-    Path.Build.relative dir ("." ^ name ^ ".mobjs")
+  let exe_target_object_directory ~dir target =
+    let suffix =
+      match Exe_target.compilation_mode target with
+      | Ocaml ->
+        (* Use "eobjs" rather than "objs" to avoid a potential conflict with a
+           library of the same name. *)
+        ".eobjs"
+      | Melange ->
+        (* Use "mobjs" rather than "objs" to avoid a potential conflict with a
+           library or executable of the same name. *)
+        ".mobjs"
+    in
+    Path.Build.relative dir ("." ^ Exe_target.first_name target ^ suffix)
   ;;
 end
 
@@ -310,13 +313,8 @@ module Local = struct
       ~private_lib:false
   ;;
 
-  let make_exe ~dir ~name =
-    let obj_dir = Paths.executable_object_directory ~dir name in
-    make_non_library ~dir ~obj_dir
-  ;;
-
-  let make_melange_emit ~dir ~name =
-    let obj_dir = Paths.melange_object_directory ~dir name in
+  let make_for_exe_target ~dir target =
+    let obj_dir = Paths.exe_target_object_directory ~dir target in
     make_non_library ~dir ~obj_dir
   ;;
 
@@ -401,7 +399,7 @@ let public_cmi_melange_dir =
 ;;
 
 let byte_dir = get_path ~l:Local.byte_dir ~e:External.byte_dir
-let is_jsoo_dirname s = String.equal s Paths.jsoo_dirname
+let is_jsoo_dirname = Filename.equal Paths.jsoo_dirname
 let jsoo_dir = get_path ~l:Local.jsoo_dir ~e:External.jsoo_dir
 let native_dir = get_path ~l:Local.native_dir ~e:External.native_dir
 let melange_dir = get_path ~l:Local.melange_dir ~e:External.melange_dir
@@ -467,8 +465,7 @@ let as_local_exn (t : Path.t t) =
     Code_error.raise "Obj_dir.as_local_exn: external dir" [ "t", External.to_dyn e ]
 ;;
 
-let make_exe ~dir ~name = Local (Local.make_exe ~dir ~name)
-let make_melange_emit ~dir ~name = Local (Local.make_melange_emit ~dir ~name)
+let make_for_exe_target ~dir target = Local (Local.make_for_exe_target ~dir target)
 
 let for_pp ~dir =
   Local
@@ -494,9 +491,9 @@ let to_local (t : Path.t t) =
 module Module = struct
   let relative (type path) (t : path t) (dir : path) name : path =
     match t with
-    | Local _ -> Path.Build.relative dir name
-    | Local_as_path _ -> Path.relative dir name
-    | External _ -> Path.relative dir name
+    | Local _ -> Path.Build.relative_fname dir name
+    | Local_as_path _ -> Path.relative_fname dir name
+    | External _ -> Path.relative_fname dir name
   ;;
 
   let path_of_build (type path) (t : path t) (dir : path) : Path.t =

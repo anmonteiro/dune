@@ -430,15 +430,8 @@ let has_rules fn =
 
 let find_scope ~sctx encoded_scope =
   let project_root = Parameterised_name.Scope.decode encoded_scope in
-  let ctx = Super_context.context sctx in
-  let dir =
-    match project_root with
-    | None -> Context.build_dir ctx
-    | Some dir ->
-      let build_context = Context.build_context ctx in
-      Path.Build.append_source build_context.build_dir dir
-  in
-  Scope.DB.find_by_dir dir
+  let context = Super_context.context sctx in
+  Scope.DB.find_by_project_root context project_root
 ;;
 
 let gen_rules ~sctx ~dir rest =
@@ -455,7 +448,7 @@ let gen_rules ~sctx ~dir rest =
     let* lib = resolve_instantiation scope instance_name in
     instantiate ~sctx lib
   | [ scope; _lib_name; instance_name; ".instance.objs"; jsoo; s_config ]
-    when Obj_dir.is_jsoo_dirname jsoo ->
+    when Obj_dir.is_jsoo_dirname (Filename.of_string_exn jsoo) ->
     let* scope = find_scope ~sctx scope in
     has_rules
     @@ fun () ->

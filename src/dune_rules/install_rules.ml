@@ -517,21 +517,16 @@ end = struct
            else
              let* compile_info =
                let dune_version = Scope.project scope |> Dune_project.dune_version in
+               let libs = Scope.libs scope in
+               (* This is wrong. If the preprocessors fail to resolve, we
+                  shouldn't install the binary rather than failing outright. *)
                let+ pps =
-                 (* This is wrong. If the preprocessors fail to resolve,
-                    we shouldn't install the binary rather than failing outright
-                 *)
-                 Instrumentation.with_instrumentation
-                   exes.buildable.preprocess.config
-                   ~instrumentation_backend:
-                     (Lib.DB.instrumentation_backend (Scope.libs scope))
-                 |> Resolve.Memo.read_memo
-                 >>| Preprocess.Per_module.pps
+                 Lib.DB.pps_for_preprocessing libs exes.buildable.preprocess.config
                in
                Lib.DB.resolve_user_written_deps
-                 (Scope.libs scope)
+                 libs
                  ~forbidden_libraries:[]
-                 (`Exe exes.names)
+                 (Executables.exe_target exes)
                  exes.buildable.libraries
                  ~allow_unused_libraries:exes.buildable.allow_unused_libraries
                  ~pps
@@ -1336,9 +1331,11 @@ struct
         ~dir:(Path.to_string entry.src)
         ~init:[]
         ~on_file:(fun ~dir fname acc ->
-          let file = Filename.append dir fname in
-          let path = Path.relative entry.src file in
-          let comps = Path.Local.of_string file |> Path.Local.explode in
+          let path = Path.relative_fname (Path.relative entry.src dir) fname in
+          let comps =
+            Path.Local.relative_fname (Path.Local.relative Path.Local.root dir) fname
+            |> Path.Local.explode
+          in
           (path, comps) :: acc)
         ()
       |> List.rev_map ~f:(fun (path, comps) -> make_entry entry path comps)

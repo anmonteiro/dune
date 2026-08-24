@@ -18,6 +18,12 @@ Test toplevel-init-file on a tiny project
   #directory "$TESTCASE_ROOT/_build/default/.test.objs/byte";;
   #load "$TESTCASE_ROOT/_build/default/test.cma";;
 
+Absolute directory arguments identify the same source directory.
+
+  $ dune ocaml top "$PWD"
+  #directory "$TESTCASE_ROOT/_build/default/.test.objs/byte";;
+  #load "$TESTCASE_ROOT/_build/default/test.cma";;
+
   $ ocaml -stdin <<EOF
   > #use_output "dune ocaml top";;
   > Test.Main.hello ();;

@@ -67,7 +67,7 @@ module Local_gen = struct
         | None -> t
         | Some i -> String.sub t ~pos:(i + 1) ~len:(len - i - 1))
     in
-    Filename.of_string_exn basename
+    Filename.of_string_unchecked basename
   ;;
 
   let to_dyn t = Dyn.String t
@@ -391,12 +391,14 @@ module Local_gen = struct
     then None
     else (
       match String.lsplit2 t ~on:'/' with
-      | None -> Some (Filename.of_string_exn t, root)
-      | Some (before, after) -> Some (Filename.of_string_exn before, after |> of_string))
+      | None -> Some (Filename.of_string_unchecked t, root)
+      | Some (before, after) -> Some (Filename.of_string_unchecked before, after))
   ;;
 
   let explode p =
-    if is_root p then [] else String.split p ~on:'/' |> List.map ~f:Filename.of_string_exn
+    if is_root p
+    then []
+    else String.split p ~on:'/' |> List.map ~f:Filename.of_string_unchecked
   ;;
 
   let of_comps = function
@@ -424,9 +426,7 @@ module Local_gen = struct
     module Set = struct
       include String.Set
 
-      let of_listing ~dir ~filenames =
-        of_list_map filenames ~f:(fun f -> relative dir (Filename.to_string f))
-      ;;
+      let of_listing ~dir ~filenames = of_list_map filenames ~f:(relative_fname dir)
     end
   end
 end

@@ -348,6 +348,18 @@ let wasmoo ~dir sctx =
     "wasm_of_ocaml"
 ;;
 
+let compiler ~dir sctx ~(mode : Js_of_ocaml.Mode.t) =
+  match mode with
+  | JS -> jsoo ~dir sctx
+  | Wasm -> wasmoo ~dir sctx
+;;
+
+let jsoo_version ~dir sctx =
+  let open Action_builder.O in
+  let* jsoo = jsoo ~dir sctx in
+  Action_builder.of_memo (Version.jsoo_version jsoo)
+;;
+
 let jsoo_version_at_least version minimum =
   match version with
   | None -> false
@@ -379,11 +391,7 @@ let resolve_config sctx ~dir ~(mode : Js_of_ocaml.Mode.t) flags =
     js_of_ocaml_flags sctx ~dir ~mode flags
     |> Action_builder.bind ~f:(fun (x : _ Js_of_ocaml.Flags.t) -> x.compile)
   in
-  let* jsoo =
-    match mode with
-    | JS -> jsoo ~dir sctx
-    | Wasm -> wasmoo ~dir sctx
-  in
+  let* jsoo = compiler ~dir sctx ~mode in
   let* jsoo_version = Action_builder.of_memo (Version.jsoo_version jsoo) in
   if jsoo_has_build_config jsoo_version
   then
@@ -405,11 +413,7 @@ let js_of_ocaml_rule
       ~directory_targets
   =
   let open Action_builder.O in
-  let jsoo =
-    match mode with
-    | JS -> jsoo ~dir sctx
-    | Wasm -> wasmoo ~dir sctx
-  in
+  let jsoo = compiler ~dir sctx ~mode in
   let flags =
     let* flags = js_of_ocaml_flags sctx ~dir ~mode flags in
     match sub_command with
@@ -633,10 +637,7 @@ let exe_rule
   let linkall =
     let open Action_builder.O in
     let+ linkall = linkall
-    and+ jsoo_version =
-      let* jsoo = jsoo ~dir sctx in
-      Action_builder.of_memo @@ Version.jsoo_version jsoo
-    in
+    and+ jsoo_version = jsoo_version ~dir sctx in
     Command.Args.As (linkall_arg ~version:jsoo_version ~linkall)
   in
   let spec =
@@ -700,6 +701,7 @@ let cmo_js_of_module ~mode m =
   Module_name.Unique.artifact_filename
     (Module.obj_name m)
     ~ext:(Js_of_ocaml.Ext.cmo ~mode)
+  |> Filename.to_string
 ;;
 
 let link_rule
@@ -717,8 +719,9 @@ let link_rule
   =
   let sctx = Compilation_context.super_context cc in
   let dir = Compilation_context.dir cc in
-  let ctx = Super_context.context sctx |> Context.build_context in
-  let build_dir = Super_context.context sctx |> Context.build_dir in
+  let context = Super_context.context sctx in
+  let ctx = Context.build_context context in
+  let build_dir = Context.build_dir context in
   let get_all =
     let open Action_builder.O in
     let+ config = resolve_config sctx ~dir ~mode flags
@@ -727,10 +730,7 @@ let link_rule
     and+ libs = Resolve.Memo.read (Compilation_context.requires_link cc)
     and+ { Link_time_code_gen_type.to_link; force_linkall } =
       Resolve.read link_time_code_gen
-    and+ jsoo_version =
-      let* jsoo = jsoo ~dir sctx in
-      Action_builder.of_memo @@ Version.jsoo_version jsoo
-    in
+    and+ jsoo_version = jsoo_version ~dir sctx in
     let libs =
       List.map libs ~f:(Lib.Parameterised.for_instance ~build_dir ~ext_lib:None)
     in
@@ -806,10 +806,7 @@ let build_cm'
             (let open Action_builder.O in
              let* () = Action_builder.return () in
              let+ shapes =
-               let* jsoo_version =
-                 let* jsoo = jsoo ~dir sctx in
-                 Action_builder.of_memo @@ Version.jsoo_version jsoo
-               in
+               let* jsoo_version = jsoo_version ~dir sctx in
                match jsoo_has_shapes jsoo_version with
                | false -> Action_builder.return []
                | true -> shapes
@@ -898,14 +895,7 @@ let setup_shared_runtime_rule sctx s_config s_digest =
     let { Runtime_key.Decoded.mode; lib_names; project_root } =
       Runtime_key.decode digest
     in
-    let* scope =
-      let dir =
-        match project_root with
-        | None -> Context.build_dir ctx
-        | Some dir -> Path.Build.append_source build_context.build_dir dir
-      in
-      Scope.DB.find_by_dir dir
-    in
+    let* scope = Scope.DB.find_by_project_root ctx project_root in
     let* libs =
       let lib_db = Scope.libs scope in
       Memo.parallel_map lib_names ~f:(fun name ->
@@ -977,13 +967,13 @@ let setup_separate_compilation_rules sctx components =
          Memo.parallel_iter archives ~f:(fun fn ->
            let build_context = Context.build_context ctx in
            let name = Path.basename fn in
-           let name_s = Filename.to_string name in
            let dir = in_build_dir build_context ~config [ lib_name ] in
            let src =
              let src_dir = Lib_info.src_dir info in
-             Path.relative src_dir name_s
+             Path.relative_fname src_dir name
            in
            let target =
+             let name_s = Filename.to_string name in
              in_build_dir build_context ~config [ lib_name; with_js_ext ~mode name_s ]
            in
            let shapes =
@@ -1065,9 +1055,9 @@ let jsoo_compilation_mode
       ~(in_context : Js_of_ocaml.In_context.t Js_of_ocaml.Mode.Pair.t)
       ~mode
   =
-  match (Js_of_ocaml.Mode.Pair.select ~mode in_context).compilation_mode with
-  | None -> js_of_ocaml_compilation_mode t ~dir ~mode
-  | Some x -> Memo.return x
+  Memo.Option.value
+    (Js_of_ocaml.Mode.Pair.select ~mode in_context).compilation_mode
+    ~default:(fun () -> js_of_ocaml_compilation_mode t ~dir ~mode)
 ;;
 
 let jsoo_is_whole_program t ~dir ~in_context =
@@ -1095,9 +1085,8 @@ let build_standalone_runtime cc ~loc ~in_context ~jsoo_mode:mode =
     in_context
   in
   let* cmode =
-    match compilation_mode with
-    | None -> js_of_ocaml_compilation_mode sctx ~dir ~mode
-    | Some x -> Memo.return x
+    Memo.Option.value compilation_mode ~default:(fun () ->
+      js_of_ocaml_compilation_mode sctx ~dir ~mode)
   in
   match (cmode : Js_of_ocaml.Compilation_mode.t) with
   | Whole_program -> Memo.return None
@@ -1163,13 +1152,10 @@ let build_exe
     Rule_mode_expand.expand_optional_promote ~expander ~dir promote
   in
   let* cmode =
-    match compilation_mode with
-    | None -> js_of_ocaml_compilation_mode sctx ~dir ~mode
-    | Some x -> Memo.return x
+    Memo.Option.value compilation_mode ~default:(fun () ->
+      js_of_ocaml_compilation_mode sctx ~dir ~mode)
   and* sourcemap =
-    match sourcemap with
-    | None -> js_of_ocaml_sourcemap sctx ~dir ~mode
-    | Some x -> Memo.return x
+    Memo.Option.value sourcemap ~default:(fun () -> js_of_ocaml_sourcemap sctx ~dir ~mode)
   in
   assert (Js_of_ocaml.Mode.select ~mode ~js:(wasm_files = []) ~wasm:true);
   let runtime_files = javascript_files @ wasm_files in

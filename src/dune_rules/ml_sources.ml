@@ -244,26 +244,28 @@ let raise_duplicate_module ?loc ~dir name f1 f2 =
 let module_files ~root_dir ~dialects ~dir ~files ~for_ =
   let loc = Loc.in_dir (Path.build dir) in
   let impl_files, intf_files =
-    let make_module dialect name ~original_fn ~fn =
+    let make_module dialect name ~original_filename ~fn =
       let path_in_build_dir =
         match for_ with
-        | Compilation_mode.Ocaml -> Path.Build.relative dir fn
+        | Compilation_mode.Ocaml -> Path.Build.relative_fname dir fn
         | Melange ->
-          let dst = Path.Build.relative dir fn in
+          let dst = Path.Build.relative_fname dir fn in
           let descendant =
             Path.Local.descendant (Path.Build.local dst) ~of_:(Path.Build.local root_dir)
             |> Option.value_exn
           in
           source_in_dir ~dir:root_dir descendant ~for_
       in
-      let original_path = Path.Build.relative dir original_fn |> Path.build in
+      let original_path = Path.Build.relative_fname dir original_filename |> Path.build in
       name, Module.File.make dialect ~original_path (Path.build path_in_build_dir)
     in
-    List.filter_partition_map (Filename.Array.Set.to_list files) ~f:(fun fn ->
-      let fn = Filename.to_string fn in
-      (* We don't use [Filename.extension] because Melange-specific files have
-         two extensions, while other multi-extension filenames must be ignored. *)
-      match String.lsplit2 fn ~on:'.' with
+    List.filter_partition_map (Filename.Array.Set.to_list files) ~f:(fun filename ->
+      match
+        let fn = Filename.to_string filename in
+        (* We don't use [Filename.extension] because Melange-specific files have
+           two extensions, while other multi-extension filenames must be ignored. *)
+        String.lsplit2 fn ~on:'.'
+      with
       | None -> Skip
       | Some (s, ext) ->
         let melange_specific, ext =
@@ -283,8 +285,8 @@ let module_files ~root_dir ~dialects ~dir ~files ~for_ =
                   make_module
                     dialect
                     name
-                    ~original_fn:fn
-                    ~fn:(s ^ Filename.Extension.to_string ext)
+                    ~original_filename:filename
+                    ~fn:(Filename.of_string_exn (s ^ Filename.Extension.to_string ext))
                 in
                 name, (module_, melange_specific)
               in
@@ -334,15 +336,13 @@ let modules_of_files ~root_dir ~path ~dialects ~dir ~files ~for_ =
 
 type for_ =
   | Library of Lib_id.Local.t
-  | Exe of { first_exe : string }
-  | Melange of { target : string }
+  | Exe_target of Exe_target.t
 
 let dyn_of_for_ =
   let open Dyn in
   function
   | Library n -> variant "Library" [ Lib_id.Local.to_dyn n ]
-  | Exe { first_exe } -> variant "Exe" [ record [ "first_exe", string first_exe ] ]
-  | Melange { target } -> variant "Melange" [ record [ "target", string target ] ]
+  | Exe_target target -> variant "Exe_target" [ Repr.to_dyn Exe_target.repr target ]
 ;;
 
 let raise_module_conflict_error ~module_path origins =
@@ -423,8 +423,11 @@ let modules_and_obj_dir t ~libs ~for_ =
   match
     match for_ with
     | Library lib_id -> Lib_id.Local.Map.find t.modules.libraries lib_id
-    | Exe { first_exe } -> String.Map.find t.modules.executables first_exe
-    | Melange { target } -> String.Map.find t.modules.melange_emits target
+    | Exe_target target ->
+      let name = Exe_target.first_name target in
+      (match Exe_target.compilation_mode target with
+       | Ocaml -> String.Map.find t.modules.executables name
+       | Melange -> String.Map.find t.modules.melange_emits name)
   with
   | Some (Library _, modules, obj_dir) ->
     let* () =
@@ -462,8 +465,10 @@ let modules_and_obj_dir t ~libs ~for_ =
       match for_ with
       | Library _ ->
         Lib_id.Local.Map.keys t.modules.libraries |> Dyn.list Lib_id.Local.to_dyn
-      | Exe _ -> String.Map.keys t.modules.executables |> Dyn.(list string)
-      | Melange _ -> String.Map.keys t.modules.melange_emits |> Dyn.(list string)
+      | Exe_target target ->
+        (match Exe_target.compilation_mode target with
+         | Ocaml -> String.Map.keys t.modules.executables |> Dyn.(list string)
+         | Melange -> String.Map.keys t.modules.melange_emits |> Dyn.(list string))
     in
     Code_error.raise
       "modules_and_obj_dir: failed lookup"
@@ -1199,7 +1204,9 @@ let modules_of_stanzas =
                in
                make_tests ~dir ~expander ~modules ~project tests
              | Melange_stanzas.Emit.T mel ->
-               let obj_dir = Obj_dir.make_melange_emit ~dir ~name:mel.target in
+               let obj_dir =
+                 Obj_dir.make_for_exe_target ~dir (Melange_stanzas.Emit.exe_target mel)
+               in
                let+ sources, modules =
                  let modules =
                    Generated_modules.with_lib_select_deps

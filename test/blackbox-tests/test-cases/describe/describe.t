@@ -1411,6 +1411,12 @@ not stable across different setups.
           (for_impl ()))))))
      (include_dirs (_build/default/virtual_impl2/.virtual_impl2.objs/byte)))))
 
+Absolute directory filters inside the workspace are accepted.
+
+  $ dune describe workspace --lang 0.1 --sanitize-for-tests "$PWD/virtual" \
+  > | grep -o '(name virtual)'
+  (name virtual)
+
   $ dune describe workspace --lang 0.1 --sanitize-for-tests virtual | censor
   ((root /WORKSPACE_ROOT)
    (build_context _build/default)

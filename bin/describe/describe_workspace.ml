@@ -621,7 +621,6 @@ module Crawl = struct
     >>= function
     | false -> Memo.return None
     | true ->
-      let first_exe = snd (Nonempty_list.hd exes.names) in
       let* scope =
         Scope.DB.find_by_project (Super_context.context sctx |> Context.name) project
       in
@@ -632,7 +631,7 @@ module Crawl = struct
           Ml_sources.modules_and_obj_dir
             ml_sources
             ~libs:(Scope.libs scope)
-            ~for_:(Exe { first_exe })
+            ~for_:(Exe_target (Executables.exe_target exes))
         in
         Modules.With_vlib.modules modules_, obj_dir
       in
@@ -858,7 +857,7 @@ module Crawl = struct
 end
 
 let find_dir common dir =
-  let p = Path.Source.(relative root) (Common.prefix_target common dir) in
+  let p = Common.source_path common dir in
   let s = Path.source p in
   if not @@ Fpath.exists (Path.to_string s)
   then User_error.raise [ Pp.textf "No such file or directory: %s" (Path.to_string s) ];
@@ -887,7 +886,6 @@ let term : unit Term.t =
   and+ format = Describe_format.arg
   and+ lang = Lang.arg
   and+ options = Options.arg in
-  let common, config = Common.init builder in
   let dirs =
     let args = "workspace" :: what in
     let parse =
@@ -896,7 +894,7 @@ let term : unit Term.t =
       let open Dune_lang.Decoder in
       fields
       @@ field "workspace"
-      @@ let+ dirs = repeat relative_file in
+      @@ let+ dirs = repeat string in
          (* [None] means that all directories should be accepted,
             whereas [Some l] means that only the directories in the
             list [l] should be accepted. The checks on whether the
@@ -912,23 +910,18 @@ let term : unit Term.t =
     in
     Dune_lang.Decoder.parse parse Univ_map.empty ast
   in
-  Scheduler_setup.go_with_rpc_server ~common ~config
-  @@ fun () ->
-  Build.build_memo_exn
-  @@ fun () ->
-  let open Memo.O in
-  let* setup = Util.setup () in
-  let super_context = Dune_rules.Main.find_scontext_exn setup ~name:context_name in
-  let context = Super_context.context super_context in
-  let* findlib_paths = Context.findlib_paths context in
-  (* prefix directories with the workspace root, so that the
-     command also works correctly when it is run from a
-     subdirectory *)
-  Memo.Option.map dirs ~f:(Memo.List.map ~f:(find_dir common))
-  >>= Crawl.workspace options setup context
-  >>| Sanitize_for_tests.Workspace.sanitize ~findlib_paths
-  >>| Descr.Workspace.to_dyn options
-  >>| Describe_format.print_dyn format
+  Build.describe builder ~context_name (fun common setup super_context ->
+    let open Memo.O in
+    let context = Super_context.context super_context in
+    let* findlib_paths = Context.findlib_paths context in
+    (* prefix directories with the workspace root, so that the
+       command also works correctly when it is run from a
+       subdirectory *)
+    Memo.Option.map dirs ~f:(Memo.List.map ~f:(find_dir common))
+    >>= Crawl.workspace options setup context
+    >>| Sanitize_for_tests.Workspace.sanitize ~findlib_paths
+    >>| Descr.Workspace.to_dyn options
+    >>| Describe_format.print_dyn format)
 ;;
 
 let command =

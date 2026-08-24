@@ -1,6 +1,7 @@
 We try to load a module defined in a library with a dependency
 
   $ make_dune_project 3.3
+  $ echo '(lang dune 3.3)' >dune-workspace
 
   $ mkdir foo
   $ cd foo
@@ -56,6 +57,20 @@ We try to load a module defined in a library with a dependency
   _build/default/mydummylib/mydummylib.cma
 
   $ dune ocaml top-module $PWD/foo/foo.ml
+  #directory "$TESTCASE_ROOT/_build/default/.topmod/foo/foo.ml";;
+  #directory "$TESTCASE_ROOT/_build/default/mydummylib/.mydummylib.objs/byte";;
+  #load "$TESTCASE_ROOT/_build/default/mydummylib/mydummylib.cma";;
+  #load "$TESTCASE_ROOT/_build/default/foo/.foo.objs/byte/foo__.cmo";;
+  #load "$TESTCASE_ROOT/_build/default/foo/.foo.objs/byte/foo__Bar.cmo";;
+  #load "$TESTCASE_ROOT/_build/default/.topmod/foo/foo.ml/foo.cmo";;
+  open Foo__
+  ;;
+
+Relative module paths are resolved from the directory where Dune was started.
+
+  $ (cd foo &&
+  >  unset INSIDE_DUNE &&
+  >  dune ocaml top-module foo.ml)
   #directory "$TESTCASE_ROOT/_build/default/.topmod/foo/foo.ml";;
   #directory "$TESTCASE_ROOT/_build/default/mydummylib/.mydummylib.objs/byte";;
   #load "$TESTCASE_ROOT/_build/default/mydummylib/mydummylib.cma";;

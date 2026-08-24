@@ -21,10 +21,7 @@ module Files = struct
   ;;
 
   let from_source_file ~mdx_dir src =
-    let dot_mdx_path =
-      let basename = Path.Build.basename src |> Filename.to_string in
-      Path.Build.relative mdx_dir basename
-    in
+    let dot_mdx_path = Path.Build.relative_fname mdx_dir (Path.Build.basename src) in
     let corrected = corrected_file dot_mdx_path in
     { src; corrected }
   ;;
@@ -424,16 +421,11 @@ let mdx_prog_gen t ~sctx ~dir ~scope ~mdx_prog =
             let+ lib = Lib.DB.resolve (Scope.libs scope) lib in
             Some lib
           | _ -> Resolve.Memo.return None)
-      and+ lib_config =
-        Resolve.Memo.lift_memo
-        @@ Memo.O.(
-             let+ ocaml = Super_context.context sctx |> Context.ocaml in
-             ocaml.lib_config)
       in
       let mode = ocaml_toolchain |> Ocaml_toolchain.best_mode in
       let open Command.Args in
       S
-        (Lib_flags.L.include_paths libs_to_include (Ocaml mode) lib_config
+        (Lib_flags.L.include_paths libs_to_include (Ocaml mode) ocaml_toolchain.lib_config
          |> Lib_flags.L.include_only
          |> List.map ~f:(fun p -> S [ A "--directory"; Path p ]))
     in
@@ -456,12 +448,13 @@ let mdx_prog_gen t ~sctx ~dir ~scope ~mdx_prog =
      field *)
   let main_module_name = Module_name.of_checked_string name in
   let dune_version = Scope.project scope |> Dune_project.dune_version in
+  let exe_target = Exe_target.executables Nonempty_list.[ t.loc, name ] in
   let* cctx =
     let lib name = Lib_dep.Direct (loc, Lib_name.of_string name) in
     let compile_info =
       Lib.DB.resolve_user_written_deps
         (Scope.libs scope)
-        (`Exe Nonempty_list.[ t.loc, name ])
+        exe_target
         ~allow_overlaps:false
         ~forbidden_libraries:[]
         (lib "mdx.test" :: lib "mdx.top" :: lib "unix" :: t.libraries)
@@ -471,7 +464,7 @@ let mdx_prog_gen t ~sctx ~dir ~scope ~mdx_prog =
     in
     let requires_compile = Lib.Compile.direct_requires compile_info ~for_
     and requires_link = Lib.Compile.requires_link compile_info ~for_ in
-    let obj_dir = Obj_dir.make_exe ~dir ~name in
+    let obj_dir = Obj_dir.make_for_exe_target ~dir exe_target in
     let modules =
       Module.generated ~kind:Impl ~src_dir:dir ~for_ [ main_module_name ]
       |> Modules.With_vlib.singleton_exe

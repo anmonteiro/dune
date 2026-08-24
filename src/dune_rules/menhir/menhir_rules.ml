@@ -174,6 +174,12 @@ module Run (P : PARAMS) = struct
       (Expander.expand_and_eval_set expander flags ~standard:env.Menhir_env.flags)
   ;;
 
+  let expand_rule_mode mode =
+    let open Memo.O in
+    let* expander = expander in
+    Rule_mode_expand.expand_path ~expander ~dir mode
+  ;;
+
   (* ------------------------------------------------------------------------ *)
 
   (* If there is no [base] clause, then a stanza that mentions several modules
@@ -190,7 +196,6 @@ module Run (P : PARAMS) = struct
     Memo.lazy_ ~name:"menhir-stanzas" (fun () ->
       let open Memo.O in
       let+ { Ml_sources.Parser_generators.deps; targets = _ } =
-        let sctx = Compilation_context.super_context cctx in
         Dir_contents.get sctx ~dir
         >>= Dir_contents.ml ~for_
         >>| Ml_sources.Parser_generators.modules ~for_:(Menhir stanza.loc)
@@ -292,26 +297,26 @@ module Run (P : PARAMS) = struct
         mock_module
         ~lint:false
     in
-    let cctx =
+    let inference_cctx =
       Compilation_context.set_sandbox cctx Sandbox_config.needs_sandboxing
       |> Compilation_context.without_bin_annot
     in
     let* deps =
-      let obj_dir = Compilation_context.obj_dir cctx in
-      let modules = Compilation_context.modules cctx in
-      let impl = Compilation_context.implements cctx in
+      let obj_dir = Compilation_context.obj_dir inference_cctx in
+      let modules = Compilation_context.modules inference_cctx in
+      let impl = Compilation_context.implements inference_cctx in
       let dir = Obj_dir.dir obj_dir in
       Dep_rules.for_module ~obj_dir ~modules ~sandbox ~impl ~dir ~sctx mock_module ~for_
     in
     let* () =
-      Module_compilation.ocamlc_i ~deps cctx mock_module ~output:(inferred_mli base)
+      Module_compilation.ocamlc_i
+        ~deps
+        inference_cctx
+        mock_module
+        ~output:(inferred_mli base)
     in
     let* explain_flags = explain_flags base stanza
-    and* mode =
-      let sctx = Compilation_context.super_context cctx in
-      let* expander = Super_context.expander sctx ~dir in
-      Rule_mode_expand.expand_path ~expander ~dir stanza.mode
-    in
+    and* mode = expand_rule_mode stanza.mode in
     (* 3. A second invocation of Menhir reads the inferred [.mli] file. *)
     menhir
       [ Command.Args.dyn expanded_flags
@@ -335,11 +340,7 @@ module Run (P : PARAMS) = struct
     let open Memo.O in
     let* expanded_flags = expand_flags stanza.flags
     and* explain_flags = explain_flags base stanza
-    and* mode =
-      let sctx = Compilation_context.super_context cctx in
-      let* expander = Super_context.expander sctx ~dir in
-      Rule_mode_expand.expand_path ~expander ~dir stanza.mode
-    in
+    and* mode = expand_rule_mode stanza.mode in
     menhir
       [ Command.Args.dyn expanded_flags
       ; S explain_flags
