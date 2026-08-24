@@ -944,6 +944,7 @@ let setup_separate_compilation_rules sctx components =
     let config = Config.of_string s_config in
     let pkg = Lib_name.parse_string_exn (Loc.none, s_pkg) in
     let ctx = Super_context.context sctx in
+    let build_context = Context.build_context ctx in
     let* installed_libs = Lib.DB.installed ctx in
     Lib.DB.find installed_libs pkg
     >>= (function
@@ -975,7 +976,6 @@ let setup_separate_compilation_rules sctx components =
        in
        Memo.parallel_iter Js_of_ocaml.Mode.all ~f:(fun mode ->
          Memo.parallel_iter archives ~f:(fun fn ->
-           let build_context = Context.build_context ctx in
            let name = Path.basename fn in
            let name_s = Filename.to_string name in
            let dir = in_build_dir build_context ~config [ lib_name ] in
