@@ -23,6 +23,46 @@ Target should not be empty
   Error: The field target can not be empty
   [1]
 
+Target should not use a special directory name
+
+  $ cat > dune <<EOF
+  > (library
+  >  (name $lib)
+  >  (modes melange))
+  > (melange.emit
+  >  (target .)
+  >  (emit_stdlib false)
+  >  (libraries $lib))
+  > EOF
+
+  $ dune build
+  File "dune", line 5, characters 9-10:
+  5 |  (target .)
+               ^
+  Error: The field target must use simple names and can not include paths to
+  other folders. To emit JavaScript files in another folder, move the
+  `melange.emit` stanza to that folder
+  [1]
+
+  $ cat > dune <<EOF
+  > (library
+  >  (name $lib)
+  >  (modes melange))
+  > (melange.emit
+  >  (target ..)
+  >  (emit_stdlib false)
+  >  (libraries $lib))
+  > EOF
+
+  $ dune build
+  File "dune", line 5, characters 9-11:
+  5 |  (target ..)
+               ^^
+  Error: The field target must use simple names and can not include paths to
+  other folders. To emit JavaScript files in another folder, move the
+  `melange.emit` stanza to that folder
+  [1]
+
 Target should not try to descend into subdirectories
 
   $ cat > dune <<EOF
