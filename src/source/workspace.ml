@@ -523,7 +523,15 @@ module Context = struct
 
     let decode =
       let+ env = env_field
-      and+ targets = field "targets" (repeat Target.t) ~default:[ Target.Native ]
+      and+ targets =
+        field
+          "targets"
+          (let+ loc = loc
+           and+ targets = repeat Target.t in
+           match targets with
+           | [] -> User_error.raise ~loc [ Pp.text "No build target defined" ]
+           | _ :: _ -> targets)
+          ~default:[ Target.Native ]
       and+ profile = field_o "profile" Profile.decode
       and+ host_context =
         field_o "host" (Dune_lang.Syntax.since syntax (1, 10) >>> Context_name.decode)
