@@ -137,7 +137,14 @@ module Mode_conf = struct
   module Set = struct
     include O.Set
 
-    let decode = repeat decode >>| of_list
+    let decode =
+      let+ loc = loc
+      and+ modes = repeat decode in
+      match modes with
+      | [] -> User_error.raise ~loc [ Pp.text "No inline test mode defined" ]
+      | _ :: _ -> of_list modes
+    ;;
+
     let default = of_list [ Best ]
   end
 end
