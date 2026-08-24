@@ -273,14 +273,13 @@ let () =
 (** Returns the list of files (in _build) to be passed to mdx for the given
     stanza and context *)
 let files_to_mdx t ~sctx ~dir =
+  let build_dir = Context.build_dir (Super_context.context sctx) in
   let must_mdx src_path =
     let file = Path.Source.basename src_path |> Filename.to_string in
     let standard = default_files_of_version t.version in
     Predicate_lang.Glob.test t.files ~standard file
   in
-  let build_path src_path =
-    Path.Build.append_source (Context.build_dir (Super_context.context sctx)) src_path
-  in
+  let build_path src_path = Path.Build.append_source build_dir src_path in
   Path.Build.drop_build_context_exn dir
   |> Source_tree.files_of
   >>| Path.Source.Set.to_list
