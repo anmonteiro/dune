@@ -83,7 +83,7 @@ Defaults to commonjs / `.js` if no config present at all
   $ ls _build/default/output
   main.js
 
-An explicitly empty module systems field is currently accepted
+Rejects an explicitly empty module systems field
 
   $ dune clean
   $ cat > dune <<EOF
@@ -95,6 +95,11 @@ An explicitly empty module systems field is currently accepted
   > EOF
 
   $ dune build @mel
+  File "dune", line 5, characters 1-17:
+  5 |  (module_systems))
+       ^^^^^^^^^^^^^^^^
+  Error: Not enough arguments for "module_systems"
+  [1]
 
 Errors out if extension starts with dot
 
