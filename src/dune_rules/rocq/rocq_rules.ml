@@ -1250,11 +1250,11 @@ let install_rules ~sctx ~dir s =
 let setup_rocqpp_rules ~sctx ~dir ({ loc; modules } : Rocq_stanza.Rocqpp.t) =
   let* rocq = rocq ~loc ~sctx ~dir
   and* mlg_files = Rocq_sources.mlg_files ~sctx ~dir ~modules in
+  let build_dir = Super_context.context sctx |> Context.build_dir in
   let mlg_rule m =
     let source = Path.build m in
     let target = Path.Build.set_extension m ~ext:Filename.Extension.ml in
     let args = [ Command.Args.A "pp-mlg"; Dep source; Hidden_targets [ target ] ] in
-    let build_dir = Super_context.context sctx |> Context.build_dir in
     Command.run ~dir:(Path.build build_dir) rocq args
   in
   List.rev_map ~f:mlg_rule mlg_files |> Super_context.add_rules ~loc ~dir sctx
