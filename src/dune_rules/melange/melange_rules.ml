@@ -435,52 +435,54 @@ let build_js
   let project = Scope.project scope in
   let melange_cli = Melange.Cli.of_project project in
   let* compiler = Melange_binary.melc sctx ~loc:(Some loc) ~dir in
-  js_outputs_of_module ~module_systems ~output m
-  |> Memo.parallel_iter ~f:(fun (module_system, js_output) ->
-    let mode =
-      let src = Module.source_without_pp m ~ml_kind:Impl |> Option.value_exn in
-      compute_promote_in_source
-        ~promote_in_source
-        ~project
-        ~dir
-        ~output
-        ~mode
-        ~src
-        ~dst:js_output
+  match js_outputs_of_module ~module_systems ~output m with
+  | [] -> Memo.return ()
+  | _ :: _ as js_outputs ->
+    let src = Module.source_without_pp m ~ml_kind:Impl |> Option.value_exn in
+    let cmj = Obj_dir.Module.cm_file_exn obj_dir m ~kind:(Melange Cmj) in
+    let obj_dir_arg = [ Command.Args.A "-I"; Path (Obj_dir.melange_dir obj_dir) ] in
+    let pkg_name_args =
+      match pkg_name with
+      | None -> []
+      | Some pkg_name -> [ melange_cli.package_name; Package.Name.to_string pkg_name ]
     in
-    let build =
-      let command =
-        let src = Obj_dir.Module.cm_file_exn obj_dir m ~kind:(Melange Cmj) in
-        let obj_dir = [ Command.Args.A "-I"; Path (Obj_dir.melange_dir obj_dir) ] in
-        let melange_package_args =
-          let pkg_name_args =
-            match pkg_name with
-            | None -> []
-            | Some pkg_name ->
-              [ melange_cli.package_name; Package.Name.to_string pkg_name ]
-          in
-          let js_modules_str = Melange.Module_system.to_string module_system in
-          melange_cli.module_type :: js_modules_str :: pkg_name_args
-        in
-        Command.run
-          ~dir:(Super_context.context sctx |> Context.build_dir |> Path.build)
-          ~forbid_action_runner:true
-          compiler
-          [ Command.Args.S obj_dir
-          ; Command.Args.as_any includes
-          ; Command.Args.dyn (Ocaml_flags.get compile_flags Melange)
-          ; As melange_package_args
-          ; A "-o"
-          ; Target js_output
-          ; Dep src
-          ]
+    let command_dir = Super_context.context sctx |> Context.build_dir |> Path.build in
+    Memo.parallel_iter js_outputs ~f:(fun (module_system, js_output) ->
+      let mode =
+        compute_promote_in_source
+          ~promote_in_source
+          ~project
+          ~dir
+          ~output
+          ~mode
+          ~src
+          ~dst:js_output
       in
-      With_targets.map_build command ~f:(fun command ->
-        let open Action_builder.O in
-        let* same_lib_deps = same_lib_emission_deps m in
-        Action_builder.deps same_lib_deps >>> command)
-    in
-    add_rule sctx ~dir ~loc ~mode build)
+      let build =
+        let command =
+          let melange_package_args =
+            let js_modules_str = Melange.Module_system.to_string module_system in
+            melange_cli.module_type :: js_modules_str :: pkg_name_args
+          in
+          Command.run
+            ~dir:command_dir
+            ~forbid_action_runner:true
+            compiler
+            [ Command.Args.S obj_dir_arg
+            ; Command.Args.as_any includes
+            ; Command.Args.dyn (Ocaml_flags.get compile_flags Melange)
+            ; As melange_package_args
+            ; A "-o"
+            ; Target js_output
+            ; Dep cmj
+            ]
+        in
+        With_targets.map_build command ~f:(fun command ->
+          let open Action_builder.O in
+          let* same_lib_deps = same_lib_emission_deps m in
+          Action_builder.deps same_lib_deps >>> command)
+      in
+      add_rule sctx ~dir ~loc ~mode build)
 ;;
 
 (* attach [deps] to the specified [alias] AND the (dune default) [all] alias.
