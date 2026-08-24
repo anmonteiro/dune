@@ -13,7 +13,14 @@ let decode =
   let* () = Dune_lang.Syntax.since Site.dune_site_syntax (0, 1) in
   fields
     (let+ name = field "name" Package.Name.decode
-     and+ libraries = field "libraries" (repeat (located Lib_name.decode))
+     and+ libraries =
+       field
+         "libraries"
+         (let+ loc = loc
+          and+ libraries = repeat (located Lib_name.decode) in
+          match libraries with
+          | [] -> User_error.raise ~loc [ Pp.text "No plugin library defined" ]
+          | _ :: _ -> libraries)
      and+ site = field "site" (located (pair Package.Name.decode Site.decode))
      and+ package = Stanza_pkg.field ~stanza:"plugin"
      and+ optional = field_b "optional" in
