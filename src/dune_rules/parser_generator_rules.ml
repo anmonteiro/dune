@@ -9,9 +9,8 @@ let tool =
       ~where:Original_path
       (Parser_generators.tool for_)
   in
-  fun sctx ~loc ~dir args ~for_ ->
+  fun sctx ~loc ~dir ~build_dir args ~for_ ->
     let tool_bin = tool_bin sctx ~loc ~dir ~for_ in
-    let build_dir = Super_context.context sctx |> Context.build_dir |> Path.build in
     Command.run_dyn_prog
       ~sandbox:Sandbox_config.needs_sandboxing
       ~dir:build_dir
@@ -19,7 +18,7 @@ let tool =
       args
 ;;
 
-let add_rule sctx ~dir ~mode ~flags ~expander (loc, m) ~for_ =
+let add_rule sctx ~dir ~build_dir ~mode ~flags ~expander (loc, m) ~for_ =
   let args =
     let files = Module.Source.files m in
     let file = List.hd files in
@@ -34,7 +33,7 @@ let add_rule sctx ~dir ~mode ~flags ~expander (loc, m) ~for_ =
       in
       [ Command.Args.dyn flags; Command.Args.Dep src; Hidden_targets targets ]
   in
-  let action = tool sctx ~loc ~dir args ~for_ in
+  let action = tool sctx ~loc ~dir ~build_dir args ~for_ in
   let open Memo.O in
   let* mode = Rule_mode_expand.expand_path ~expander ~dir mode in
   Super_context.add_rule sctx ~dir ~mode ~loc action
@@ -54,11 +53,12 @@ let gen_rules sctx ~dir_contents ~dir ~for_ =
     >>| Ml_sources.Parser_generators.modules ~for_:modules_for
   in
   let* expander = Super_context.expander sctx ~dir in
+  let build_dir = Super_context.context sctx |> Context.build_dir |> Path.build in
   let flags =
     let standard = Action_builder.return [] in
     Expander.expand_and_eval_set expander flags ~standard
   in
   Module_trie.to_map targets
   |> Module_name.Map.values
-  |> Memo.parallel_iter ~f:(add_rule sctx ~dir ~mode ~flags ~expander ~for_)
+  |> Memo.parallel_iter ~f:(add_rule sctx ~dir ~build_dir ~mode ~flags ~expander ~for_)
 ;;
