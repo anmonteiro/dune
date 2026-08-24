@@ -18,7 +18,13 @@ let decode =
   let* () = Dune_lang.Syntax.since Stanza.syntax (1, 7) in
   fields
     (let+ loc = loc
-     and+ name = field "name" string
+     and+ name =
+       field
+         "name"
+         (let+ loc, name = located string in
+          match Filename.of_string name with
+          | Some _ -> name
+          | None -> User_error.raise ~loc [ Pp.text "name must be a valid filename" ])
      and+ libraries = field "libraries" (repeat (located Lib_name.decode)) ~default:[]
      and+ pps =
        field
