@@ -23,6 +23,7 @@ let subcommands =
   ; Describe_depexts.command
   ; Describe_location.command
   ; Describe_tests.command
+  ; Describe_melange_outputs.command
   ]
 ;;
 

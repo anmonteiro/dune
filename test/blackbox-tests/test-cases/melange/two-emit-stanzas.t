@@ -74,7 +74,26 @@ module systems and promotion destination.
   >  (enabled_if false))
   > EOF
 
-The command does not exist yet.
+The command reports every output, including promoted paths, and ignores disabled
+stanzas.
 
-  $ dune describe melange-outputs lib/shared.ml >/dev/null 2>&1
-  [1]
+  $ dune describe melange-outputs lib/shared.ml
+  (((module_system commonjs)
+    (build_path _build/default/dist-one/lib/shared.js)
+    (promoted_path (promoted-one/lib/shared.js)))
+   ((module_system commonjs)
+    (build_path _build/default/dist-two/lib/shared.cjs)
+    (promoted_path (promoted-two/lib/shared.cjs)))
+   ((module_system es6)
+    (build_path _build/default/dist-two/lib/shared.mjs)
+    (promoted_path (promoted-two/lib/shared.mjs)))
+   ((module_system commonjs)
+    (build_path _build/default/dist-unpromoted/lib/shared.js)
+    (promoted_path ())))
+
+Entry modules are included too.
+
+  $ dune describe melange-outputs entry.ml
+  (((module_system commonjs)
+    (build_path _build/default/dist-one/entry.js)
+    (promoted_path (promoted-one/entry.js))))
