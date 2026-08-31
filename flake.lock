@@ -1,5 +1,47 @@
 {
   "nodes": {
+    "melange": {
+      "inputs": {
+        "melange-compiler-libs": "melange-compiler-libs",
+        "nixpkgs": [
+          "nixpkgs"
+        ]
+      },
+      "locked": {
+        "lastModified": 1788133605,
+        "narHash": "sha256-FAwJV4kwrDXUtpwitcOWRnhVwouXdagq6h2HA+RT8Zs=",
+        "owner": "melange-re",
+        "repo": "melange",
+        "rev": "18d89f21b317c818d83efbf81f2af4edd799b447",
+        "type": "github"
+      },
+      "original": {
+        "owner": "melange-re",
+        "repo": "melange",
+        "type": "github"
+      }
+    },
+    "melange-compiler-libs": {
+      "inputs": {
+        "nixpkgs": [
+          "melange",
+          "nixpkgs"
+        ]
+      },
+      "locked": {
+        "lastModified": 1785572467,
+        "narHash": "sha256-tiR7epZttgt4KJ7hGDlPQz5uhOmSJIbNtJHne7c8IAg=",
+        "owner": "melange-re",
+        "repo": "melange-compiler-libs",
+        "rev": "f513fb172162b43b5771f67c6a2c1ad50874f2fe",
+        "type": "github"
+      },
+      "original": {
+        "owner": "melange-re",
+        "repo": "melange-compiler-libs",
+        "type": "github"
+      }
+    },
     "nixpkgs": {
       "inputs": {
         "nixpkgs": "nixpkgs_2"
@@ -69,6 +111,7 @@
     },
     "root": {
       "inputs": {
+        "melange": "melange",
         "nixpkgs": "nixpkgs",
         "ocaml-trunk": "ocaml-trunk",
         "revdeps-dune": "revdeps-dune"
