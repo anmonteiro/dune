@@ -634,6 +634,158 @@ matching stanza in deterministic order, with the default first.
      (MODE melange)
      (DEFAULT false)
 
+Only the first matching stanza contributes configurations.
+
+  $ cp mixed/_build/default/.merlin-conf/lib-mixed \
+  >   mixed/_build/default/.merlin-conf/lib-000-mixed-copy
+  $ query_ocaml_merlin_configurations_pp "$PWD/mixed/foo.ml" --root mixed \
+  >   | grep -Eo '\(MODE (ocaml|melange)\)'
+  (MODE ocaml)
+  (MODE melange)
+  $ rm mixed/_build/default/.merlin-conf/lib-000-mixed-copy
+
+Each configuration contains the directives for its own compilation mode.
+
+  $ query_ocaml_merlin_configurations_pp "$PWD/mixed/foo.ml" --root mixed \
+  >   | grep -E 'MODE|STDLIB|\(B .*\.mixed\.objs|pp_(ocaml|melange)' \
+  >   | sed -E 's#-pp "[^"]*/sh #-pp "$SHELL #'
+     (MODE ocaml)
+       (STDLIB /OCAMLC_WHERE)
+       (B $TESTCASE_ROOT/mixed/_build/default/.mixed.objs/byte)
+        (-pp "$SHELL ./pp_ocaml.sh"))
+     (MODE melange)
+       (STDLIB /MELC_STDLIB/melange)
+       (B $TESTCASE_ROOT/mixed/_build/default/.mixed.objs/melange)
+        (-pp "$SHELL ./pp_melange.sh"))
+
+Source metadata is selected independently for every applicable mode.
+
+  $ query_ocaml_merlin_configurations_pp "$PWD/mixed/iface.ml" --root mixed \
+  >   | grep -E 'MODE|KIND|COUNTERPART'
+     (MODE ocaml)
+     (KIND implementation)
+     (COUNTERPART $TESTCASE_ROOT/mixed/iface.mli)
+     (MODE melange)
+     (KIND implementation)
+     (COUNTERPART $TESTCASE_ROOT/mixed/iface.melange.mli)
+
+Interface queries report the authored implementation counterpart.
+
+  $ query_ocaml_merlin_configurations_pp "$PWD/mixed/iface.melange.mli" \
+  >   --root mixed | grep -E 'MODE|KIND|COUNTERPART'
+     (MODE melange)
+     (KIND interface)
+     (COUNTERPART $TESTCASE_ROOT/mixed/iface.ml)
+
+The counterpart field is absent when that mode has no opposite-kind source.
+
+  $ query_ocaml_merlin_configurations_pp "$PWD/mixed/melange_only.ml" \
+  >   --root mixed | grep -E 'MODE|KIND|COUNTERPART'
+     (MODE melange)
+     (KIND implementation)
+
+Exact conditional sources only return the mode in which they apply.
+
+  $ for file in platform.ml platform.melange.ml iface.mli iface.melange.mli \
+  >   melange_only.ml; do
+  >   printf '%s: ' "$file"
+  >   query_ocaml_merlin_configurations_pp "$PWD/mixed/$file" --root mixed \
+  >     | grep -Eo '\(MODE (ocaml|melange)\)' | tr '\n' ' ' | sed 's/ $//'
+  >   echo
+  > done
+  platform.ml: (MODE ocaml)
+  platform.melange.ml: (MODE melange)
+  iface.mli: (MODE ocaml)
+  iface.melange.mli: (MODE melange)
+  melange_only.ml: (MODE melange)
+
+When an exact source does not match, lookup by filename without extension can
+return multiple modes while preserving the source kind selected by the query's
+final extension.
+
+  $ for file in platform.pp.ml iface.pp.mli; do
+  >   printf '%s:\n' "$file"
+  >   query_ocaml_merlin_configurations_pp "$PWD/mixed/$file" --root mixed \
+  >     | grep -E 'MODE|KIND'
+  > done
+  platform.pp.ml:
+     (MODE ocaml)
+     (KIND implementation)
+     (MODE melange)
+     (KIND implementation)
+  iface.pp.mli:
+     (MODE ocaml)
+     (KIND interface)
+     (MODE melange)
+     (KIND interface)
+
+This complete response is the wire-format golden shared with Merlin's decoder
+tests.
+
+  $ query_ocaml_merlin_configurations_pp "$PWD/mixed/iface.ml" --root mixed \
+  >   | sed -E 's#-pp "[^"]*/sh #-pp "$SHELL #' \
+  >   | censor
+  (CONFIGURATIONS
+   ((CONFIG
+     (MODE ocaml)
+     (DEFAULT true)
+     (KIND implementation)
+     (COUNTERPART $PWD/mixed/iface.mli)
+     (DIRECTIVES
+      ((INDEX $PWD/mixed/_build/default/.aaa.objs/cctx.ocaml-index)
+       (INDEX $PWD/mixed/_build/default/.melange_only_lib.objs/cctx.ocaml-index)
+       (INDEX $PWD/mixed/_build/default/.mixed.objs/cctx.ocaml-index)
+       (STDLIB /OCAMLC_WHERE)
+       (SOURCE_ROOT $PWD/mixed)
+       (EXCLUDE_QUERY_DIR)
+       (B $PWD/mixed/_build/default/.mixed.objs/byte)
+       (S $PWD/mixed)
+       (FLG
+        (-short-paths
+         -keep-locs
+         -warn-error
+         +a
+         -g))
+       (FLG
+        (-pp "$SHELL ./pp_ocaml.sh"))
+       (FLG
+        (-open Mixed))
+       (UNIT_NAME mixed__Iface))))
+    (CONFIG
+     (MODE melange)
+     (DEFAULT false)
+     (KIND implementation)
+     (COUNTERPART $PWD/mixed/iface.melange.mli)
+     (DIRECTIVES
+      ((INDEX $PWD/mixed/_build/default/.aaa.objs/melange/cctx.ocaml-index)
+       (INDEX $PWD/mixed/_build/default/.melange_only_lib.objs/melange/cctx.ocaml-index)
+       (INDEX $PWD/mixed/_build/default/.mixed.objs/melange/cctx.ocaml-index)
+       (STDLIB /MELC_STDLIB/melange)
+       (SOURCE_ROOT $PWD/mixed)
+       (EXCLUDE_QUERY_DIR)
+       (B /MELC_STDLIB/__private__/melange_mini_stdlib/melange/.public_cmi_melange)
+       (B /MELC_STDLIB/melange)
+       (B /MELC_STDLIB/melange)
+       (B $PWD/mixed/_build/default/.mixed.objs/melange)
+       (S /MELC_STDLIB)
+       (S /MELC_STDLIB/__private__/melange_mini_stdlib)
+       (S /MELC_STDLIB)
+       (S $PWD/mixed)
+       (FLG
+        (-short-paths
+         -keep-locs
+         -warn-error
+         +a
+         -g))
+       (FLG
+        (-pp "$SHELL ./pp_melange.sh"))
+       (FLG
+        (-open Mixed))
+       (UNIT_NAME mixed__Iface)
+       (SUFFIX ".melange.ml .melange.mli")
+       (SUFFIX ".melange.re .melange.rei")
+       (SUFFIX ".melange.res .melange.resi"))))))
+
 A supported lookup failure has a distinct tagged response.
 
   $ query_ocaml_merlin_configurations_pp "$PWD/mixed/missing.ml" --root mixed
