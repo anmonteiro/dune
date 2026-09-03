@@ -678,6 +678,11 @@ the stanza's default. Melange-only libraries have a default Melange mode.
      (DEFAULT true)
      (KIND implementation)
 
+A supported lookup failure has a distinct tagged response.
+
+  $ query_ocaml_merlin_configurations_pp "$PWD/mixed/missing.ml" --root mixed
+  (CONFIGURATIONS-ERROR "No config found for file missing.ml. Try calling 'dune build'.")
+
 Exact conditional source matches take precedence over another configuration's
 fallback lookup by filename without extension.
 
