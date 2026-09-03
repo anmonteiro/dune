@@ -176,11 +176,7 @@ let melange_args (cctx : Compilation_context.t) (cm_kind : Lib_mode.Cm_kind.t) m
           let package_output = Path.as_in_build_dir_exn package_output in
           let lib_root_dir = Path.build (Compilation_context.dir cctx) in
           let src_dir = Path.build package_output in
-          let build_dir =
-            Compilation_context.super_context cctx
-            |> Super_context.context
-            |> Context.build_dir
-          in
+          let build_dir = Compilation_context.context cctx |> Context.build_dir in
           Path.drop_prefix_exn src_dir ~prefix:lib_root_dir
           |> Path.Local.to_string
           |> Path.Build.relative build_dir
@@ -453,7 +449,7 @@ let build_module ?(force_write_cmi = false) ?(precompiled_cmi = false) cctx m =
 
 let ocamlc_i_action ~deps cctx (m : Module.t) =
   let obj_dir = Compilation_context.obj_dir cctx in
-  let ctx = Compilation_context.super_context cctx |> Super_context.context in
+  let ctx = Compilation_context.context cctx in
   let src = Option.value_exn (Module.file m ~ml_kind:Impl) in
   let original = Module.source_without_pp m ~ml_kind:Impl in
   let sandbox =
