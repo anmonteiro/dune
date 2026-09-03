@@ -54,6 +54,44 @@ end = struct
 
     let make_error msg = Sexp.(List [ List [ Atom "ERROR"; Atom msg ] ])
 
+    let make_configurations_error msg =
+      Sexp.(List [ Atom "CONFIGURATIONS-ERROR"; Atom msg ])
+    ;;
+
+    let file_configuration
+          ({ mode; is_default; kind; counterpart; directives } :
+            Merlin.Processed.file_configuration)
+      =
+      let open Sexp in
+      let kind =
+        match kind with
+        | Merlin.Processed.Implementation -> "implementation"
+        | Interface -> "interface"
+      in
+      let counterpart =
+        match counterpart with
+        | None -> []
+        | Some path ->
+          [ List [ Atom "COUNTERPART"; Atom (Path.to_absolute_filename path) ] ]
+      in
+      let fields =
+        [ List [ Atom "MODE"; Atom (Compilation_mode.to_wire mode) ]
+        ; List [ Atom "DEFAULT"; Atom (if is_default then "true" else "false") ]
+        ; List [ Atom "KIND"; Atom kind ]
+        ]
+        @ counterpart
+        @ [ List [ Atom "DIRECTIVES"; directives ] ]
+      in
+      List (Atom "CONFIG" :: fields)
+    ;;
+
+    let make_configurations configurations =
+      let configurations =
+        Nonempty_list.to_list_map configurations ~f:file_configuration
+      in
+      Sexp.List [ Atom "CONFIGURATIONS"; List configurations ]
+    ;;
+
     let to_stdout (t : t) =
       Csexp.to_channel stdout t;
       flush stdout
@@ -63,6 +101,7 @@ end = struct
   module Commands = struct
     type t =
       | File of string
+      | File_configurations of string
       | Halt
       | Unknown of string
 
@@ -74,6 +113,7 @@ end = struct
         (match sexp with
          | Atom "Halt" -> Halt
          | List [ Atom "File"; Atom path ] -> File path
+         | List [ Atom "File-Configurations"; Atom path ] -> File_configurations path
          | sexp ->
            let msg = Printf.sprintf "Bad input: %s" (Sexp.to_string sexp) in
            Unknown msg)
@@ -203,6 +243,17 @@ end = struct
     >>| Merlin_conf.to_stdout
   ;;
 
+  let print_merlin_configurations ~selected_context file =
+    to_local ~selected_context file
+    >>| (function
+     | Error error -> Merlin_conf.make_configurations_error error
+     | Ok file ->
+       (match load_merlin_configurations file with
+        | Ok configurations -> Merlin_conf.make_configurations configurations
+        | Error error -> Merlin_conf.make_configurations_error error))
+    >>| Merlin_conf.to_stdout
+  ;;
+
   let dump ~selected_context ~format s =
     to_local ~selected_context s
     >>| function
@@ -226,6 +277,9 @@ end = struct
       | Halt -> Fiber.return ()
       | File path ->
         let* () = print_merlin_conf ~selected_context path in
+        main ()
+      | File_configurations path ->
+        let* () = print_merlin_configurations ~selected_context path in
         main ()
       | Unknown msg ->
         Merlin_conf.to_stdout (Merlin_conf.make_error msg);
