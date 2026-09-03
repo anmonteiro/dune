@@ -99,12 +99,11 @@ let get_lib_requires ~dir ~scope (lib : Library.t) =
 (* Collect all compile command entries from the workspace *)
 let collect_entries sctx =
   let ctx = Super_context.context sctx in
+  let build_dir = Context.build_dir ctx in
   let open Memo.O in
   let* dune_files = Dune_load.dune_files (Context.name ctx) in
   Dune_file.fold_static_stanzas dune_files ~init:[] ~f:(fun dune_file stanza acc ->
-    let dir =
-      Path.Build.append_source (Context.build_dir ctx) (Dune_file.dir dune_file)
-    in
+    let dir = Path.Build.append_source build_dir (Dune_file.dir dune_file) in
     (let* expander = Super_context.expander sctx ~dir
      and* dir_contents = Dir_contents.get sctx ~dir
      and* scope = Scope.DB.find_by_dir dir in
