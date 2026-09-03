@@ -261,6 +261,7 @@ let make_default_env_node
 
 let create ~(context : Context.t) ~(host : t option) ~packages ~stanzas =
   let context_name = Context.name context in
+  let build_dir = Context.build_dir context in
   let env =
     Memo.lazy_ ~name:"super-context-environment" (fun () ->
       let* base =
@@ -281,15 +282,15 @@ let create ~(context : Context.t) ~(host : t option) ~packages ~stanzas =
     let public_libs = Scope.DB.public_libs context_name in
     let artifacts_host, public_libs_host, host_build_dir =
       match Context.for_host context with
-      | None -> artifacts, public_libs, Memo.return (Context.build_dir context)
+      | None -> artifacts, public_libs, Memo.return build_dir
       | Some host ->
         let artifacts = host >>= Artifacts_db.get in
         let public_libs = host >>| Context.name >>= Scope.DB.public_libs in
         artifacts, public_libs, host >>| Context.build_dir
     in
-    let scope = Scope.DB.find_by_dir (Context.build_dir context) in
+    let scope = Scope.DB.find_by_dir build_dir in
     let scope_host = host_build_dir >>= Scope.DB.find_by_dir in
-    let+ project = Dune_load.find_project ~dir:(Context.build_dir context) in
+    let+ project = Dune_load.find_project ~dir:build_dir in
     Expander.make_root
       ~project
       ~scope
