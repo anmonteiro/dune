@@ -623,6 +623,22 @@ The old `File` query still returns the default OCaml Merlin configuration.
   $ query_ocaml_merlin_pp "$PWD/mixed/foo.ml" --root mixed | grep -E 'MELC_STDLIB|\.objs/melange|pp_melange'
   [1]
 
+The plural request returns every applicable configuration from the first
+matching stanza in deterministic order, with the default first.
+
+  $ query_ocaml_merlin_configurations_pp "$PWD/mixed/foo.ml" --root mixed \
+  >   | grep -E 'CONFIGURATIONS|MODE|DEFAULT'
+  (CONFIGURATIONS
+     (MODE ocaml)
+     (DEFAULT true)
+     (MODE melange)
+     (DEFAULT false)
+
+A supported lookup failure has a distinct tagged response.
+
+  $ query_ocaml_merlin_configurations_pp "$PWD/mixed/missing.ml" --root mixed
+  (CONFIGURATIONS-ERROR "No config found for file missing.ml. Try calling 'dune build'.")
+
 Exact conditional source matches take precedence over another configuration's
 fallback lookup by filename without extension.
 
