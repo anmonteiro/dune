@@ -184,22 +184,23 @@ module L = struct
       let ocaml = lib_config.ocaml_version in
       let visible_cmi =
         match project with
-        | None -> fun _ -> true
+        | None -> fun _ _ -> true
         | Some project ->
           let check_project lib =
             match Lib.project lib with
             | None -> false
             | Some project' -> Dune_project.equal project project'
           in
-          fun lib ->
-            (match Lib_info.status (Lib.info lib) with
+          fun lib info ->
+            (match Lib_info.status info with
              | Private (_, Some _) | Installed_private -> check_project lib
              | _ -> true)
       in
       let dirs =
         List.fold_left ts ~init:Path.Map.empty ~f:(fun acc t ->
-          let obj_dir = Lib_info.obj_dir (Lib.info t) in
-          let visible_cmi = visible_cmi t in
+          let info = Lib.info t in
+          let obj_dir = Lib_info.obj_dir info in
+          let visible_cmi = visible_cmi t info in
           let acc = add_public_dir ocaml ~visible_cmi obj_dir acc mode in
           match mode.lib_mode with
           | Melange | Ocaml Byte -> acc
