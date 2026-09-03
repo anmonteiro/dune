@@ -102,6 +102,7 @@ let gen_rules sctx t ~dir ~scope =
       ]
   in
   let loc = t.loc in
+  let build_dir = Super_context.context sctx |> Context.build_dir in
   (* Files checked by cinaps *)
   let* cinapsed_files =
     Source_tree.files_of (Path.Build.drop_build_context_exn dir)
@@ -112,9 +113,7 @@ let gen_rules sctx t ~dir ~scope =
           t.files
           (Path.Source.basename p |> Filename.to_string)
           ~standard:Predicate_lang.true_
-      then
-        Some
-          (Path.Build.append_source (Super_context.context sctx |> Context.build_dir) p)
+      then Some (Path.Build.append_source build_dir p)
       else None)
   in
   let cinaps_dir =
