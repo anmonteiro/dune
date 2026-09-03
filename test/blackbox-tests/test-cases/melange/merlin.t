@@ -600,6 +600,21 @@ Mixed OCaml/Melange libraries store their Merlin data in one stanza file.
   mixed/_build/default/.merlin-conf/lib-melange_only_lib
   mixed/_build/default/.merlin-conf/lib-mixed
 
+An incompatible configuration for another stanza does not prevent finding the
+configuration that owns the requested file.
+
+  $ cp mixed/_build/default/.merlin-conf/lib-aaa lib-aaa.save
+  $ chmod u+w mixed/_build/default/.merlin-conf/lib-aaa
+  $ printf invalid > mixed/_build/default/.merlin-conf/lib-aaa
+  $ query_ocaml_merlin_pp "$PWD/mixed/foo.ml" --root mixed \
+  >   | grep -E 'STDLIB|\(B .*\.mixed\.objs'
+   (STDLIB /OCAMLC_WHERE)
+   (B $TESTCASE_ROOT/mixed/_build/default/.mixed.objs/byte)
+  $ query_ocaml_merlin_pp "$PWD/mixed/aaa.ml" --root mixed \
+  >   | grep -Eo 'incompatible'
+  incompatible
+  $ mv lib-aaa.save mixed/_build/default/.merlin-conf/lib-aaa
+
 The old `File` query still returns the default OCaml Merlin configuration.
 
   $ query_ocaml_merlin_pp "$PWD/mixed/foo.ml" --root mixed | grep -E 'STDLIB|\(B .*\.mixed\.objs'
