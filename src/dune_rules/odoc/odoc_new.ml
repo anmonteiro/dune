@@ -228,9 +228,10 @@ let add_rule sctx =
 *)
 let libs_maps_def =
   let f (ctx, libs) =
-    let* db = Scope.DB.public_libs (Context.name ctx)
+    let context_name = Context.name ctx in
+    let* db = Scope.DB.public_libs context_name
     and* all_packages_entries =
-      let* findlib = Findlib.create (Context.name ctx) in
+      let* findlib = Findlib.create context_name in
       Memo.parallel_map ~f:(Findlib.find findlib) libs
       >>| List.filter_map ~f:Result.to_option
     in
