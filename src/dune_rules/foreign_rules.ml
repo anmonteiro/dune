@@ -224,12 +224,11 @@ let base_flags ~(kind : Foreign_language.t) ~use_standard_flags ~ocaml_config =
          ])
 ;;
 
-let compilation_flags ~sctx ~dir ~expander ~loc ~(src : Foreign.Source.t) =
+let compilation_flags ~sctx ~dir ~expander ~loc ~ocaml ~(src : Foreign.Source.t) =
   let open Action_builder.O in
+  let { Ocaml_toolchain.ocaml_config; _ } = ocaml in
   let kind = Foreign.Source.language src in
-  let ctx = Super_context.context sctx in
   let* project = Action_builder.of_memo (Dune_load.find_project ~dir) in
-  let* ocaml = Action_builder.of_memo (Context.ocaml ctx) in
   let+ user_flags =
     match Foreign.Source.kind src with
     | Ctypes field ->
@@ -252,27 +251,25 @@ let compilation_flags ~sctx ~dir ~expander ~loc ~(src : Foreign.Source.t) =
   base_flags
     ~kind
     ~use_standard_flags:(Dune_project.use_standard_c_and_cxx_flags project)
-    ~ocaml_config:ocaml.ocaml_config
+    ~ocaml_config
   @ user_flags
 ;;
 
-let c_compile_args ~sctx ~dir ~expander ~loc ~src ~include_flags =
+let c_compile_args ~sctx ~dir ~expander ~loc ~ocaml ~src ~include_flags =
+  let { Ocaml_toolchain.lib_config; _ } = ocaml in
   Command.Args.S
     [ Dyn
         (Action_builder.map
-           (compilation_flags ~sctx ~dir ~expander ~loc ~src)
+           (compilation_flags ~sctx ~dir ~expander ~loc ~ocaml ~src)
            ~f:(fun flags -> Command.Args.As flags))
-    ; Dyn
-        (let open Action_builder.O in
-         let+ ocaml =
-           Action_builder.of_memo (Context.ocaml (Super_context.context sctx))
-         in
-         Command.Args.S [ A "-I"; Path ocaml.lib_config.stdlib_dir ])
+    ; S [ A "-I"; Path lib_config.stdlib_dir ]
     ; include_flags
     ]
 ;;
 
-let build_c ~sctx ~dir ~expander ~include_flags (loc, (src : Foreign.Source.t), dst) =
+let build_c ~sctx ~dir ~expander ~include_flags ~ocaml (loc, (src : Foreign.Source.t), dst)
+  =
+  let { Ocaml_toolchain.ocaml_config; lib_config; _ } = ocaml in
   let env, sandbox =
     match Foreign.Source.kind src with
     | Stubs stubs ->
@@ -286,8 +283,6 @@ let build_c ~sctx ~dir ~expander ~include_flags (loc, (src : Foreign.Source.t), 
     | Ctypes ctypes ->
       Dep_conf_eval.unnamed Sandbox_config.needs_sandboxing ctypes.deps ~expander
   in
-  let ctx = Super_context.context sctx in
-  let* ocaml = Context.ocaml ctx in
   (* Emit warning for Stubs case when standard flags are overridden *)
   let* () =
     match Foreign.Source.kind src with
@@ -326,7 +321,7 @@ let build_c ~sctx ~dir ~expander ~include_flags (loc, (src : Foreign.Source.t), 
           ]
   in
   let output_param =
-    match ocaml.lib_config.ccomp_type with
+    match lib_config.ccomp_type with
     | Msvc -> [ Command.Args.Concat ("", [ A "/Fo"; Target dst ]) ]
     | Cc | Other _ -> [ A "-o"; Target dst ]
   in
@@ -342,9 +337,9 @@ let build_c ~sctx ~dir ~expander ~include_flags (loc, (src : Foreign.Source.t), 
          ~loc:None
          ~dir
          sctx
-         (Ocaml_config.c_compiler ocaml.ocaml_config)
+         (Ocaml_config.c_compiler ocaml_config)
      in
-     let stdlib_dir = ocaml.lib_config.stdlib_dir in
+     let stdlib_dir = lib_config.stdlib_dir in
      let caml_headers =
        File_selector.of_glob ~dir:(Path.relative stdlib_dir "caml") (Glob.of_string "*.h")
      in
@@ -353,7 +348,7 @@ let build_c ~sctx ~dir ~expander ~include_flags (loc, (src : Foreign.Source.t), 
        ~env
        ~sandbox
        c_compiler
-       [ c_compile_args ~sctx ~dir ~expander ~loc ~src ~include_flags
+       [ c_compile_args ~sctx ~dir ~expander ~loc ~ocaml ~src ~include_flags
        ; Hidden_deps (Dep.Set.singleton (Dep.file_selector caml_headers))
        ; S output_param
        ; A "-c"
@@ -402,13 +397,12 @@ let build_o_files
       ~requires
       ~dir_contents
   =
-  let* ext_obj =
-    let+ ocaml =
-      let ctx = Super_context.context sctx in
-      Context.ocaml ctx
-    in
-    ocaml.lib_config.ext_obj
+  let* ocaml =
+    let ctx = Super_context.context sctx in
+    Context.ocaml ctx
   in
+  let { Ocaml_toolchain.lib_config; _ } = ocaml in
+  let ext_obj = lib_config.ext_obj in
   Foreign.Sources.to_list_map
     foreign_sources
     ~f:(fun obj (loc, (src : Foreign.Source.t)) ->
@@ -417,7 +411,7 @@ let build_o_files
           build_include_flags ~sctx ~dir ~expander ~dir_contents ~requires ~src
         in
         let dst = Path.Build.relative dir (obj ^ Filename.Extension.to_string ext_obj) in
-        let+ () = build_c ~sctx ~dir ~expander ~include_flags (loc, src, dst) in
+        let+ () = build_c ~sctx ~dir ~expander ~include_flags ~ocaml (loc, src, dst) in
         dst
       in
       Foreign.Source.mode src, Path.build build_file)
