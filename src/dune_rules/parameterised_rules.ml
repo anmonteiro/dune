@@ -108,8 +108,8 @@ let build_jsoo ~sctx ~obj_dir ~dir ~lib ~mode ~config =
   |> Super_context.add_rule ~dir sctx
 ;;
 
-let build_archive ~sctx ~mode ~obj_dir ~lib ~top_sorted_modules ~modules =
-  let lib_info = Lib_info.as_local_exn (Lib.info lib) in
+let build_archive ~sctx ~mode ~obj_dir ~lib_info ~top_sorted_modules ~modules =
+  let lib_info = Lib_info.as_local_exn lib_info in
   let target = lib_archive ~mode lib_info in
   let hidden_targets =
     match mode, Lib_info.native_archives lib_info with
@@ -352,7 +352,8 @@ let instantiate ~sctx lib =
          ~f:(List.map ~f:(Lib.Parameterised.for_instance ~build_dir ~ext_lib))
   in
   let lib = Lib.Parameterised.for_instance ~build_dir ~ext_lib lib in
-  let obj_dir = Lib_info.obj_dir (Lib.info lib) |> Obj_dir.as_local_exn in
+  let lib_info = Lib.info lib in
+  let obj_dir = Lib_info.obj_dir lib_info |> Obj_dir.as_local_exn in
   let top_sorted_modules = Dep_graph.top_closed_implementations dep_graph impl_only in
   Memo.parallel_iter Ocaml.Mode.all ~f:(fun mode ->
     let* modules =
@@ -366,7 +367,7 @@ let instantiate ~sctx lib =
         ~lib
         impl_only
     in
-    build_archive ~sctx ~mode ~obj_dir ~lib ~top_sorted_modules ~modules)
+    build_archive ~sctx ~mode ~obj_dir ~lib_info ~top_sorted_modules ~modules)
 ;;
 
 let instantiate_jsoo ~sctx lib s_config =
