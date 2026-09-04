@@ -468,12 +468,15 @@ let js_of_ocaml_rule
   |> Action_builder.With_targets.add_directories ~directory_targets
 ;;
 
-let jsoo_runtime_files ~(mode : Js_of_ocaml.Mode.t) libs =
-  List.concat_map libs ~f:(fun t ->
-    (match mode with
-     | JS -> Lib_info.jsoo_runtime
-     | Wasm -> Lib_info.wasmoo_runtime)
-      (Lib.info t))
+let jsoo_runtime_files_of_lib ~(mode : Js_of_ocaml.Mode.t) lib =
+  (match mode with
+   | JS -> Lib_info.jsoo_runtime
+   | Wasm -> Lib_info.wasmoo_runtime)
+    (Lib.info lib)
+;;
+
+let jsoo_runtime_files ~mode libs =
+  List.concat_map libs ~f:(jsoo_runtime_files_of_lib ~mode)
 ;;
 
 module Runtime_key : sig
@@ -523,7 +526,7 @@ end = struct
     let of_libs ~mode libs =
       let libs_with_runtime =
         List.filter libs ~f:(fun lib ->
-          not (List.is_empty (jsoo_runtime_files ~mode [ lib ])))
+          not (List.is_empty (jsoo_runtime_files_of_lib ~mode lib)))
       in
       (* Keep the topological order from [requires_link]: jsoo runtime
          contents are concatenated and later files override earlier ones,
