@@ -678,15 +678,24 @@ let resolve_compile_info (lib : Library.t) ~dir ~scope =
   lib_id, local_lib, compile_info
 ;;
 
-let compile_context_data (lib : Library.t) ~dir_contents ~scope ~for_ =
-  let dir = Dir_contents.dir dir_contents in
+let compile_context_data_from_resolved
+      ~dir_contents
+      ~scope
+      ~for_
+      (lib_id, local_lib, compile_info)
+  =
   let libs = Scope.libs scope in
-  let* lib_id, local_lib, compile_info = resolve_compile_info lib ~dir ~scope in
   let+ source_modules =
     Dir_contents.ml dir_contents ~for_ >>= Ml_sources.modules ~libs ~for_:(Library lib_id)
   in
   let parameters = Lib.parameters local_lib in
   local_lib, compile_info, source_modules, parameters
+;;
+
+let compile_context_data (lib : Library.t) ~dir_contents ~scope ~for_ =
+  let dir = Dir_contents.dir dir_contents in
+  let* resolved = resolve_compile_info lib ~dir ~scope in
+  compile_context_data_from_resolved ~dir_contents ~scope ~for_ resolved
 ;;
 
 let compile_context (lib : Library.t) ~sctx ~dir_contents ~expander ~scope ~for_ =
@@ -711,9 +720,9 @@ let compile_context (lib : Library.t) ~sctx ~dir_contents ~expander ~scope ~for_
 let rules (lib : Library.t) ~sctx ~dir_contents ~expander ~scope =
   let dir = Dir_contents.dir dir_contents in
   let buildable = lib.buildable in
-  let f ~for_ ~for_merlin =
+  let f ~for_ ~for_merlin resolved =
     let* local_lib, compile_info, source_modules, parameters =
-      compile_context_data lib ~dir_contents ~scope ~for_
+      compile_context_data_from_resolved ~dir_contents ~scope ~for_ resolved
     in
     let lib_info = Lib.info local_lib in
     let* cctx =
@@ -787,7 +796,8 @@ let rules (lib : Library.t) ~sctx ~dir_contents ~expander ~scope =
     in
     let for_merlin = Compilation_mode.Set.for_merlin modes in
     Memo.parallel_map (Compilation_mode.Set.to_list modes) ~f:(fun for_ ->
-      let* _, _, compile_info = resolve_compile_info lib ~dir ~scope in
+      let* resolved = resolve_compile_info lib ~dir ~scope in
+      let _, _, compile_info = resolved in
       let* () = Buildable_rules.gen_select_rules sctx compile_info ~dir ~for_ in
       let+ r =
         Buildable_rules.with_lib_deps
@@ -796,7 +806,7 @@ let rules (lib : Library.t) ~sctx ~dir_contents ~expander ~scope =
           ~dir
           ~f:(fun () ->
             let for_merlin = Compilation_mode.equal for_ for_merlin in
-            f ~for_ ~for_merlin)
+            f ~for_ ~for_merlin resolved)
       in
       for_, Some r)
   in
