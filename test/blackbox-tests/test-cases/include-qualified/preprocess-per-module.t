@@ -18,6 +18,25 @@ Regression test for GH-15578: qualified modules can be selected in
 
   $ dune build
 
+Explicit references must name modules selected by the stanza:
+
+  $ cat >dune <<'EOF'
+  > (include_subdirs qualified)
+  > (library
+  >  (name x)
+  >  (preprocess
+  >   (per_module
+  >    ((action
+  >      (run cat %{input-file})) Missing))))
+  > EOF
+
+  $ dune build
+  File "dune", line 7, characters 30-37:
+  7 |      (run cat %{input-file})) Missing))))
+                                    ^^^^^^^
+  Error: Module Missing doesn't exist.
+  [1]
+
 Using a slash instead does not work either:
 
   $ cat >dune <<'EOF'
