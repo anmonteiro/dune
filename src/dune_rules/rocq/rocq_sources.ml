@@ -177,16 +177,13 @@ let mlg_files ~sctx ~dir ~modules =
   let open Memo.O in
   let+ standard =
     (* All .mlg files in the current directory *)
+    let build_dir = Super_context.context sctx |> Context.build_dir in
     let filter_mlg file =
       if
         Filename.Extension.Or_empty.check
           (Path.Source.extension file)
           Filename.Extension.mlg
-      then
-        Some
-          (Path.Build.append_source
-             (Super_context.context sctx |> Context.build_dir)
-             file)
+      then Some (Path.Build.append_source build_dir file)
       else None
     in
     Source_tree.files_of (Path.Build.drop_build_context_exn dir)
