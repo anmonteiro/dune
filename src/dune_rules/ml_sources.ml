@@ -669,33 +669,45 @@ let has_instances (lib : Buildable.t) =
     | Direct _ | Re_export _ | Select _ -> false)
 ;;
 
-let validate_qualified_module_references ~include_subdirs per_module =
+let validate_module_references ~include_subdirs ~modules per_module =
+  let module_paths =
+    Module_trie.fold modules ~init:Module_name.Path.Set.empty ~f:(fun module_ acc ->
+      Module_name.Path.Set.add acc (Module.path module_))
+  in
   Module_reference.Per_item.explicit_references per_module
   |> List.iter ~f:(fun reference ->
-    if
-      Module_reference.is_qualified reference
-      &&
-      match include_subdirs with
-      | Include_subdirs.Include Qualified -> false
-      | No | Include Unqualified -> true
-    then
-      User_error.raise
-        ~loc:(Module_reference.loc reference)
-        [ Pp.textf
-            "Qualified module reference %S may only be used with (include_subdirs \
-             qualified)."
-            (Module_reference.to_string reference)
-        ])
+    if not (Module_reference.is_legacy reference)
+    then (
+      let path = Module_reference.path reference in
+      if
+        Module_reference.is_qualified reference
+        &&
+        match include_subdirs with
+        | Include_subdirs.Include Qualified -> false
+        | No | Include Unqualified -> true
+      then
+        User_error.raise
+          ~loc:(Module_reference.loc reference)
+          [ Pp.textf
+              "Qualified module reference %S may only be used with (include_subdirs \
+               qualified)."
+              (Module_reference.to_string reference)
+          ];
+      if not (Module_name.Path.Set.mem module_paths path)
+      then
+        User_error.raise
+          ~loc:(Module_reference.loc reference)
+          [ Pp.textf "Module %s doesn't exist." (Module_reference.to_string reference) ]))
 ;;
 
-let validate_buildable_preprocessing ~include_subdirs ~for_ buildable =
+let validate_buildable_preprocessing ~include_subdirs ~modules ~for_ buildable =
   let preprocess =
     match (for_ : Compilation_mode.t) with
     | Ocaml -> buildable.Buildable.preprocess
     | Melange -> buildable.melange_preprocess
   in
-  validate_qualified_module_references ~include_subdirs preprocess.config;
-  validate_qualified_module_references ~include_subdirs buildable.lint
+  validate_module_references ~include_subdirs ~modules preprocess.config;
+  validate_module_references ~include_subdirs ~modules buildable.lint
 ;;
 
 let make_lib_modules
@@ -785,7 +797,9 @@ let make_lib_modules
       ~version
       ~for_
   in
-  let () = validate_buildable_preprocessing ~include_subdirs ~for_ lib.buildable in
+  let () =
+    validate_buildable_preprocessing ~include_subdirs ~modules ~for_ lib.buildable
+  in
   let () =
     match lib.stdlib, include_subdirs with
     | Some stdlib, Include Qualified ->
@@ -1138,7 +1152,11 @@ let modules_of_stanzas =
         ~for_:Ocaml
     in
     let () =
-      validate_buildable_preprocessing ~include_subdirs ~for_:Ocaml exes.buildable
+      validate_buildable_preprocessing
+        ~include_subdirs
+        ~modules
+        ~for_:Ocaml
+        exes.buildable
     in
     let has_instances = has_instances exes.buildable in
     let modules =
@@ -1270,10 +1288,11 @@ let modules_of_stanzas =
                    mel.modules
                in
                let () =
-                 validate_qualified_module_references
+                 validate_module_references
                    ~include_subdirs
+                   ~modules
                    mel.preprocess.config;
-                 validate_qualified_module_references ~include_subdirs mel.lint
+                 validate_module_references ~include_subdirs ~modules mel.lint
                in
                let modules =
                  Modules.make_wrapped
