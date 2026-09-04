@@ -1061,11 +1061,11 @@ let extraction_context ~context ~scope (buildable : Rocq_stanza.Buildable.t) =
 
 let setup_theory_rules ~sctx ~dir ~dir_contents (s : Rocq_stanza.Theory.t) =
   let* scope = Scope.DB.find_by_dir dir in
+  let context = Super_context.context sctx in
   let name = s.name in
   let rocq_lang_version = s.buildable.rocq_lang_version in
   let theory, theories_deps, ml_flags, plugin_ocamlpath =
-    let context = Super_context.context sctx |> Context.name in
-    theory_context ~context ~scope ~name s.buildable
+    theory_context ~context:(Context.name context) ~scope ~name s.buildable
   in
   let wrapper_name = Rocq_lib_name.wrapper (snd s.name) in
   let use_corelib = s.buildable.use_corelib in
@@ -1089,7 +1089,7 @@ let setup_theory_rules ~sctx ~dir ~dir_contents (s : Rocq_stanza.Theory.t) =
     let* theories = Resolve.Memo.read theories in
     source_rule ~sctx theories
   in
-  let rocqc_dir = Super_context.context sctx |> Context.build_dir in
+  let rocqc_dir = Context.build_dir context in
   let* mode = select_native_mode ~sctx ~dir s.buildable in
   (* First we setup the rule calling rocqdep *)
   let boot_flags = bootstrap_flags ~scope ~use_corelib ~wrapper_name rocq_modules in
