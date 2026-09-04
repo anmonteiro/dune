@@ -328,11 +328,17 @@ let ppx_driver_and_flags_internal
   ppx_driver_exe, flags @ cookies
 ;;
 
+let ppx_scope_data scope pps =
+  let libs = Lib.DB.resolve_pps (Scope.libs scope) pps in
+  let dune_version = Scope.project scope |> Dune_project.dune_version in
+  libs, dune_version
+;;
+
 let ppx_driver_and_flags ctx ~lib_name ~expander ~scope ~loc ~flags pps =
   let open Action_builder.O in
-  let* libs = Resolve.Memo.read (Lib.DB.resolve_pps (Scope.libs scope) pps) in
+  let libs, dune_version = ppx_scope_data scope pps in
+  let* libs = Resolve.Memo.read libs in
   let+ exe, flags =
-    let dune_version = Scope.project scope |> Dune_project.dune_version in
     ppx_driver_and_flags_internal ctx ~loc ~expander ~dune_version ~lib_name ~flags libs
   and+ driver =
     let* libs = Resolve.Memo.read (Lib.closure libs ~linking:true ~for_) in
@@ -344,8 +350,8 @@ let ppx_driver_and_flags ctx ~lib_name ~expander ~scope ~loc ~flags pps =
 
 let get_ppx_driver ctx ~loc ~expander ~scope ~lib_name ~flags pps =
   let open Action_builder.O in
-  let* libs = Resolve.Memo.read (Lib.DB.resolve_pps (Scope.libs scope) pps) in
-  let dune_version = Scope.project scope |> Dune_project.dune_version in
+  let libs, dune_version = ppx_scope_data scope pps in
+  let* libs = Resolve.Memo.read libs in
   ppx_driver_and_flags_internal ctx ~loc ~expander ~dune_version ~lib_name ~flags libs
 ;;
 
