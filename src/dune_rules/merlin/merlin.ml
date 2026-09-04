@@ -741,9 +741,9 @@ module Unprocessed = struct
       Some { Processed.flag = Processed.Pp_kind.Ppx; args }
   ;;
 
-  let src_dirs sctx lib ~for_ =
+  let src_dirs sctx lib info ~for_ =
     match Lib.Local.of_lib lib with
-    | None -> Lib.info lib |> Lib_info.src_dir |> Path.Set.singleton |> Memo.return
+    | None -> Lib_info.src_dir info |> Path.Set.singleton |> Memo.return
     | Some lib ->
       Dir_contents.modules_of_local_lib sctx lib ~for_
       >>| Modules.source_dirs
@@ -768,8 +768,9 @@ module Unprocessed = struct
         , Path.Set.union obj_dirs1 obj_dirs2
         , Path.Set.union cmt_dirs1 cmt_dirs2 ))
       ~f:(fun lib ->
-        let+ src_dirs = src_dirs sctx lib ~for_ in
-        let obj_dir = Lib.info lib |> Lib_info.obj_dir in
+        let info = Lib.info lib in
+        let+ src_dirs = src_dirs sctx lib info ~for_ in
+        let obj_dir = Lib_info.obj_dir info in
         let public_obj_dir = obj_dir_of_lib `Public for_ obj_dir in
         let cmi_kind : Lib_mode.Cm_kind.t =
           match for_ with
