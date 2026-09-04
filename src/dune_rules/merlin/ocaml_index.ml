@@ -90,10 +90,7 @@ let cctx_rules cctx =
       Command.Args.Hidden_deps deps
     in
     let context_dir =
-      Compilation_context.context cctx
-      |> Context.name
-      |> Context_name.build_dir
-      |> Path.build
+      Compilation_context.context cctx |> Context.build_dir |> Path.build
     in
     (* Indexation also depends on the current stanza's modules *)
     let modules_deps =
