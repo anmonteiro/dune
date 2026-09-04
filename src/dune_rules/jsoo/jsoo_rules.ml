@@ -904,13 +904,9 @@ let setup_shared_runtime_rule sctx s_config s_digest =
     let runtime_files = jsoo_runtime_files ~mode libs in
     let dir = in_build_dir build_context ~config [ ".runtime"; s_digest ] in
     let target =
-      in_build_dir
-        build_context
-        ~config
-        [ ".runtime"
-        ; s_digest
-        ; "runtime" ^ Filename.Extension.to_string (Js_of_ocaml.Ext.runtime ~mode)
-        ]
+      Path.Build.relative
+        dir
+        ("runtime" ^ Filename.Extension.to_string (Js_of_ocaml.Ext.runtime ~mode))
     in
     js_of_ocaml_rule
       sctx
