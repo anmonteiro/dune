@@ -692,7 +692,7 @@ let jsoo_archives ~mode ctx config lib =
         (in_build_dir
            ctx
            ~config
-           [ Lib_name.to_string (Lib.name lib)
+           [ Lib_name.to_string (Lib_info.name info)
            ; with_js_ext ~mode (Path.basename archive |> Filename.to_string)
            ]))
 ;;
