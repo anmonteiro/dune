@@ -395,9 +395,10 @@ let ml_flags_and_plugin_ocamlpath
     let+ all_libs, _legacy_theories =
       libs_of_theory ~lib_db ~theories_deps buildable.plugins
     in
+    let all_libs_with_info = List.map all_libs ~f:(fun lib -> lib, Lib.info lib) in
     let plugin_loc = List.hd_opt buildable.plugins |> Option.map ~f:fst in
-    List.iter all_libs ~f:(fun lib ->
-      match Lib_info.status (Lib.info lib) with
+    List.iter all_libs_with_info ~f:(fun (lib, info) ->
+      match Lib_info.status info with
       | Public _ | Installed -> ()
       | Installed_private | Private _ ->
         let name = Lib.name lib |> Lib_name.to_string in
@@ -407,7 +408,7 @@ let ml_flags_and_plugin_ocamlpath
     let findlib_plugin_flags = Util.include_flags all_libs in
     let ml_flags = Command.Args.S [ findlib_plugin_flags ] in
     let plugin_packages =
-      List.filter_map all_libs ~f:(fun lib -> Lib.info lib |> Lib_info.package)
+      List.filter_map all_libs_with_info ~f:(fun (_, info) -> Lib_info.package info)
       |> Package.Name.Set.of_list
     in
     ml_flags, plugin_packages
