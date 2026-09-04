@@ -185,7 +185,7 @@ module Index = struct
       of_external_loc maps loc
     with
     | Some loc -> loc
-    | None -> [ Sub_dir (Lib_name.to_string (Lib.name lib)); Top_dir Other ]
+    | None -> [ Sub_dir (Lib_name.to_string name); Top_dir Other ]
   ;;
 
   let of_pkg maps pkg =
