@@ -100,15 +100,14 @@ let libs_in_dir ~scope ~dir =
   >>= function
   | None -> Memo.return []
   | Some dune_file ->
+    let src_dir = Dune_file.dir dune_file in
+    let libs = Scope.libs scope in
     Dune_file.stanzas dune_file
     >>= Memo.List.filter_map ~f:(fun stanza ->
       match Stanza.repr stanza with
       | Library.T lib ->
-        let lib_id =
-          let src_dir = Dune_file.dir dune_file in
-          Library.to_lib_id ~src_dir lib
-        in
-        Lib.DB.find_lib_id (Scope.libs scope) (Local lib_id)
+        let lib_id = Library.to_lib_id ~src_dir lib in
+        Lib.DB.find_lib_id libs (Local lib_id)
       | _ -> Memo.return None)
 ;;
 
