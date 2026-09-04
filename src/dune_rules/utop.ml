@@ -182,13 +182,14 @@ let findlib_conf sctx ~dir =
 
 let lib_db sctx ~dir =
   let* scope = Scope.DB.find_by_dir dir in
+  let libs = Scope.libs scope in
   let* lock_dir_exists = Memo.Lazy.force utop_dev_tool_lock_dir_exists in
   match lock_dir_exists with
-  | false -> Memo.return (Scope.libs scope)
+  | false -> Memo.return libs
   | true ->
     let* ocamlpath = Memo.Lazy.force utop_ocamlpath in
     Lib.DB.of_paths (Super_context.context sctx) ~paths:ocamlpath
-    >>| Lib.DB.with_parent ~parent:(Some (Scope.libs scope))
+    >>| Lib.DB.with_parent ~parent:(Some libs)
 ;;
 
 let setup sctx ~dir =
