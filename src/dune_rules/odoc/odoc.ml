@@ -57,9 +57,8 @@ end = struct
   ;;
 end
 
-let lib_unique_name lib =
+let lib_unique_name_with_info lib info =
   let name = Lib.name lib in
-  let info = Lib.info lib in
   let status = Lib_info.status info in
   match status with
   | Installed_private | Installed -> assert false
@@ -67,10 +66,13 @@ let lib_unique_name lib =
   | Private (project, _) -> Scope_key.to_string name project
 ;;
 
+let lib_unique_name lib = lib_unique_name_with_info lib (Lib.info lib)
+
 let pkg_or_lnu lib =
-  match Lib_info.package (Lib.info lib) with
+  let info = Lib.info lib in
+  match Lib_info.package info with
   | Some p -> Package.Name.to_string p
-  | None -> lib_unique_name lib
+  | None -> lib_unique_name_with_info lib info
 ;;
 
 type target =
