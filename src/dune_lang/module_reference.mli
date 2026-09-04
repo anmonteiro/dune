@@ -18,6 +18,10 @@ val of_string_path : Loc.t * string -> t
     qualified names. *)
 val validate_qualified : t -> include_subdirs:Include_subdirs.t -> unit
 
+(** Reject a reference absent from the selected modules in dune language
+    versions starting with 3.25. *)
+val validate_exists : t -> modules:Module_name.Path.Set.t -> unit
+
 module Per_item : sig
   type key = t
   type 'a t

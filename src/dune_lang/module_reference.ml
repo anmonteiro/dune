@@ -64,6 +64,14 @@ let validate_qualified t ~include_subdirs =
       ]
 ;;
 
+let validate_exists t ~modules =
+  match t.mode with
+  | Legacy -> ()
+  | Path ->
+    if not (Module_name.Path.Set.mem modules t.path)
+    then User_error.raise ~loc:t.loc [ Pp.textf "Module %s doesn't exist." (to_string t) ]
+;;
+
 let make ~loc ~mode path = { loc; path; mode }
 
 let slash_separated_path value =
