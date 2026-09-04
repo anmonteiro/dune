@@ -600,9 +600,8 @@ let standalone_runtime_rule ~mode cc ~runtime_files ~target ~flags ~sourcemap =
       ; Deps (List.map ~f:Path.build runtime_files)
       ]
   in
-  let dir = Compilation_context.dir cc in
   js_of_ocaml_rule
-    (Compilation_context.super_context cc)
+    sctx
     ~mode
     ~sub_command:Build_runtime
     ~dir
