@@ -465,6 +465,8 @@ end = struct
   end
 end
 
+let dune_version expander = Expander.project expander |> Dune_project.dune_version
+
 let rec expand (t : Dune_lang.Action.t) : Action.t Action_expander.t =
   let module A = Action_expander in
   let module E = Action_expander.E in
@@ -539,7 +541,7 @@ let rec expand (t : Dune_lang.Action.t) : Action.t Action_expander.t =
     O.Echo l
   | Cat xs ->
     A.with_expander (fun expander ->
-      let version = Expander.project expander |> Dune_project.dune_version in
+      let version = dune_version expander in
       let open Action_expander.O in
       Memo.return
         (if version >= (3, 10)
@@ -614,7 +616,7 @@ let rec expand (t : Dune_lang.Action.t) : Action.t Action_expander.t =
     Cram_exec.action script
   | Format_dune_file (src, dst) ->
     A.with_expander (fun expander ->
-      let version = Expander.project expander |> Dune_project.dune_version in
+      let version = dune_version expander in
       let open Action_expander.O in
       Memo.return
         (let+ src = E.dep src
