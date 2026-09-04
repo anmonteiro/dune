@@ -14,6 +14,7 @@ val to_string : t -> string
 val to_dyn : t -> Dyn.t
 val of_string : Syntax.Version.t -> Loc.t * string -> t
 val is_qualified : t -> bool
+val is_legacy : t -> bool
 val decode : t Decoder.t
 
 module Per_item : sig

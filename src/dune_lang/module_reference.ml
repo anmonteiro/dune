@@ -50,6 +50,12 @@ let is_qualified t =
   | [ _ ] -> false
 ;;
 
+let is_legacy t =
+  match t.mode with
+  | Legacy -> true
+  | Path -> false
+;;
+
 let make ~loc ~mode path = { loc; path; mode }
 
 let parse_component loc component =
