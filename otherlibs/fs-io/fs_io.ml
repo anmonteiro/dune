@@ -33,12 +33,12 @@ let eagerly_input_string ic len =
   if r = len then Bytes.unsafe_to_string buf else Bytes.sub_string buf ~pos:0 ~len:r
 ;;
 
-let with_file_in fn ~f = Exn.protectx (Stdlib.open_in_bin fn) ~finally:close_in ~f
 let too_big = Failure "file is too large"
 
+(* We use 65536 because that is the size of OCaml's IO buffers. *)
+let chunk_size = 65536
+
 let read_all_unless_large =
-  (* We use 65536 because that is the size of OCaml's IO buffers. *)
-  let chunk_size = 65536 in
   (* Generic function for channels such that seeking is unsupported or broken *)
   let read_all_generic t buffer =
     let rec loop () =
@@ -79,31 +79,55 @@ let read_all_unless_large =
          read_all_generic t buffer)
 ;;
 
-let read_file_chan fn = with_file_in fn ~f:read_all_unless_large
-
 let read_all_fd =
   let rec read fd buf pos left =
     if left = 0
-    then `Ok
+    then pos
     else (
       match Unix.read fd buf pos left with
-      | 0 -> `Eof
+      | 0 -> pos
       | n -> read fd buf (pos + n) (left - n))
   in
-  fun fd ->
-    match Unix.fstat fd with
-    | exception Unix.Unix_error (e, x, y) -> Error (`Unix (e, x, y))
-    | { Unix.st_size; _ } ->
-      if st_size = 0
-      then Ok ""
-      else if st_size > Sys.max_string_length
-      then Error `Too_big
+  let read_to_eof fd initial =
+    let probe = Bytes.create 1 in
+    match Unix.read fd probe 0 1 with
+    | 0 -> Ok initial
+    | _ ->
+      let initial_length = String.length initial in
+      if initial_length >= Sys.max_string_length
+      then Error too_big
       else (
-        let b = Bytes.create st_size in
-        match read fd b 0 st_size with
-        | exception Unix.Unix_error (e, x, y) -> Error (`Unix (e, x, y))
-        | `Eof -> Error `Retry
-        | `Ok -> Ok (Bytes.unsafe_to_string b))
+        let capacity =
+          if initial_length > Sys.max_string_length - chunk_size - 1
+          then Sys.max_string_length
+          else initial_length + chunk_size + 1
+        in
+        let buffer = Buffer.create capacity in
+        Buffer.add_string buffer initial;
+        Buffer.add_char buffer (Bytes.get probe 0);
+        let chunk = Bytes.create chunk_size in
+        let rec loop () =
+          match Unix.read fd chunk 0 chunk_size with
+          | 0 -> Ok (Buffer.contents buffer)
+          | n ->
+            if n > Sys.max_string_length - Buffer.length buffer
+            then Error too_big
+            else (
+              Buffer.add_subbytes buffer chunk 0 n;
+              loop ())
+        in
+        loop ())
+  in
+  fun fd ->
+    let { Unix.st_size; _ } = Unix.fstat fd in
+    if st_size > Sys.max_string_length
+    then Error too_big
+    else (
+      let b = Bytes.create st_size in
+      let bytes_read = read fd b 0 st_size in
+      if bytes_read < st_size
+      then Ok (Bytes.sub_string b ~pos:0 ~len:bytes_read)
+      else read_to_eof fd (Bytes.unsafe_to_string b))
 ;;
 
 let with_file_in_fd fn ~f =
@@ -111,14 +135,7 @@ let with_file_in_fd fn ~f =
 ;;
 
 let read_file fn =
-  match
-    with_file_in_fd fn ~f:(fun fd ->
-      match read_all_fd fd with
-      | Ok s -> Ok s
-      | Error `Retry -> read_file_chan fn
-      | Error `Too_big -> Error too_big
-      | Error (`Unix (e, s, x)) -> Error (Unix.Unix_error (e, s, x)))
-  with
+  match with_file_in_fd fn ~f:read_all_fd with
   | result -> result
   | exception (Unix.Unix_error _ as exn) -> Error exn
 ;;
