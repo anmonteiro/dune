@@ -205,6 +205,7 @@ let expand_artifact ~source t artifact arg =
     let* module_ =
       match kind with
       | Cm_kind (Cmo | Cmx) -> lookup_module ~for_:Compilation_mode.Ocaml
+      | Melange _ -> lookup_module ~for_:Compilation_mode.Melange
       | Cm_kind Cmi | Cmt | Cmti -> lookup_module_ocaml_first ()
     in
     (match module_ with
@@ -223,6 +224,7 @@ let expand_artifact ~source t artifact arg =
           match kind with
           | Cm_kind Cmi -> Obj_dir.Module.cm_file obj_dir m ~kind:cmi_kind
           | Cm_kind kind -> Obj_dir.Module.cm_file obj_dir m ~kind:(Ocaml kind)
+          | Melange kind -> Obj_dir.Module.cm_file obj_dir m ~kind:(Melange kind)
           | Cmt -> Obj_dir.Module.cmt_file obj_dir m ~cm_kind:cmi_kind ~ml_kind:Impl
           | Cmti -> Some (Obj_dir.Module.cmti_file obj_dir m ~cm_kind:cmi_kind)
         with
