@@ -18,10 +18,15 @@ corresponding artifact.
 The variables have the form ``%{<ext>:<path>}``, where ``<path>`` is
 interpreted relative to the current directory:
 
-- ``cmo:<path>``, ``cmx:<path>``, and ``cmi:<path>`` expand to the corresponding
-  artifact's path for the module specified by ``<path>``. The basename of
-  ``<path>`` should be the name of a module as specified in a ``(modules)``
-  field.
+- ``cmo:<path>`` and ``cmx:<path>`` expand to the corresponding OCaml
+  artifact's path for the module specified by ``<path>``.
+
+- ``cmi:<path>`` expands to the compiled interface for the specified module.
+
+- ``cmj:<path>`` expands to the Melange compiled module for the specified
+  module.
+
+  .. versionadded:: 3.25
 
 - ``cma:<path>`` and ``cmxa:<path>`` expands to the corresponding artifact's
   path for the library specified by ``<path>``. The basename of ``<path>``
@@ -35,6 +40,14 @@ interpreted relative to the current directory:
   useful for IDE tools to provide tooltips and type information.
 
   .. versionadded:: 3.21
+
+The ``cmi``, ``cmt``, and ``cmti`` artifacts can be produced by OCaml or
+Melange. If a module is selected for both compilation modes, these variables
+refer to its OCaml artifact. Otherwise, they refer to the artifact for the mode
+in which the module is selected.
+
+For module artifacts, the basename of ``<path>`` should be the name of a module
+as specified in a ``(modules)`` or ``(melange.modules)`` field.
 
 - ``melange.emit:<path>`` expands to the output directory of the
   :ref:`melange.emit stanza <melange-emit>` whose target directory is
