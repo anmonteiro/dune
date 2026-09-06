@@ -185,28 +185,51 @@ let expand_artifact ~source t artifact arg =
   let does_not_exist ~what name =
     User_error.raise ~loc [ Pp.textf "%s %s does not exist." what name ]
   in
-  let* artifacts =
+  let lookup_artifacts ~for_ =
     let lookup = Fdecl.get lookup_artifacts in
-    Action_builder.of_memo (lookup ~dir)
+    Action_builder.of_memo (lookup ~dir ~for_)
+  in
+  let lookup_module ~for_ =
+    let+ artifacts = lookup_artifacts ~for_ in
+    Artifacts_obj.lookup_module artifacts path
+    |> Option.map ~f:(fun (obj_dir, module_) -> for_, obj_dir, module_)
+  in
+  let lookup_module_ocaml_first () =
+    let* ocaml = lookup_module ~for_:Compilation_mode.Ocaml in
+    match ocaml with
+    | Some _ -> Action_builder.return ocaml
+    | None -> lookup_module ~for_:Compilation_mode.Melange
   in
   match artifact with
   | Pform.Artifact.Mod kind ->
-    (match Artifacts_obj.lookup_module artifacts path with
+    let* module_ =
+      match kind with
+      | Cm_kind (Cmo | Cmx) -> lookup_module ~for_:Compilation_mode.Ocaml
+      | Cm_kind Cmi | Cmt | Cmti -> lookup_module_ocaml_first ()
+    in
+    (match module_ with
      | None ->
        Module_name.of_string_allow_invalid (loc, Filename.to_string name)
        |> Module_name.Unchecked.allow_invalid
        |> Module_name.to_string
        |> does_not_exist ~what:"Module"
-     | Some (t, m) ->
+     | Some (for_, obj_dir, m) ->
+       let cmi_kind =
+         match for_ with
+         | Compilation_mode.Ocaml -> Lib_mode.Cm_kind.Ocaml Ocaml.Cm_kind.Cmi
+         | Compilation_mode.Melange -> Lib_mode.Cm_kind.Melange Melange.Cm_kind.Cmi
+       in
        (match
           match kind with
-          | Cm_kind kind -> Obj_dir.Module.cm_file t m ~kind:(Ocaml kind)
-          | Cmt -> Obj_dir.Module.cmt_file t m ~cm_kind:(Ocaml Cmi) ~ml_kind:Impl
-          | Cmti -> Some (Obj_dir.Module.cmti_file t m ~cm_kind:(Ocaml Cmi))
+          | Cm_kind Cmi -> Obj_dir.Module.cm_file obj_dir m ~kind:cmi_kind
+          | Cm_kind kind -> Obj_dir.Module.cm_file obj_dir m ~kind:(Ocaml kind)
+          | Cmt -> Obj_dir.Module.cmt_file obj_dir m ~cm_kind:cmi_kind ~ml_kind:Impl
+          | Cmti -> Some (Obj_dir.Module.cmti_file obj_dir m ~cm_kind:cmi_kind)
         with
         | None -> Action_builder.return [ Value.String "" ]
         | Some path -> dep (Path.build path)))
   | Lib mode ->
+    let* artifacts = lookup_artifacts ~for_:Compilation_mode.Ocaml in
     let name =
       Lib_name.parse_string_exn
         (Dune_lang.Template.Pform.loc source, Filename.to_string name)
@@ -229,7 +252,7 @@ let expand_melange_emit ~source t arg =
   then User_error.raise ~loc [ Pp.text "cannot escape the workspace root directory" ];
   let* artifacts =
     let lookup = Fdecl.get lookup_artifacts in
-    Action_builder.of_memo (lookup ~dir:stanza_dir)
+    Action_builder.of_memo (lookup ~dir:stanza_dir ~for_:Compilation_mode.Melange)
   in
   match Artifacts_obj.lookup_melange_emit artifacts target_dir with
   | None ->

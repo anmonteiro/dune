@@ -31,16 +31,18 @@ let module_source_path_without_extension m =
   |> Option.map ~f:(fun p -> fst (Path.Build.split_extension p))
 ;;
 
-let make ~dir ~expander ~lib_config ~libs ~exes ~melange_emits =
-  let+ libraries =
-    Memo.List.map libs ~f:(fun ((lib : Library.t), _, _) ->
-      let+ lib_config = lib_config in
+let make ~dir ~for_ ~expander ~lib_config ~libs ~exes ~melange_emits =
+  let+ lib_config = lib_config in
+  let libs =
+    List.map libs ~f:(fun ((lib : Library.t), modules, obj_dir) ->
       let name = Lib_name.of_local lib.name in
       let info =
         Library.to_lib_info lib ~expander:(Memo.return expander) ~dir ~lib_config
       in
-      name, info)
-    >>| Lib_name.Map.of_list_exn
+      name, info, modules, obj_dir)
+  in
+  let libraries =
+    List.map libs ~f:(fun (name, info, _, _) -> name, info) |> Lib_name.Map.of_list_exn
   in
   let modules =
     let by_path modules obj_dir =
@@ -50,11 +52,21 @@ let make ~dir ~expander ~lib_config ~libs ~exes ~melange_emits =
         | Some key -> Path.Build.Map.add_exn modules key (obj_dir, m))
     in
     let init =
-      List.fold_left exes ~init:Path.Build.Map.empty ~f:(fun modules (m, obj_dir) ->
-        by_path modules obj_dir m)
+      match for_ with
+      | Compilation_mode.Ocaml ->
+        List.fold_left exes ~init:Path.Build.Map.empty ~f:(fun modules (m, obj_dir) ->
+          by_path modules obj_dir m)
+      | Compilation_mode.Melange -> Path.Build.Map.empty
     in
-    List.fold_left libs ~init ~f:(fun modules (_, m, obj_dir) ->
-      by_path modules obj_dir m)
+    List.fold_left libs ~init ~f:(fun modules (_, info, m, obj_dir) ->
+      if
+        List.mem
+          (Compilation_mode.Set.of_lib_mode_set (Lib_info.modes info)
+           |> Compilation_mode.Set.to_list)
+          for_
+          ~equal:Compilation_mode.equal
+      then by_path modules obj_dir m
+      else modules)
   in
   let melange_emits =
     match Path.Build.Map.of_list melange_emits with
