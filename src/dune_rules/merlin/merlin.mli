@@ -34,6 +34,18 @@ module Processed : sig
   val pp_args : pp_flag -> string
   val load_file : Path.t -> (t, string) result
 
+  type source_kind =
+    | Implementation
+    | Interface
+
+  type file_configuration =
+    { mode : Compilation_mode.t
+    ; is_default : bool
+    ; kind : source_kind
+    ; counterpart : Path.t option
+    ; directives : Sexp.t
+    }
+
   (** [print_file path] reads the configuration at path [path] and print it as a
       s-expression *)
   val print_file : Path.t -> unit
@@ -45,6 +57,7 @@ module Processed : sig
   val print_generic_dot_merlin : Path.t list -> unit
 
   val get : t -> file:Path.Build.t -> Sexp.t option
+  val configurations : t -> file:Path.Build.t -> file_configuration Nonempty_list.t option
 end
 
 val make
@@ -52,7 +65,8 @@ val make
   -> requires_hidden:Lib.t list Resolve.t
   -> stdlib_dir:Path.t
   -> flags:Ocaml_flags.t
-  -> preprocess:Preprocess.Without_instrumentation.t Preprocess.t Module_name.Per_item.t
+  -> preprocess:
+       Preprocess.Without_instrumentation.t Preprocess.t Module_reference.Per_item.t
   -> libname:Lib_name.Local.t option
   -> modules:Modules.With_vlib.t
   -> obj_dir:Path.Build.t Obj_dir.t
@@ -84,4 +98,4 @@ val pp_config
   :  t
   -> Context.t
   -> expander:Expander.t
-  -> Processed.pp_flag option Module_name.Per_item.t Action_builder.t
+  -> Processed.pp_flag option Module_reference.Per_item.t Action_builder.t
