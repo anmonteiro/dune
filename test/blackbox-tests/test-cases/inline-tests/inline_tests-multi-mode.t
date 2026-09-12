@@ -29,3 +29,20 @@ Reproduction case for #3347
   $ dune runtest
   Test byte
   Test native
+
+An explicitly empty mode list is rejected rather than silently disabling the
+tests.
+
+  $ cat >dune <<EOF
+  > (library
+  >  (name test)
+  >  (modules test)
+  >  (inline_tests (modes)))
+  > EOF
+
+  $ dune runtest
+  File "dune", line 4, characters 15-22:
+  4 |  (inline_tests (modes)))
+                     ^^^^^^^
+  Error: No inline test mode defined
+  [1]
