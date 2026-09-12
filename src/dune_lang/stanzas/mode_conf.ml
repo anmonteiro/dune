@@ -206,8 +206,19 @@ module Lib = struct
       set_of_list ~empty ~update:Map.update input
     ;;
 
+    let validate_nonempty ~loc (t : t) =
+      if
+        Option.is_none t.melange
+        && Option.is_none t.ocaml.byte
+        && Option.is_none t.ocaml.native
+        && Option.is_none t.ocaml.best
+      then User_error.raise ~loc [ Pp.text "No library mode defined" ];
+      t
+    ;;
+
     let decode_osl ~stanza_loc project =
-      let+ modes = Ordered_set_lang.decode in
+      let+ loc = loc
+      and+ modes = Ordered_set_lang.decode in
       let standard =
         Set.default stanza_loc |> Set.to_list |> List.map ~f:(fun (m, k) -> Ocaml m, k)
       in
@@ -224,9 +235,15 @@ module Lib = struct
           in
           mode, Kind.Requested loc)
       |> of_list
+      |> validate_nonempty ~loc
     ;;
 
-    let decode = decode_set decode ~of_list
+    let decode =
+      let+ loc = loc
+      and+ modes = decode_set decode ~of_list in
+      validate_nonempty ~loc modes
+    ;;
+
     let default loc : t = { empty with ocaml = Set.default loc }
 
     let eval t ~has_native =

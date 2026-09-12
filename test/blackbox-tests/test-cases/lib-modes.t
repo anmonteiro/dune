@@ -43,3 +43,33 @@ in a version of dune lang that does not support them
 Works for the most recent version
 
   $ dune build hello.exe
+
+An explicitly empty mode list is rejected.
+
+  $ cat > lib/dune <<EOF
+  > (library
+  >  (modes)
+  >  (name mylib))
+  > EOF
+
+  $ dune build
+  File "lib/dune", line 2, characters 1-8:
+  2 |  (modes)
+       ^^^^^^^
+  Error: No library mode defined
+  [1]
+
+The ordered set language cannot be used to remove every mode either.
+
+  $ cat > lib/dune <<EOF
+  > (library
+  >  (modes :standard \ byte best)
+  >  (name mylib))
+  > EOF
+
+  $ dune build
+  File "lib/dune", line 2, characters 1-30:
+  2 |  (modes :standard \ byte best)
+       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  Error: No library mode defined
+  [1]
