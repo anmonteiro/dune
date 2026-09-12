@@ -24,6 +24,11 @@ let repr =
 
 let to_dyn = Repr.to_dyn repr
 
+let to_wire = function
+  | Ocaml -> "ocaml"
+  | Melange -> "melange"
+;;
+
 module Set = struct
   type t =
     { ocaml : bool
