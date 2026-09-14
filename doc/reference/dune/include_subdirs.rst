@@ -107,8 +107,9 @@ Renaming Directories
 
 .. versionadded:: 3.25
 
-In ``qualified`` mode, the structured form of ``include_subdirs`` accepts a
-``dirs`` field to choose module names independently of source directory names:
+The structured form of ``include_subdirs`` requires ``(lang dune 3.25)`` or later,
+including when ``dirs`` is omitted. In ``qualified`` mode, it accepts a ``dirs``
+field to choose module names independently of source directory names:
 
 .. code:: dune
 
@@ -152,8 +153,7 @@ modules, such as a library's ``modules`` field, use the mapped names.
 
 Directory mappings have the following restrictions:
 
-- ``dirs`` requires ``(lang dune 3.25)`` or later and is only allowed with
-  ``(mode qualified)``.
+- ``dirs`` is only allowed with ``(mode qualified)``.
 - Source and destination paths are relative to the directory containing the
   stanza and must refer to descendants of that directory, not the directory
   itself or a parent.
@@ -161,7 +161,21 @@ Directory mappings have the following restrictions:
   mapping cannot flatten the hierarchy or introduce an extra level.
 - Destination components must form valid OCaml module names after capitalization.
   Mapped module paths must not conflict with another module or module group.
+- Mappings for the same source directory must agree on the destination after
+  variable expansion and path normalization. Repeating an identical mapping is
+  allowed.
+- Generated sources must not replace handwritten implementations or interfaces
+  at the mapped module path. A generated implementation can still be paired
+  with a handwritten interface, and vice versa.
 
 Source and destination paths support :doc:`/concepts/variables`, for example
 ``(internal as %{read:../config/mapping})``. A mapping can read a generated file;
 changes to that file update the module namespace on subsequent builds.
+
+.. warning::
+
+   Files read by a mapping must be outside the qualified directory group.
+   Reading a source file or generated file inside the group creates a dependency
+   cycle: Dune needs the mapping to determine the group's contents before it can
+   read the file. Put mapping files in a separate directory outside the group,
+   as in ``../config/mapping`` above.
