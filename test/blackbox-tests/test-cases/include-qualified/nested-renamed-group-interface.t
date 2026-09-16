@@ -302,7 +302,9 @@ Repeating a generator for the same source still reports conflicting rules.
   Leaving directory 'lexer'
   [1]
 
-Directory mappings require literal source and destination paths for now.
+A mapping can read a generated file outside the qualified group. Changing
+the generator's input must update the module namespace without cleaning or
+explicitly building the mapping file first.
 
   $ mkdir -p dynamic/config dynamic/lib/internal
   $ cat >dynamic/dune-project <<EOF
@@ -323,43 +325,41 @@ Directory mappings require literal source and destination paths for now.
 
   $ printf public >dynamic/config/mapping.in
   $ dune build --root=dynamic '%{cmi:lib/Public.Leaf}'
+  $ cat dynamic/_build/default/config/mapping
+  public
+
+  $ printf exposed >dynamic/config/mapping.in
+  $ dune build --root=dynamic '%{cmi:lib/Exposed.Leaf}'
+  $ cat dynamic/_build/default/config/mapping
+  exposed
+
+The previous namespace is no longer available.
+
+  $ dune build --root=dynamic '%{cmi:lib/Public.Leaf}'
   Entering directory 'dynamic'
-  File "lib/dune", line 3, characters 20-45:
-  3 |  (dirs (internal as %{read:../config/mapping})))
-                          ^^^^^^^^^^^^^^^^^^^^^^^^^
-  Error: Variables are not supported in directory mappings.
+  File "command line", line 1, characters 0-22:
+  Error: Module Public.Leaf does not exist.
   Leaving directory 'dynamic'
   [1]
+
+Environment variables can occur in either side of a mapping.
+
+  $ export TEST_RENAME=public TEST_SOURCE=internal
+  $ cat >dynamic/lib/dune <<EOF
+  > (include_subdirs
+  >  (mode qualified)
+  >  (dirs (internal as %{env:TEST_RENAME=unused})))
+  > (library (name renamed))
+  > EOF
+  $ dune build --root=dynamic '%{cmi:lib/Public.Leaf}'
 
   $ cat >dynamic/lib/dune <<EOF
   > (include_subdirs
   >  (mode qualified)
-  >  (dirs (internal as %{env:TEST_RENAME=public})))
+  >  (dirs (%{env:TEST_SOURCE=unused} as public)))
   > (library (name renamed))
   > EOF
   $ dune build --root=dynamic '%{cmi:lib/Public.Leaf}'
-  Entering directory 'dynamic'
-  File "lib/dune", line 3, characters 20-45:
-  3 |  (dirs (internal as %{env:TEST_RENAME=public})))
-                          ^^^^^^^^^^^^^^^^^^^^^^^^^
-  Error: Variables are not supported in directory mappings.
-  Leaving directory 'dynamic'
-  [1]
-
-  $ cat >dynamic/lib/dune <<EOF
-  > (include_subdirs
-  >  (mode qualified)
-  >  (dirs (%{env:TEST_SOURCE=internal} as public)))
-  > (library (name renamed))
-  > EOF
-  $ dune build --root=dynamic '%{cmi:lib/Public.Leaf}'
-  Entering directory 'dynamic'
-  File "lib/dune", line 3, characters 8-35:
-  3 |  (dirs (%{env:TEST_SOURCE=internal} as public)))
-              ^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  Error: Variables are not supported in directory mappings.
-  Leaving directory 'dynamic'
-  [1]
 
 A lexer-generated implementation can use a handwritten interface, including
 when their physical basenames differ after renaming.
@@ -522,4 +522,22 @@ source paths normalize to the same directory.
                             ^^^^^^^
   Error: The directory internal is mapped to both public and exposed.
   Leaving directory 'duplicate'
+  [1]
+
+Conflicting destinations can also come from variable expansion.
+
+  $ cat >dynamic/lib/dune <<EOF
+  > (include_subdirs
+  >  (mode qualified)
+  >  (dirs (internal as public)
+  >        (internal as %{read:../config/mapping})))
+  > (library (name renamed))
+  > EOF
+  $ dune build --root=dynamic '%{cmi:lib/Public.Leaf}'
+  Entering directory 'dynamic'
+  File "lib/dune", line 4, characters 20-45:
+  4 |        (internal as %{read:../config/mapping})))
+                          ^^^^^^^^^^^^^^^^^^^^^^^^^
+  Error: The directory internal is mapped to both public and exposed.
+  Leaving directory 'dynamic'
   [1]
