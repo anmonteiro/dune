@@ -64,8 +64,18 @@ order to declare a multi-directory library, you need to use the
 
    Starting in Dune 3.13, one can also use special forms ``(:include <file>)``
    and variables such as ``%{read-lines:<file>}`` in this field to customize
-   the list of modules using Dune rules. The dependencies introduced in this
-   way *must live in a different directory that the stanza making use of them*.
+   the list of modules using Dune rules. Before Dune 3.25, these dependencies
+   must live outside the directory or ``include_subdirs`` group containing the
+   stanza.
+
+   Starting in Dune 3.25, projects using language version 3.23 or later can
+   read source files or ordinary rule outputs in the same directory or
+   directory group for ordinary libraries and executables.
+   Generating these files must not depend on compiling the modules whose list
+   they describe. Older language versions retain complete directory loading
+   because user rules may run without sandboxing. Libraries using additional
+   rule generators, such as Menhir or inline tests, can still require these
+   dependencies to live outside the group.
 
 .. describe:: (libraries <library-dependencies>)
 
