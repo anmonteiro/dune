@@ -130,6 +130,9 @@ than ``Internal.Leaf``. In a wrapped library named ``example``, clients refer to
 it as ``Example.Public.Leaf``. The source files stay in ``internal/``; the
 mapping does not rename or move files on disk.
 
+Both sides use ``/``-separated paths, not dotted module references. The
+destination describes the module hierarchy and need not exist on disk.
+
 The mapping also applies to descendants: ``internal/nested/leaf.ml`` becomes
 ``Public.Nested.Leaf``. To rename a nested directory as well, add a more specific
 mapping:
@@ -152,7 +155,7 @@ The ``dirs`` field does not select which subdirectories are included. Directorie
 not covered by a mapping keep their usual module names. Omitting ``dirs`` is
 equivalent to ``(include_subdirs qualified)``.
 
-Group interface files keep the name of their source directory. With the mappings
+Existing group interface files do not need to be renamed. With the mappings
 above, ``internal/internal.ml`` defines ``Public``, and
 ``internal/nested/nested.ml`` defines ``Public.Exposed``. There is no need to
 rename these files to ``public.ml`` or ``exposed.ml``. Fields that refer to
@@ -182,7 +185,8 @@ changes to that file update the module namespace on subsequent builds.
 .. warning::
 
    Files read by a mapping must be outside the qualified directory group.
-   Reading a source file or generated file inside the group creates a dependency
-   cycle: Dune needs the mapping to determine the group's contents before it can
-   read the file. Put mapping files in a separate directory outside the group,
-   as in ``../config/mapping`` above.
+   Reading a source file or generated file inside the group, including its
+   included subdirectories, creates a dependency cycle: Dune needs the mapping
+   to determine the group's contents before it can read the file. Put mapping
+   files in a separate directory outside the group, as in ``../config/mapping``
+   above.
