@@ -83,8 +83,3 @@ providing the library's module list. Currently this dependency cycles.
   > (*TEST: assert (1 = 1) *)
   > EOF
   $ dune build @dynamic/runtest
-  Error: Dependency cycle between:
-     (modules) field at dynamic/dune:4
-  -> (:include _build/default/dynamic/lst) at dynamic/dune:6
-  -> (modules) field at dynamic/dune:4
-  [1]

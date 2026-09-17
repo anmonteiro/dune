@@ -22,28 +22,7 @@ module Gen_rules : sig
     val union : t -> t -> t
   end
 
-  module Rule_targets : sig
-    (** A conservative declaration of the outputs of a rule-loading stage. *)
-    type t =
-      | All
-      | Declared of
-          { files : Path.Build.Set.t
-          ; subtrees : Path.Build.Set.t
-          ; file_extensions : Filename.Extension.Set.t Path.Build.Map.t
-          }
-
-    val empty : t
-    val union : t -> t -> t
-    val is_empty : t -> bool
-    val mem : t -> Path.Build.t -> bool
-
-    (** Whether a target may be the directory itself or one of its descendants. *)
-    val intersects_directory : t -> Path.Build.t -> bool
-  end
-
   module Rules : sig
-    type stage
-
     type nonrec t =
       { build_dir_only_sub_dirs : Build_only_sub_dirs.t
         (** Sub-directories that don't exist in the source tree but exists in
@@ -58,7 +37,6 @@ module Gen_rules : sig
         ok to have an approximate location as the rule that produces the
         target will be responsible for producing the final location*)
       ; rules : Rules.t Memo.t
-      ; stages : stage list
       }
 
     type rules := Rules.t
@@ -71,25 +49,6 @@ module Gen_rules : sig
 
     val empty : t
 
-    (** Ordinary source rules are available independently of compilation rules.
-        [compilation_targets] must not depend on compilation-rule generation and
-        must contain every target it can produce. Both stages are shared by
-        target lookups and complete directory loads. With a finite declaration,
-        source actions must be sandboxed or write only their declared targets:
-        the declaration also delimits safe deferred cleanup. [All] retains
-        complete loading. *)
-    val create_staged
-      :  ?build_dir_only_sub_dirs:Build_only_sub_dirs.t
-      -> ?directory_targets:Loc.t Path.Build.Map.t
-      -> source_rules:rules Memo.t
-      -> compilation_rules:rules Memo.t
-      -> compilation_targets:Rule_targets.t Memo.t
-      -> unit
-      -> t
-
-    val source_rules : t -> rules Memo.t
-    val compilation_targets : t -> Rule_targets.t Memo.t
-
     (** Raises a code error if there are multiple rules for the same target. *)
     val combine_exn : t -> t -> t
   end
@@ -98,9 +57,7 @@ module Gen_rules : sig
     type t =
       | Rules of Rules.t
       | Unknown_context
-      | Redirect_to_parent of Rules.t
 
-    val redirect_to_parent : Rules.t -> t
     val rules_here : Rules.t -> t
     val unknown_context : t
     val no_rules : t

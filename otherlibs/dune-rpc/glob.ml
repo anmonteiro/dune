@@ -4,23 +4,24 @@ type t =
   | Re of
       { re : Re.re
       ; repr : string
+      ; suffix : string
       }
   | Literal of string
 
 let test t s =
   match t with
   | Literal t -> String.equal t s
-  | Re { re; repr = _ } -> Re.execp re s
+  | Re { re; repr = _; suffix = _ } -> Re.execp re s
 ;;
 
-let empty = Re { re = Re.compile Re.empty; repr = "\000" }
-let universal = Re { re = Re.compile (Re.rep Re.any); repr = "**" }
+let empty = Re { re = Re.compile Re.empty; repr = "\000"; suffix = "" }
+let universal = Re { re = Re.compile (Re.rep Re.any); repr = "**"; suffix = "" }
 
 let of_string_result repr =
   Glob_lexer.parse_string repr
   |> Result.map ~f:(function
     | Glob_lexer.Literal s -> Literal s
-    | Re re -> Re { re = Re.compile re; repr })
+    | Re { re; suffix } -> Re { re = Re.compile re; repr; suffix })
 ;;
 
 let of_string repr =
@@ -31,8 +32,18 @@ let of_string repr =
 
 let to_string t =
   match t with
-  | Re { repr; re = _ } -> repr
+  | Re { repr; re = _; suffix = _ } -> repr
   | Literal s -> s
+;;
+
+let as_literal = function
+  | Literal s -> Some s
+  | Re _ -> None
+;;
+
+let literal_suffix = function
+  | Literal s -> s
+  | Re { suffix; _ } -> suffix
 ;;
 
 let to_dyn t = Dyn.variant "Glob" [ Dyn.string (to_string t) ]
@@ -66,6 +77,7 @@ let matching_extensions extensions =
   in
   Re
     { re
+    ; suffix = ""
     ; repr =
         (match extensions with
          | [] -> Code_error.raise "empty list of extensions" []

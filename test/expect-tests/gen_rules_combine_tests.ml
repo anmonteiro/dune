@@ -12,10 +12,13 @@ let run rules =
 let%expect_test "empty generated rule combinations remain deferred" =
   let calls = ref 0 in
   let effectful =
-    Generated_rules.create
-      (Memo.of_thunk (fun () ->
-         incr calls;
-         Memo.return Rules.empty))
+    (* Unlike [create], this raw fixture does not memoize its computation. *)
+    { Generated_rules.empty with
+      rules =
+        Memo.of_thunk (fun () ->
+          incr calls;
+          Memo.return Rules.empty)
+    }
   in
   List.iter
     [ "both empty", Generated_rules.empty, Generated_rules.empty
@@ -40,6 +43,42 @@ let%expect_test "empty generated rule combinations remain deferred" =
     empty left: deferred=true calls=1 empty=true
     empty right: deferred=true calls=1 empty=true
     same effectful record: deferred=true calls=2 empty=true
+    |}]
+;;
+
+let%expect_test "created generated rules share dependency-tracked generation" =
+  let open Memo.O in
+  let calls = ref 0 in
+  let input = Memo.Var.create 0 ~name:"generated-rules-input" in
+  let generated =
+    Generated_rules.create
+      (let+ (_ : int) = Memo.Var.read input in
+       incr calls;
+       Rules.empty)
+  in
+  let force label rules =
+    ignore (run rules : Rules.t);
+    printfn "%s: calls=%d" label !calls
+  in
+  printfn "before forcing: calls=%d" !calls;
+  force "first read" generated.rules;
+  force "cached read" generated.rules;
+  let combined = Generated_rules.combine_exn generated generated in
+  force "same record combined" combined.rules;
+  Memo.reset Memo.Invalidation.empty;
+  force "unchanged reset" combined.rules;
+  Memo.reset (Memo.Var.set input 1);
+  force "changed input" combined.rules;
+  force "cached after change" combined.rules;
+  [%expect
+    {|
+    before forcing: calls=0
+    first read: calls=1
+    cached read: calls=1
+    same record combined: calls=1
+    unchanged reset: calls=1
+    changed input: calls=2
+    cached after change: calls=2
     |}]
 ;;
 
