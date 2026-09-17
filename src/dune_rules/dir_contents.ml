@@ -336,7 +336,6 @@ end = struct
   end = struct
     type binding =
       { src : Filename.t list
-      ; src_len : int
       ; dst : Filename.t list
       }
 
@@ -398,8 +397,7 @@ end = struct
             (Path.Local.relative root dst)
             ~of_:root
         in
-        let src_len = List.length src in
-        if src_len <> List.length dst
+        if List.length src <> List.length dst
         then
           User_error.raise
             ~loc:dst_loc
@@ -407,7 +405,7 @@ end = struct
                 "The source and destination directories must have the same number of \
                  path components."
             ]
-        else Some (Path.Local.of_comps src, (dst_loc, { src; src_len; dst }))
+        else Some (Path.Local.of_comps src, (dst_loc, { src; dst }))
     ;;
 
     let create ~dir dirs =
@@ -438,10 +436,11 @@ end = struct
     ;;
 
     let translate (t : t) path =
-      List.fold_left t ~init:None ~f:(fun best { src; src_len; dst } ->
+      List.fold_left t ~init:None ~f:(fun best { src; dst } ->
         match drop_prefix path src with
         | None -> best
         | Some rest ->
+          let src_len = List.length src in
           (match best with
            | None -> Some (src_len, dst, rest)
            | Some (best_len, _, _) when src_len > best_len -> Some (src_len, dst, rest)
@@ -451,7 +450,7 @@ end = struct
       | Some (_, dst, rest) -> dst @ rest
     ;;
 
-    let to_list t = List.map t ~f:(fun { src; src_len = _; dst } -> src, dst)
+    let to_list t = List.map t ~f:(fun { src; dst } -> src, dst)
   end
 
   let make_group_root
