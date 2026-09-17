@@ -388,3 +388,118 @@ files before compilation, even if the source stage loaded first.
   > EOF
   $ dune build empty-interface/empty_interface.cma
   $ test ! -e _build/default/empty-interface/b.mli
+
+Dynamic module lists are supported since 3.13. Reading an independent rule in
+the same directory currently cycles when the project predates staged loading.
+
+  $ mkdir legacy
+  $ cat >legacy/dune-project <<EOF
+  > (lang dune 3.13)
+  > EOF
+  $ cat >legacy/dune <<EOF
+  > (rule
+  >  (target lst)
+  >  (action (write-file %{target} value)))
+  > (library
+  >  (name legacy)
+  >  (modes byte)
+  >  (modules (:include lst)))
+  > EOF
+  $ touch legacy/value.ml
+  $ dune build legacy/legacy.cma
+  Error: Dependency cycle between:
+     (modules) field at legacy/dune:4
+  -> (:include _build/default/legacy/lst) at legacy/dune:7
+  -> (modules) field at legacy/dune:4
+  [1]
+
+A custom test action must not prevent its module list from being generated.
+Currently the custom action makes the entire directory load eagerly and cycle.
+
+  $ mkdir custom-action
+  $ cat >custom-action/dune <<EOF
+  > (rule
+  >  (target lst)
+  >  (action (write-file %{target} test)))
+  > (test
+  >  (name test)
+  >  (modes byte)
+  >  (modules (:include lst))
+  >  (action (run %{test})))
+  > EOF
+  $ cat >custom-action/test.ml <<EOF
+  > let () = print_endline "custom test"
+  > EOF
+  $ dune build @custom-action/runtest
+  Error: Dependency cycle between:
+     (modules) field at custom-action/dune:4
+  -> (:include _build/default/custom-action/lst) at custom-action/dune:7
+  -> (modules) field at custom-action/dune:4
+  [1]
+
+Pulling a module list through several descendant directories must discover
+all intermediate producers and track changes to the leaf input.
+
+  $ mkdir -p nested/child/grandchild
+  $ cat >nested/dune <<EOF
+  > (include_subdirs unqualified)
+  > (rule
+  >  (target root-modules)
+  >  (action (copy child/child-modules %{target})))
+  > (library
+  >  (name nested)
+  >  (modes byte)
+  >  (modules (:include root-modules)))
+  > EOF
+  $ cat >nested/child/dune <<EOF
+  > (rule
+  >  (target child-modules)
+  >  (action (copy grandchild/leaf-modules %{target})))
+  > EOF
+  $ cat >nested/child/grandchild/dune <<EOF
+  > (rule
+  >  (target leaf-modules)
+  >  (action (copy modules.in %{target})))
+  > EOF
+  $ touch nested/child/grandchild/first.ml nested/child/grandchild/second.ml
+  $ echo first >nested/child/grandchild/modules.in
+  $ dune build '%{cmi:nested/First}'
+  $ echo second >nested/child/grandchild/modules.in
+  $ dune build '%{cmi:nested/Second}'
+
+Copying generated files upward must not force unrelated rules in the child.
+The child can itself copy an independent parent output. Currently complete
+directory enumeration makes these two copy_files stanzas cycle.
+
+  $ mkdir -p copied-list/child
+  $ cat >copied-list/dune <<EOF
+  > (rule
+  >  (target seed)
+  >  (action (write-file %{target} value)))
+  > (copy_files child/*.modules)
+  > (library
+  >  (name copied_list)
+  >  (modes byte)
+  >  (modules (:include selected.modules)))
+  > EOF
+  $ cat >copied-list/child/dune <<EOF
+  > (copy_files ../seed)
+  > (rule
+  >  (target selected.modules)
+  >  (action (copy seed %{target})))
+  > EOF
+  $ touch copied-list/value.ml
+  $ dune build copied-list/copied_list.cma
+  Error: Dependency cycle between:
+     Computing directory contents of _build/default/copied-list
+  -> { dir = In_build_dir "default/copied-list"
+     ; predicate = Element (Glob "seed")
+     ; only_generated_files = false
+     }
+  -> Computing directory contents of _build/default/copied-list/child
+  -> { dir = In_build_dir "default/copied-list/child"
+     ; predicate = Element (Glob "*.modules")
+     ; only_generated_files = false
+     }
+  -> Computing directory contents of _build/default/copied-list
+  [1]
