@@ -34,30 +34,7 @@ let install_stanza_rules ~ctx_dir ~expander (install_conf : Install_conf.t) =
     Rules.Produce.Alias.add_deps (Alias.make Alias0.all ~dir:ctx_dir) action)
 ;;
 
-module For_stanza : sig
-  type ('merlin, 'cctx, 'js, 'source_dirs) t =
-    { merlin : 'merlin
-    ; cctx : 'cctx
-    ; js : 'js
-    ; source_dirs : 'source_dirs
-    }
-
-  val of_stanzas
-    :  Stanza.t list
-    -> cctxs:Compilation_context.t option Compilation_mode.Per_mode.t Loc.Map.t
-    -> sctx:Super_context.t
-    -> src_dir:Path.Source.t
-    -> ctx_dir:Path.Build.t
-    -> scope:Scope.t
-    -> dir_contents:Dir_contents.t
-    -> expander:Expander.t
-    -> ( Merlin.group list
-         , Compilation_context.t option Compilation_mode.Per_mode.t Loc.Map.t
-         , Path.Build.t list
-         , Path.Source.t list )
-         t
-         Memo.t
-end = struct
+module For_stanza = struct
   type ('merlin, 'cctx, 'js, 'source_dirs) t =
     { merlin : 'merlin
     ; cctx : 'cctx
@@ -211,13 +188,7 @@ end = struct
     | _ -> Memo.return empty_none
   ;;
 
-  let of_stanzas stanzas ~cctxs ~sctx ~src_dir ~ctx_dir ~scope ~dir_contents ~expander =
-    Memo.parallel_map
-      stanzas
-      ~f:(of_stanza ~sctx ~src_dir ~ctx_dir ~scope ~dir_contents ~expander)
-    >>| List.fold_left ~init:{ empty_list with cctx = cctxs } ~f:cons
-    >>| rev
-  ;;
+  let collect results = List.fold_left results ~init:empty_list ~f:cons |> rev
 end
 
 let define_all_alias ~dir ~project ~js_targets =
@@ -240,124 +211,269 @@ let define_all_alias ~dir ~project ~js_targets =
   Rules.Produce.Alias.add_deps (Alias.make Alias0.all ~dir) deps
 ;;
 
-let gen_rules_for_stanzas sctx dir_contents cctxs expander ~dune_file ~dir:ctx_dir =
-  let src_dir = Dune_file.dir dune_file in
-  let* stanzas = Dune_file.stanzas dune_file
-  and* scope = Scope.DB.find_by_dir ctx_dir in
-  let* { For_stanza.merlin = merlins; cctx = cctxs; js = js_targets; source_dirs } =
-    For_stanza.of_stanzas
-      stanzas
-      ~cctxs
+let stanza_targets
       ~sctx
-      ~src_dir
-      ~ctx_dir
-      ~scope
-      ~dir_contents
-      ~expander
+      ~dir
+      ~source_files
+      ~lib_config
+      ~dialects
+      ~project
+      ~obj_dirs
+      stanza
+  =
+  match Stanza.repr stanza with
+  | Library.T lib ->
+    Memo.return (Lib_rules.rule_targets ~dir ~source_files ~lib_config ~dialects lib)
+  | Executables.T exes ->
+    Memo.return
+      (Exe_rules.rule_targets ~dir ~source_files ~lib_config ~dialects ~project exes)
+  | Tests.T tests ->
+    Memo.return
+      (Test_rules.rule_targets ~dir ~source_files ~lib_config ~dialects ~project tests)
+  | Foreign_library.T lib ->
+    Memo.return (Lib_rules.foreign_rule_targets ~dir ~lib_config lib)
+  | Alias_conf.T alias -> Memo.return (Target_mask.aliases [ Alias.make alias.name ~dir ])
+  | Install_conf.T _ -> Memo.return (Target_mask.aliases [ Alias.make Alias0.all ~dir ])
+  | Parser_generators.Ocamllex.T p ->
+    Memo.return
+      (Parser_generator_rules.rule_targets ~dir ~source_files ~for_:(Ocamllex p))
+  | Parser_generators.Ocamlyacc.T p ->
+    Memo.return
+      (Parser_generator_rules.rule_targets ~dir ~source_files ~for_:(Ocamlyacc p))
+  | Menhir_stanza.T m ->
+    Memo.return (Menhir_rules.rule_targets ~dir ~source_files ~obj_dirs m)
+  | Rocq_stanza.Theory.T m ->
+    Memo.return (Rocq_rules.theory_rule_targets ~dir ~source_files m)
+  | Rocq_stanza.Extraction.T m ->
+    Memo.return (Rocq_rules.extraction_rule_targets ~dir ~source_files m)
+  | Rocq_stanza.Rocqpp.T m ->
+    Memo.return (Rocq_rules.rocqpp_rule_targets ~dir ~source_files m)
+  | Toplevel_stanza.T top -> Memo.return (Toplevel.Stanza.rule_targets ~dir top)
+  | Plugin.T plugin -> Memo.return (Plugin_rules.rule_targets ~dir plugin)
+  | Cinaps.T cinaps -> Cinaps.rule_targets sctx ~dir cinaps
+  | Mdx.T mdx -> Memo.return (Mdx.rule_targets ~dir mdx)
+  | Melange_stanzas.Emit.T mel -> Memo.return (Melange_rules.emit_rule_targets ~dir mel)
+  | _ -> Memo.return Target_mask.empty
+;;
+
+let stanza_context_loc stanza =
+  match Stanza.repr stanza with
+  | Library.T { buildable; _ }
+  | Executables.T { buildable; _ }
+  | Tests.T { exes = { buildable; _ }; _ } -> Some buildable.loc
+  | Melange_stanzas.Emit.T mel -> Some mel.loc
+  | _ -> None
+;;
+
+let gen_rules_for_stanzas
+      sctx
+      standalone_or_root
+      ~source_files
+      ~lib_config
+      ~obj_dirs
+      ~cctxs
+      ({ Source_file_dir.dir = ctx_dir; source_dir; stanzas; _ } : Source_file_dir.t)
+  =
+  let source_dir = Option.value_exn source_dir in
+  let src_dir = Source_tree.Dir.path source_dir in
+  let project = Source_tree.Dir.project source_dir in
+  let dialects = Dune_project.dialects project in
+  let* scope = Scope.DB.find_by_dir ctx_dir
+  and* expander = Super_context.expander sctx ~dir:ctx_dir in
+  let* prepared =
+    Memo.parallel_map stanzas ~f:(fun stanza ->
+      let* targets =
+        stanza_targets
+          ~sctx
+          ~dir:ctx_dir
+          ~source_files
+          ~lib_config
+          ~dialects
+          ~project
+          ~obj_dirs
+          stanza
+      in
+      let+ prepared =
+        Rules.defer targets (fun () ->
+          let* () = Memo.Lazy.force Configurator_rules.force_files in
+          let* dir_contents = Dir_contents.Standalone_or_root.root standalone_or_root in
+          For_stanza.of_stanza
+            stanza
+            ~sctx
+            ~src_dir
+            ~ctx_dir
+            ~scope
+            ~dir_contents
+            ~expander)
+      in
+      stanza, targets, prepared)
+  in
+  let cctxs =
+    List.fold_left prepared ~init:cctxs ~f:(fun cctxs (stanza, _, prepared) ->
+      match stanza_context_loc stanza with
+      | None -> cctxs
+      | Some loc ->
+        let cctx =
+          Memo.lazy_ ~name:"stanza-compilation-context" (fun () ->
+            let+ { For_stanza.cctx; _ } = Memo.Lazy.force prepared in
+            Loc.Map.find (For_stanza.add_map cctx Loc.Map.empty) loc)
+        in
+        Loc.Map.set cctxs loc cctx)
+  in
+  let* () =
+    let targets =
+      Target_mask.union
+        (Target_mask.aliases_in_directory ctx_dir)
+        (Target_mask.subtree
+           (Path.Build.relative_fname ctx_dir Merlin_ident.merlin_folder_name))
+    in
+    Rules.narrow targets (fun () ->
+      let* results =
+        Memo.parallel_map prepared ~f:(fun (_, _, prepared) -> Memo.Lazy.force prepared)
+      in
+      let { For_stanza.merlin = merlins; cctx = _; js = js_targets; source_dirs } =
+        For_stanza.collect results
+      in
+      let* dir_contents = Dir_contents.Standalone_or_root.root standalone_or_root in
+      let+ () =
+        let more_src_dirs =
+          Merlin.more_src_dirs dir_contents ~source_dirs:(src_dir :: source_dirs)
+        in
+        Memo.parallel_iter
+          merlins
+          ~f:(Merlin.add_rules sctx ~dir:ctx_dir ~more_src_dirs ~expander)
+      and+ () = define_all_alias ~dir:ctx_dir ~project ~js_targets in
+      ())
   in
   let+ () =
-    let more_src_dirs =
-      Merlin.more_src_dirs dir_contents ~source_dirs:(src_dir :: source_dirs)
-    in
-    Memo.parallel_iter
-      merlins
-      ~f:(Merlin.add_rules sctx ~dir:ctx_dir ~more_src_dirs ~expander)
-  and+ () =
-    Memo.parallel_iter stanzas ~f:(fun stanza ->
-      match Stanza.repr stanza with
-      | Parser_generators.Ocamllex.T ocamllex ->
-        Expander.eval_blang expander ocamllex.enabled_if
-        >>= (function
-         | false -> Memo.return ()
-         | true ->
-           Parser_generator_rules.gen_rules
-             sctx
-             ~dir_contents
-             ~dir:ctx_dir
-             ~for_:(Ocamllex ocamllex))
-      | Parser_generators.Ocamlyacc.T ocamlyacc ->
-        Expander.eval_blang expander ocamlyacc.enabled_if
-        >>= (function
-         | false -> Memo.return ()
-         | true ->
-           Parser_generator_rules.gen_rules
-             sctx
-             ~dir_contents
-             ~dir:ctx_dir
-             ~for_:(Ocamlyacc ocamlyacc))
-      | Menhir_stanza.T m ->
-        Expander.eval_blang expander m.enabled_if
-        >>= (function
-         | false -> Memo.return ()
-         | true ->
-           (* TODO(anmonteiro): support Melange *)
-           let* ml_sources = Dir_contents.ml dir_contents ~for_:Ocaml in
-           let { Ml_sources.Parser_generators.deps = _; targets } =
-             Ml_sources.Parser_generators.modules ml_sources ~for_:(Menhir m.loc)
-           in
-           Memo.List.find_map
-             (Module_trie.to_list_mapi targets ~f:(fun module_path (_, m) ->
-                module_path, m))
-             ~f:(fun (module_path, m) ->
-               Ml_sources.find_origin
-                 ml_sources
-                 ~libs:(Scope.libs scope)
-                 (Module.Source.path m)
-               >>| Option.bind ~f:(fun loc ->
-                 Loc.Map.find cctxs (Ml_sources.Origin.loc loc))
-               >>| Option.map ~f:(fun cctx -> module_path, cctx))
-           >>= (function
-            | Some (module_path, cctx) ->
-              let module_path, _ = Nonempty_list.destruct_last module_path in
-              Menhir_rules.gen_rules
-                (Option.value_exn cctx.ocaml)
-                m
-                ~dir:ctx_dir
-                ~module_path
-            | None ->
-              (* This happens often when passing a [-p ...] option that hides a
-                 library *)
-              let file_targets =
-                Module_trie.to_list_map targets ~f:(fun (_, m) ->
-                  List.map (Module.Source.files m) ~f:(fun m ->
-                    Module.File.path m |> Path.as_in_build_dir_exn))
-                |> List.concat
-              in
-              Super_context.add_rule
-                sctx
-                ~dir:ctx_dir
-                (Action_builder.fail
-                   { fail =
-                       (fun () ->
-                         User_error.raise
-                           ~loc:m.loc
-                           [ Pp.text
-                               "I can't determine what library/executable the files \
-                                produced by this stanza are part of."
-                           ])
-                   }
-                 |> Action_builder.with_file_targets ~file_targets)))
-      | Rocq_stanza.Theory.T m ->
-        Expander.eval_blang expander m.enabled_if
-        >>= (function
-         | false -> Memo.return ()
-         | true -> Rocq_rules.setup_theory_rules ~sctx ~dir:ctx_dir ~dir_contents m)
-      | Rocq_stanza.Extraction.T m ->
-        Rocq_rules.setup_extraction_rules ~sctx ~dir:ctx_dir ~dir_contents m
-      | Rocq_stanza.Rocqpp.T m -> Rocq_rules.setup_rocqpp_rules ~sctx ~dir:ctx_dir m
-      | _ -> Memo.return ())
-  and+ () =
-    let project = Dune_file.project dune_file in
-    define_all_alias ~dir:ctx_dir ~project ~js_targets
+    Memo.parallel_iter prepared ~f:(fun (stanza, targets, _) ->
+      Rules.narrow targets (fun () ->
+        match Stanza.repr stanza with
+        | Parser_generators.Ocamllex.T ocamllex ->
+          let* dir_contents = Dir_contents.Standalone_or_root.root standalone_or_root in
+          Expander.eval_blang expander ocamllex.enabled_if
+          >>= (function
+           | false -> Memo.return ()
+           | true ->
+             Parser_generator_rules.gen_rules
+               sctx
+               ~dir_contents
+               ~dir:ctx_dir
+               ~for_:(Ocamllex ocamllex))
+        | Parser_generators.Ocamlyacc.T ocamlyacc ->
+          let* dir_contents = Dir_contents.Standalone_or_root.root standalone_or_root in
+          Expander.eval_blang expander ocamlyacc.enabled_if
+          >>= (function
+           | false -> Memo.return ()
+           | true ->
+             Parser_generator_rules.gen_rules
+               sctx
+               ~dir_contents
+               ~dir:ctx_dir
+               ~for_:(Ocamlyacc ocamlyacc))
+        | Menhir_stanza.T m ->
+          Expander.eval_blang expander m.enabled_if
+          >>= (function
+           | false -> Memo.return ()
+           | true ->
+             let* dir_contents =
+               Dir_contents.Standalone_or_root.root standalone_or_root
+             in
+             let* ml_sources = Dir_contents.ml dir_contents ~for_:Ocaml in
+             let { Ml_sources.Parser_generators.deps = _; targets } =
+               Ml_sources.Parser_generators.modules ml_sources ~for_:(Menhir m.loc)
+             in
+             let* context =
+               Memo.List.find_map
+                 (Module_trie.to_list_mapi targets ~f:(fun module_path (_, m) ->
+                    module_path, m))
+                 ~f:(fun (module_path, m) ->
+                   let* origin =
+                     Ml_sources.find_origin
+                       ml_sources
+                       ~libs:(Scope.libs scope)
+                       (Module.Source.path m)
+                   in
+                   match
+                     Option.bind origin ~f:(fun loc ->
+                       Loc.Map.find cctxs (Ml_sources.Origin.loc loc))
+                   with
+                   | None -> Memo.return None
+                   | Some context ->
+                     let+ context = Memo.Lazy.force context in
+                     Option.map context ~f:(fun cctx -> module_path, cctx))
+             in
+             (match context with
+              | Some (module_path, cctx) ->
+                let module_path, _ = Nonempty_list.destruct_last module_path in
+                Menhir_rules.gen_rules
+                  (Option.value_exn cctx.ocaml)
+                  m
+                  ~dir:ctx_dir
+                  ~module_path
+              | None ->
+                let file_targets =
+                  Module_trie.to_list_map targets ~f:(fun (_, m) ->
+                    List.map (Module.Source.files m) ~f:(fun m ->
+                      Module.File.path m |> Path.as_in_build_dir_exn))
+                  |> List.concat
+                in
+                Super_context.add_rule
+                  sctx
+                  ~dir:ctx_dir
+                  (Action_builder.fail
+                     { fail =
+                         (fun () ->
+                           User_error.raise
+                             ~loc:m.loc
+                             [ Pp.text
+                                 "I can't determine what library/executable the files \
+                                  produced by this stanza are part of."
+                             ])
+                     }
+                   |> Action_builder.with_file_targets ~file_targets)))
+        | Rocq_stanza.Theory.T m ->
+          let* dir_contents = Dir_contents.Standalone_or_root.root standalone_or_root in
+          Expander.eval_blang expander m.enabled_if
+          >>= (function
+           | false -> Memo.return ()
+           | true -> Rocq_rules.setup_theory_rules ~sctx ~dir:ctx_dir ~dir_contents m)
+        | Rocq_stanza.Extraction.T m ->
+          let* dir_contents = Dir_contents.Standalone_or_root.root standalone_or_root in
+          Rocq_rules.setup_extraction_rules ~sctx ~dir:ctx_dir ~dir_contents m
+        | Rocq_stanza.Rocqpp.T m -> Rocq_rules.setup_rocqpp_rules ~sctx ~dir:ctx_dir m
+        | _ -> Memo.return ()))
   in
   cctxs
 ;;
 
 let gen_common_directory_rules sctx ~dir source_dir =
-  let+ () = Format_rules.setup_alias sctx ~dir
-  and+ () = Cram_rules.rules source_dir ~sctx ~dir
-  and+ () = Revdep_rules.add ~sctx ~dir in
-  ()
+  let aliases = Target_mask.aliases_in_directory dir in
+  let* () =
+    Rules.narrow aliases (fun () ->
+      let* () = Memo.Lazy.force Configurator_rules.force_files in
+      Format_rules.setup_alias sctx ~dir)
+  in
+  let* () =
+    let targets =
+      Filename.Array.Set.union
+        (Source_tree.Dir.filenames source_dir)
+        (Source_tree.Dir.sub_dir_names source_dir)
+      |> Filename.Array.Set.to_list
+      |> List.filter ~f:Cram_test.is_cram_suffix
+      |> List.fold_left ~init:aliases ~f:(fun targets name ->
+        Target_mask.union
+          targets
+          (Target_mask.subtree
+             (Path.Build.relative dir (".cram." ^ Filename.to_string name))))
+    in
+    Rules.narrow targets (fun () ->
+      let* () = Memo.Lazy.force Configurator_rules.force_files in
+      Cram_rules.rules source_dir ~sctx ~dir)
+  in
+  Rules.narrow aliases (fun () ->
+    let* () = Memo.Lazy.force Configurator_rules.force_files in
+    Revdep_rules.add ~sctx ~dir)
 ;;
 
 let gen_rules_source_only sctx ~dir source_dir =
@@ -365,28 +481,10 @@ let gen_rules_source_only sctx ~dir source_dir =
     let* sctx = sctx in
     let+ () = gen_common_directory_rules sctx ~dir source_dir
     and+ () =
-      define_all_alias ~dir ~js_targets:[] ~project:(Source_tree.Dir.project source_dir)
+      Rules.narrow (Target_mask.aliases_in_directory dir) (fun () ->
+        define_all_alias ~dir ~js_targets:[] ~project:(Source_tree.Dir.project source_dir))
     in
     ())
-;;
-
-let gen_rules_group_part_or_root sctx dir_contents cctxs ~source_dir ~dir
-  : Compilation_context.t option Compilation_mode.Per_mode.t Loc.Map.t Memo.t
-  =
-  let+ () = gen_common_directory_rules sctx ~dir source_dir
-  and+ contexts =
-    (* CR-soon rgrinberg: we shouldn't have to fetch the stanzas yet again *)
-    Dune_load.stanzas_in_dir dir
-    >>= function
-    | Some dune_file ->
-      Super_context.expander sctx ~dir
-      >>= gen_rules_for_stanzas sctx dir_contents cctxs ~dune_file ~dir
-    | None ->
-      let project = Source_tree.Dir.project source_dir in
-      let+ () = define_all_alias ~dir ~js_targets:[] ~project in
-      Loc.Map.empty
-  in
-  contexts
 ;;
 
 (* Warn whenever [(name <name>)]) is missing from the [dune-project] file *)
@@ -529,402 +627,92 @@ let has_rules ~dir subdirs f =
        rules)
 ;;
 
-module Compilation_targets = struct
-  module Targets = Gen_rules.Rule_targets
+let source_file_hints ({ Source_file_dir.dir; files; stanzas; _ } : Source_file_dir.t) =
+  let generated =
+    List.concat_map stanzas ~f:(fun stanza ->
+      match Stanza.repr stanza with
+      | Rule_conf.T { targets = Static { targets; _ }; _ } ->
+        List.filter_map targets ~f:(fun (target, kind) ->
+          match kind with
+          | Directory -> None
+          | File -> Option.bind (String_with_vars.text_only target) ~f:Filename.of_string)
+      | Generate_sites_module_stanza.T def ->
+        [ Filename.of_string_exn (Module_name.to_string def.module_ ^ ".ml") ]
+      | _ -> [])
+    |> Filename.Array.Set.of_list
+  in
+  dir, Filename.Array.Set.union files generated
+;;
 
-  let supports_staging project = Dune_project.dune_version project >= (3, 23)
-
-  (* Declarations use physical source names, not the module namespace whose
-     expansion may itself need to build a source-stage target. *)
-  let files paths =
-    Targets.Declared
-      { files = Path.Build.Set.of_list paths
-      ; subtrees = Path.Build.Set.empty
-      ; file_extensions = Path.Build.Map.empty
-      }
-  ;;
-
-  let subtrees paths =
-    Targets.Declared
-      { files = Path.Build.Set.empty
-      ; subtrees = Path.Build.Set.of_list paths
-      ; file_extensions = Path.Build.Map.empty
-      }
-  ;;
-
-  let generated_modules ~dir =
-    (* Alias names depend on the expanded namespace, but their private source
-       extension does not overlap ordinary OCaml inputs. *)
-    Targets.Declared
-      { files = Path.Build.Set.empty
-      ; subtrees = Path.Build.Set.empty
-      ; file_extensions =
-          Path.Build.Map.singleton
-            dir
-            (Filename.Extension.Set.singleton Filename.Extension.ml_gen)
-      }
-  ;;
-
-  let union targets = List.fold_left targets ~init:Targets.empty ~f:Targets.union
-
-  let with_extensions ~dir basename extensions =
-    List.map extensions ~f:(fun extension ->
-      Path.Build.relative dir (basename ^ extension))
-  ;;
-
-  let preprocessed_files ~dialects path =
-    let pp path =
-      Path.Build.map_extension path ~f:(fun extension ->
-        Filename.Extension.Or_empty.of_string_exn
-          (".pp" ^ Filename.Extension.Or_empty.to_string extension))
-    in
-    let dialect =
-      let open Option.O in
-      let* _, extension =
-        Path.Build.basename path |> Filename.to_string |> String.lsplit2 ~on:'.'
-      in
-      let* extension = Filename.Extension.of_string ("." ^ extension) in
-      Dialect.DB.find_by_extension dialects extension
-    in
-    match dialect with
-    | None -> []
-    | Some (dialect, kind) ->
-      let convert path =
-        match Dialect.ml_suffix dialect kind with
-        | None -> path
-        | Some suffix ->
-          Path.Build.extend_basename path ~suffix:(Filename.Extension.to_filename suffix)
-      in
-      let converted = convert path in
-      let preprocessed = [ pp path; pp converted; convert (pp path) ] in
-      (if Path.Build.equal path converted then [] else [ converted ])
-      @ preprocessed
-      @
-        (match kind with
-        | Intf -> []
-        | Impl ->
-          List.map (converted :: preprocessed) ~f:(fun path ->
-            Path.Build.set_extension path ~ext:Filename.Extension.mli))
-  ;;
-
-  let foreign_objects ~dir ~source_files ~ext_obj =
-    List.concat_map source_files ~f:(fun (_, filenames) ->
-      Filename.Array.Set.to_list filenames
-      |> List.concat_map ~f:(fun filename ->
-        let name = Filename.to_string filename in
-        if not (Foreign_language.has_foreign_extension ~fn:name)
-        then []
-        else (
-          let basename = Filename.remove_extension filename |> Filename.to_string in
-          let ext_obj = Filename.Extension.to_string ext_obj in
-          with_extensions
-            ~dir
-            basename
-            [ ext_obj; "_byte" ^ ext_obj; "_native" ^ ext_obj ])))
-    |> files
-  ;;
-
-  let ctypes_files ~dir (ctypes : Ctypes_field.t) =
-    let scripts =
-      Ctypes_field.type_gen_script ctypes
-      :: List.map ctypes.function_description ~f:(fun description ->
-        Ctypes_field.function_gen_script ctypes description)
-    in
-    let generated_types =
-      External_lib_name.to_string ctypes.external_library_name
-      ^ "__c_cout_generated_types"
-    in
-    List.map (Ctypes_field.generated_ml_and_c_files ctypes) ~f:(Path.Build.relative dir)
-    @ List.concat_map scripts ~f:(fun script ->
-      with_extensions ~dir script [ ".ml"; ".exe" ])
-    @ with_extensions ~dir generated_types [ ".c"; ".exe" ]
-  ;;
-
-  let buildable ~dir ~source_files ~lib_config (buildable : Buildable.t) =
-    let selects =
-      buildable.libraries @ Option.value buildable.melange_libraries ~default:[]
-      |> List.filter_map ~f:(function
-        | Lib_dep.Select select -> Some (Path.Build.append_local dir select.result_fn)
-        | Direct _ | Re_export _ | Instantiate _ -> None)
-    in
-    let ctypes =
-      match buildable.ctypes with
-      | None -> []
-      | Some ctypes -> ctypes_files ~dir ctypes
-    in
-    union
-      [ files (selects @ ctypes)
-      ; foreign_objects ~dir ~source_files ~ext_obj:lib_config.Lib_config.ext_obj
-      ]
-  ;;
-
-  let foreign_archive ~dir ~lib_config archive_name =
-    List.concat_map [ Mode.Select.All; Only Byte; Only Native ] ~f:(fun mode ->
-      [ Foreign.Archive.Name.lib_file
-          archive_name
-          ~dir
-          ~ext_lib:lib_config.Lib_config.ext_lib
-          ~mode
-      ; Foreign.Archive.Name.dll_file archive_name ~dir ~ext_dll:lib_config.ext_dll ~mode
-      ])
-    |> files
-  ;;
-
-  let library ~dir ~source_files ~lib_config (library : Library.t) =
-    if
-      (not (Sub_system_name.Map.is_empty library.sub_systems))
-      || Option.is_some library.stdlib
-      || Option.is_some library.implements
-      || not (List.is_empty library.parameters)
-    then Targets.All
-    else
-      union
-        [ subtrees [ Library.obj_dir library ~dir |> Obj_dir.obj_dir ]
-        ; files
-            (List.map
-               [ Filename.Extension.cma
-               ; Filename.Extension.cmxa
-               ; Filename.Extension.cmxs
-               ; lib_config.Lib_config.ext_lib
-               ]
-               ~f:(fun ext -> Library.archive library ~dir ~ext))
-        ; buildable ~dir ~source_files ~lib_config library.buildable
-        ; (match Library.stubs_archive library with
-           | None -> Targets.empty
-           | Some archive ->
-             foreign_archive ~dir ~lib_config (Foreign.Archive.name archive ~mode:All))
-        ]
-  ;;
-
-  let executable_extensions ~lib_config (executables : Executables.t) =
-    Executables.Link_mode.Map.to_list_map executables.modes ~f:(fun mode loc ->
-      Executables.Link_mode.extension
-        mode
-        ~loc
-        ~ext_obj:lib_config.Lib_config.ext_obj
-        ~ext_dll:lib_config.ext_dll)
-    @ [ Filename.Extension.exe; Filename.Extension.of_string_exn ".bc-for-jsoo" ]
-    @ List.map Js_of_ocaml.Mode.all ~f:(fun mode -> Js_of_ocaml.Ext.exe ~mode)
-  ;;
-
-  let executables ~dir ~source_files ~lib_config (executables : Executables.t) =
-    let extensions = executable_extensions ~lib_config executables in
-    let executable_files =
-      Nonempty_list.to_list executables.names
-      |> List.concat_map ~f:(fun (_, name) ->
-        let outputs =
-          with_extensions ~dir name (List.map extensions ~f:Filename.Extension.to_string)
-        in
-        outputs
-        @ List.map outputs ~f:(fun path ->
-          Path.Build.set_extension path ~ext:Filename.Extension.map))
-    in
-    union
-      [ subtrees
-          ((Executables.obj_dir executables ~dir |> Obj_dir.obj_dir)
-           :: Nonempty_list.to_list_map executables.names ~f:(fun (_, name) ->
-             Path.Build.relative
-               dir
-               (name ^ Filename.Extension.to_string Js_of_ocaml.Ext.wasm_dir)))
-      ; files executable_files
-      ; files
-          (Option.to_list executables.bootstrap_info
-           |> List.map ~f:(Path.Build.relative dir))
-      ; buildable ~dir ~source_files ~lib_config executables.buildable
-      ]
-  ;;
-
-  let test_outputs ~dir ~lib_config (exes : Executables.t) =
-    let extensions =
-      executable_extensions ~lib_config exes
-      |> List.map ~f:(fun ext -> Filename.Extension.to_string ext ^ ".output")
-    in
-    Nonempty_list.to_list exes.names
-    |> List.concat_map ~f:(fun (_, name) -> with_extensions ~dir name extensions)
-    |> files
-  ;;
-
-  let parser_files ~dir ~filenames ~modules =
-    let physical_names =
-      Filename.Array.Set.to_list filenames
-      |> List.filter_map ~f:(fun filename ->
-        match Filename.extension filename |> Filename.Extension.Or_empty.to_string with
-        | ".mll" | ".mly" ->
-          Some (Filename.remove_extension filename |> Filename.to_string)
-        | _ -> None)
-    in
-    if not (Ordered_set_lang.Unexpanded.is_expanded modules)
-    then Targets.All
-    else (
-      let names =
-        Ordered_set_lang.Unexpanded.fold_strings modules ~init:[] ~f:(fun _pos sw names ->
-          Option.value_exn (String_with_vars.text_only sw) :: names)
-      in
-      List.concat_map (names @ physical_names) ~f:(fun name ->
-        with_extensions ~dir name [ ".ml"; ".mli" ])
-      |> files)
-  ;;
-
-  let stanza ~dir ~source_files ~filenames ~lib_config stanza =
-    match Stanza.repr stanza with
-    | Library.T lib ->
-      let+ lib_config = Memo.Lazy.force lib_config in
-      library ~dir ~source_files ~lib_config lib
-    | Executables.T exes ->
-      let+ lib_config = Memo.Lazy.force lib_config in
-      executables ~dir ~source_files ~lib_config exes
-    | Tests.T { action = Some _; _ } -> Memo.return Targets.All
-    | Tests.T { exes; action = None; _ } ->
-      let+ lib_config = Memo.Lazy.force lib_config in
-      union
-        [ executables ~dir ~source_files ~lib_config exes
-        ; test_outputs ~dir ~lib_config exes
-        ]
-    | Foreign_library.T lib ->
-      let+ lib_config = Memo.Lazy.force lib_config in
-      union
-        [ foreign_archive ~dir ~lib_config lib.archive_name
-        ; foreign_objects ~dir ~source_files ~ext_obj:lib_config.ext_obj
-        ]
-    | Parser_generators.Ocamllex.T { modules; _ }
-    | Parser_generators.Ocamlyacc.T { modules; _ } ->
-      Memo.return (parser_files ~dir ~filenames ~modules)
-    | Rule_conf.T _
-    | Copy_files.T _
-    | Alias_conf.T _
-    | Install_conf.T _
-    | Include_subdirs.T _
-    | Dune_env.T _
-    | Documentation.T _
-    | Cram_stanza.T _
-    | Library_redirect.Local.T _
-    | Generate_sites_module_stanza.T _ -> Memo.return Targets.empty
-    (* Extensible generators remain eager until they declare their outputs. *)
-    | _ -> Memo.return Targets.All
-  ;;
-
-  let for_directory ~dir ~source_files =
-    let* source_dirs =
-      Memo.parallel_map source_files ~f:(fun (dir, filenames) ->
-        let+ project = Dune_load.find_project ~dir in
-        dir, filenames, project)
-    in
-    (* Early actions must be sandboxed so that deferred cleanup cannot remove
-       their temporary files. Keep older groups on the complete view. *)
-    if List.exists source_dirs ~f:(fun (_, _, project) -> not (supports_staging project))
-    then Memo.return Targets.All
-    else (
-      let lib_config =
-        Memo.lazy_ ~name:"compilation-targets-lib-config" (fun () ->
-          let* context = Context.DB.by_dir dir in
-          let+ ocaml = Context.ocaml context in
-          ocaml.lib_config)
-      in
-      let+ targets =
-        Memo.parallel_map source_dirs ~f:(fun (dir, filenames, project) ->
-          let* dune_file = Dune_load.stanzas_in_dir dir
-          and* source_dir =
-            Source_tree.find_dir (Path.Build.drop_build_context_exn dir)
-          in
-          let* stanza_targets =
-            match dune_file with
-            | None -> Memo.return []
-            | Some dune_file ->
-              Dune_file.stanzas dune_file
-              >>= Memo.parallel_map ~f:(stanza ~dir ~source_files ~filenames ~lib_config)
-          in
-          let dialects = Dune_project.dialects project in
-          let physical_files =
-            Filename.Array.Set.to_list_map filenames ~f:(Path.Build.relative_fname dir)
-          in
-          let generated_files =
-            List.concat_map stanza_targets ~f:(function
-              | Targets.All -> []
-              | Declared { files; _ } -> Path.Build.Set.to_list files)
-          in
-          let preprocessed =
-            List.concat_map
-              (physical_files @ generated_files)
-              ~f:(preprocessed_files ~dialects)
-          in
-          let cram_dirs =
-            match source_dir with
-            | None -> []
-            | Some _ when not (Dune_project.cram project) -> []
-            | Some source_dir ->
-              Filename.Array.Set.union
-                (Source_tree.Dir.filenames source_dir)
-                (Source_tree.Dir.sub_dir_names source_dir)
-              |> Filename.Array.Set.to_list
-              |> List.filter_map ~f:(fun name ->
-                if Cram_test.is_cram_suffix name
-                then Some (Path.Build.relative dir (".cram." ^ Filename.to_string name))
-                else None)
-          in
-          let common_compilation_targets =
-            union
-              [ files preprocessed
-              ; generated_modules ~dir
-              ; subtrees
-                  [ Path.Build.relative_fname dir Merlin_ident.merlin_folder_name
-                  ; Path.Build.relative dir ".wrapped_compat"
-                  ; Path.Build.relative dir ".melange_src"
-                  ]
-              ]
-          in
-          Memo.return
-            (union stanza_targets, common_compilation_targets, subtrees cram_dirs))
-      in
-      let has_compilation =
-        List.exists targets ~f:(fun (stanza_targets, _, _) ->
-          not (Targets.is_empty stanza_targets))
-      in
-      List.concat_map targets ~f:(fun (stanza_targets, common, cram) ->
-        if has_compilation then [ stanza_targets; common; cram ] else [ cram ])
-      |> union)
-  ;;
-end
-
-let gen_rules_standalone_or_root sctx ~dir ~source_dir =
+let gen_rules_standalone_or_root sctx ~dir ~source_dir:_ =
   let* sctx = sctx in
   let* standalone_or_root =
     Dir_contents.triage ~dir sctx
     >>| function
-    | Group_part _ -> assert false
-    | Standalone_or_root standalone_or_root -> standalone_or_root
+    | Group_part _ ->
+      Code_error.raise "Expected a directory group root" [ "dir", Path.Build.to_dyn dir ]
+    | Standalone_or_root contents -> contents
   in
-  let compilation_rules =
+  let rules =
     Rules.collect_unit (fun () ->
-      let* () = Memo.Lazy.force Configurator_rules.force_files in
-      let* dir_contents = Dir_contents.Standalone_or_root.root standalone_or_root in
-      let* cctxs =
-        gen_rules_group_part_or_root sctx dir_contents Loc.Map.empty ~source_dir ~dir
+      let* source_rules = Dir_contents.Standalone_or_root.rules standalone_or_root in
+      let* () = Rules.produce source_rules in
+      let* source_dirs =
+        Dir_contents.Standalone_or_root.source_directories standalone_or_root
       in
-      Dir_contents.Standalone_or_root.subdirs standalone_or_root
-      >>= Memo.parallel_iter ~f:(fun dc ->
-        let source_dir = Option.value_exn (Dir_contents.source_dir dc) in
-        let+ (_ : Compilation_context.t option Compilation_mode.Per_mode.t Loc.Map.t) =
-          gen_rules_group_part_or_root
+      let source_dirs = Nonempty_list.to_list source_dirs in
+      let source_files = List.map source_dirs ~f:source_file_hints in
+      let generated =
+        List.concat_map source_dirs ~f:(fun { Source_file_dir.dir; stanzas; _ } ->
+          List.concat_map stanzas ~f:(fun stanza ->
+            match Stanza.repr stanza with
+            | Parser_generators.Ocamllex.T p ->
+              Parser_generator_rules.source_files ~dir ~source_files ~for_:(Ocamllex p)
+            | Parser_generators.Ocamlyacc.T p ->
+              Parser_generator_rules.source_files ~dir ~source_files ~for_:(Ocamlyacc p)
+            | Menhir_stanza.T m -> Menhir_rules.source_files ~dir ~source_files m
+            | _ -> []))
+      in
+      let source_files =
+        List.map source_files ~f:(fun (dir, files) ->
+          let generated =
+            List.filter_map generated ~f:(fun path ->
+              Option.some_if
+                (Path.Build.equal dir (Path.Build.parent_exn path))
+                (Path.Build.basename path))
+            |> Filename.Array.Set.of_list
+          in
+          dir, Filename.Array.Set.union files generated)
+      in
+      let obj_dirs =
+        List.concat_map source_dirs ~f:(fun { Source_file_dir.dir; stanzas; _ } ->
+          List.filter_map stanzas ~f:(fun stanza ->
+            match Stanza.repr stanza with
+            | Library.T lib -> Some (Library.obj_dir lib ~dir)
+            | Executables.T exes | Tests.T { exes; _ } ->
+              Some (Executables.obj_dir exes ~dir)
+            | _ -> None))
+      in
+      let* lib_config =
+        let+ ocaml = Context.ocaml (Super_context.context sctx) in
+        ocaml.lib_config
+      in
+      let+ _ =
+        Memo.List.fold_left source_dirs ~init:Loc.Map.empty ~f:(fun cctxs source ->
+          let { Source_file_dir.dir; source_dir; _ } = source in
+          let* () = gen_common_directory_rules sctx ~dir (Option.value_exn source_dir) in
+          gen_rules_for_stanzas
             sctx
-            dir_contents
-            cctxs
-            ~source_dir
-            ~dir:(Dir_contents.dir dc)
-        in
-        ()))
+            standalone_or_root
+            ~source_files
+            ~lib_config
+            ~obj_dirs
+            ~cctxs
+            source)
+      in
+      ())
   in
-  let compilation_targets =
-    let* source_files = Dir_contents.Standalone_or_root.source_files standalone_or_root in
-    Compilation_targets.for_directory ~dir ~source_files
-  in
-  Memo.return
-    (Gen_rules.Rules.create_staged
-       ~source_rules:
-         (let* () = Memo.Lazy.force Configurator_rules.force_files in
-          Dir_contents.Standalone_or_root.rules standalone_or_root)
-       ~compilation_rules
-       ~compilation_targets
-       ())
+  Memo.return (Gen_rules.Rules.create rules)
 ;;
 
 let gen_automatic_subdir_rules sctx ~dir ~nearest_src_dir ~src_dir =
@@ -1001,27 +789,17 @@ let gen_rules_regular_directory (sctx : Super_context.t Memo.t) ~src_dir ~compon
               | _ -> Memo.return Rules.empty
             in
             let additional_rules =
-              Gen_rules.Rules.create_staged
+              Gen_rules.Rules.create
                 ~build_dir_only_sub_dirs:
                   (Gen_rules.Build_only_sub_dirs.singleton
                      ~dir
                      (Subdir_set.of_set allowed_subdirs))
                 ~directory_targets
-                ~source_rules
-                ~compilation_rules
-                ~compilation_targets:
-                  (Memo.return
-                     (match components with
-                      | _ :: _ -> Gen_rules.Rule_targets.empty
-                      | [] ->
-                        (match st_dir with
-                         | Some source_dir
-                           when Compilation_targets.supports_staging
-                                  (Source_tree.Dir.project source_dir) ->
-                           Compilation_targets.files
-                             [ Path.Build.relative dir "compile_commands.json" ]
-                         | None | Some _ -> Gen_rules.Rule_targets.All)))
-                ()
+                (Rules.collect_unit (fun () ->
+                   let* source_rules = source_rules in
+                   let* () = Rules.produce source_rules in
+                   Rules.narrow (Compile_commands.rule_targets ~dir) (fun () ->
+                     compilation_rules >>= Rules.produce)))
             in
             Gen_rules.Rules.combine_exn additional_rules rules
         in
@@ -1034,10 +812,7 @@ let gen_rules_regular_directory (sctx : Super_context.t Memo.t) ~src_dir ~compon
           |> Gen_rules.rules_here
           |> Memo.return
         | Generated | Is_component_of_a_group_but_not_the_root _ ->
-          Gen_rules.Rules.empty
-          |> make_rules
-          |> Gen_rules.redirect_to_parent
-          |> Memo.return
+          Gen_rules.Rules.empty |> make_rules |> Gen_rules.rules_here |> Memo.return
         | Standalone (source_dir, _) | Group_root { source_dir; _ } ->
           let+ rules = gen_rules_standalone_or_root sctx ~dir ~source_dir in
           make_rules rules |> Gen_rules.rules_here
@@ -1050,8 +825,7 @@ let gen_rules_regular_directory (sctx : Super_context.t Memo.t) ~src_dir ~compon
     Gen_rules.combine melange_rules rules
 ;;
 
-(* Once [gen_rules] has decided what to do with the directory, it should end
-   with [has_rules] or [redirect_to_parent] *)
+(* Rules produced by ancestors are inherited independently of this callback. *)
 let gen_rules ctx sctx ~dir components : Gen_rules.result Memo.t =
   let src_dir = Path.Build.drop_build_context_exn dir in
   match components with

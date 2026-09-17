@@ -32,6 +32,8 @@ type directives =
 val print_toplevel_init_file : directives -> unit
 
 module Stanza : sig
+  val rule_targets : dir:Path.Build.t -> Toplevel_stanza.t -> Target_mask.t
+
   val setup
     :  sctx:Super_context.t
     -> dir:Path.Build.t

@@ -35,5 +35,8 @@ Adding `(ocamllex mod)` shows multiple rules generated
   Error: Multiple rules generated for _build/default/mod.ml:
   - dune:1
   - file present in source tree
+  -> required by transitive deps of foo__Mod.impl in _build/default
+  -> required by _build/default/.foo.objs/byte/foo__Mod.cmo
+  -> required by _build/default/foo.cma
   Hint: rm -f mod.ml
   [1]

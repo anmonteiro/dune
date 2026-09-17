@@ -40,7 +40,7 @@ end
 
 let dep_on_alias_build_info_if_exists alias =
   let open Action_builder.O in
-  Load_rules.load_dir ~dir:(Path.build (Alias.dir alias))
+  Load_rules.load_alias alias
   |> Action_builder.of_memo
   >>= function
   | Source _ | External _ ->

@@ -81,44 +81,53 @@ files in the current directory. Knowing this requires interpreting
 `copy_files` in the current directory. So the interpretation of
 `library` stanzas will need to go under a `narrow` as well.
 
-## Pull-based source and compilation stages
+## Pull-based recursive rule loading
 
-The rule loader implements a smaller step towards this proposal, without
-arbitrary masks or recursively generated suspensions. Ordinary rules and
-physical source discovery form a source stage. Module discovery, expanded
-directory mappings, and compilation rules form a deferred compilation stage.
-Each stage is memoized independently.
+The implementation represents `Rules.t` as a tree of direct rules and memoized
+suspended producers. Each suspension carries a `Target_mask.t` describing the
+file targets, directory targets, and aliases it may produce. Masks combine
+exact paths, subtrees, directory-local regions, filename predicates, and
+extension families. Output declarations live beside their rule generators;
+the engine does not impose a fixed source/compilation split.
 
-The compilation stage declares a conservative output set before expanding
-module lists or directory mappings. Declarations contain exact files,
-subtrees, and filename extensions within specified directories. The latter
-cover generated alias sources whose names depend on directory mappings.
-Generators without such a declaration retain complete rule loading.
+`Rules.narrow mask (fun () -> ...)` registers a suspension. Forcing it may
+produce both rules and further suspensions. Every enclosing mask applies to
+the resulting outputs, and emitting a rule or alias outside their
+intersection is an internal error. `Rules.defer` additionally exposes the
+producer's memoized result, allowing compilation contexts to be shared without
+generating their rules twice.
 
-A file lookup pulls the source stage alone unless the requested target may
-belong to the compilation stage. Multi-target source rules connect their
-outputs: if one output may also be a compilation output, requesting any of
-them requires the complete stage. This preserves duplicate-rule checks and
-fallback selection in the presence of promoted compilation outputs. Deferred
-rules are checked against their declared outputs when loaded.
+Each directory inherits its parent's rule tree and adds its own producers.
+Rules for descendants are therefore available without redirecting directory
+loading back to their generating ancestor. Generators remain restricted to
+their own directory and its descendants.
 
-This allows module lists and directory mappings to read source files or
-ordinary rule outputs in the same directory or `include_subdirs` group.
-Dependencies on the compilation that consumes those files remain cycles.
-Source copies, promotion, and fallback use the same validation in both views.
-Aliases and directory enumeration still require the complete view. Both views
-share an initial cleanup pass using the source rules and conservative output
-declarations. Complete loading then removes unused deferred outputs without
-touching unrelated files created during the build.
+Target, alias, and file-selection requests have separate masks. `Rules.load`
+recursively forces only suspensions whose masks intersect the request.
+Selecting a multi-target rule extends the request to its other outputs, then
+repeats this process until all overlapping producers are loaded. This keeps
+duplicate-rule checks and file/directory collisions independent of which
+output was requested first. Source copies, promotion, and fallback retain the
+same validation as complete loading.
 
-This requires source-stage actions to export only their declared outputs, so
-partial loading is limited to directory groups using language version 3.23 or
-later, where user rules must be sandboxed. Multi-target closure ensures that
-any source rule exporting a possible compilation output waits for complete
-loading. Older projects retain their original complete loading and cleanup,
-so unsandboxed actions can continue using temporary files in the build tree.
+Globs inside a directory target first materialize that target with a
+directory-only request. File producers that depend on its contents, such as
+`copy_files`, need not be evaluated before the directory exists. Ordinary
+target requests still check file/directory conflicts after discovery; file
+outputs of mixed file/directory rules retain the full multi-target closure.
 
-This does not implement the full proposal above. In particular, `copy_files`
-still needs complete directory enumeration, and unsupported rule generators,
-including Menhir and library subsystems, retain their existing loading
-granularity.
+Physical source discovery is separate from module selection and directory
+mapping expansion. Module lists and directory mappings can therefore read
+source files or generated inputs from their own directory or
+`include_subdirs` group. File-selection requests also let `copy_files`
+inspect matching outputs without loading unrelated compilation rules.
+Generators such as Menhir and library subsystems participate through their
+own declarations and suspensions. Dependencies on the compilation that
+consumes these inputs remain genuine cycles.
+
+Cleanup only considers entries present when a directory is first loaded. It
+conservatively retains possible outputs of unforced suspensions and refines
+that set as rules are revealed, without deleting fresh temporary files from
+running actions. Full compatibility with unsandboxed actions is intentionally
+deferred: a scratch path left by an earlier build can still be recreated before
+a later query removes it. There is no language-version gate.

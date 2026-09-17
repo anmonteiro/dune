@@ -3,7 +3,6 @@ open Memo.O
 module Gen_rules = Build_config.Gen_rules
 module Context_type = Build_config.Context_type
 module Build_only_sub_dirs = Gen_rules.Build_only_sub_dirs
-module Rule_targets = Gen_rules.Rule_targets
 
 module type Rule_generator = Gen_rules.Rule_generator
 
@@ -197,54 +196,94 @@ let remove_subdir_if_stale ~dir ~subdirs_to_keep fn =
     Path.rm_rf (Path.build path))
 ;;
 
-type cleanup_stage =
-  | Complete
-  | Before_compilation of Rule_targets.t
-  | After_compilation of Rule_targets.t
-
 let remove_old_artifacts
       ~dir
-      ~(rules_here : Loaded.rules_here)
+      ~entries
+      ~file_targets
+      ~directory_targets
       ~(subdirs_to_keep : Subdir_set.t)
-      ~(stage : cleanup_stage)
+      ~targets_to_keep
   =
-  match Path.Untracked.readdir_unsorted_with_kinds (Path.build dir) with
-  | Error _ -> ()
-  | Ok files ->
-    List.iter files ~f:(fun (fn, kind) ->
-      let path = Path.Build.relative_fname dir fn in
-      let path_is_a_target =
-        Path.Build.Map.mem rules_here.by_file_targets path
-        || Path.Build.Map.mem rules_here.by_directory_targets path
-      in
-      let keep_for_stage =
-        match stage with
-        | Complete -> false
-        | Before_compilation targets ->
-          (match kind with
-           | Unix.S_DIR -> Rule_targets.intersects_directory targets path
-           | _ -> Rule_targets.mem targets path)
-        | After_compilation targets -> not (Rule_targets.mem targets path)
-      in
-      if not (path_is_a_target || keep_for_stage)
-      then (
-        match kind with
-        | Unix.S_DIR -> remove_subdir_if_stale ~dir ~subdirs_to_keep fn
-        | _ ->
-          let () = Rule_cache.Workspace_local.remove_target path in
-          Fpath.unlink_exn (Path.Build.to_string path)))
+  List.iter entries ~f:(fun (fn, kind) ->
+    let path = Path.Build.relative_fname dir fn in
+    let path_is_a_target =
+      (kind <> Unix.S_DIR && Filename.Set.mem file_targets fn)
+      || Filename.Set.mem directory_targets fn
+    in
+    if
+      not
+        (path_is_a_target
+         ||
+         match kind with
+         | Unix.S_DIR -> Target_mask.intersects_directory targets_to_keep path
+         | _ ->
+           Target_mask.mem_file targets_to_keep path
+           || Target_mask.mem_directory targets_to_keep path)
+    then (
+      match kind with
+      | Unix.S_DIR -> remove_subdir_if_stale ~dir ~subdirs_to_keep fn
+      | _ ->
+        let () = Rule_cache.Workspace_local.remove_target path in
+        Fpath.unlink_exn (Path.Build.to_string path)))
 ;;
 
 (* We don't remove files in there as we don't know upfront if they are stale or
    not. *)
-let remove_old_sub_dirs_in_anonymous_actions_dir ~dir ~(subdirs_to_keep : Subdir_set.t) =
-  match Path.Untracked.readdir_unsorted_with_kinds (Path.build dir) with
-  | Error _ -> ()
-  | Ok files ->
-    List.iter files ~f:(fun (fn, kind) ->
-      match kind with
-      | Unix.S_DIR -> remove_subdir_if_stale ~dir ~subdirs_to_keep fn
-      | _ -> ())
+let remove_old_sub_dirs_in_anonymous_actions_dir
+      ~dir
+      ~build_dir
+      ~entries
+      ~directory_targets
+      ~(subdirs_to_keep : Subdir_set.t)
+      ~targets_to_keep
+  =
+  List.iter entries ~f:(fun (fn, kind) ->
+    match kind with
+    | Unix.S_DIR ->
+      let path = Path.Build.relative_fname build_dir fn in
+      if
+        not
+          (Filename.Set.mem directory_targets fn
+           || Target_mask.intersects_directory targets_to_keep path)
+      then remove_subdir_if_stale ~dir ~subdirs_to_keep fn
+    | _ -> ())
+;;
+
+let anonymous_actions_dir dir =
+  Path.Build.append_local Dpath.Build.anonymous_actions_dir (Path.Build.local dir)
+;;
+
+let read_cleanup_entries ~dir =
+  let read dir =
+    match Path.Untracked.readdir_unsorted_with_kinds (Path.build dir) with
+    | Error _ -> []
+    | Ok entries -> entries
+  in
+  read dir, read (anonymous_actions_dir dir)
+;;
+
+let cleanup_directory
+      ~dir
+      ~entries:(files, anonymous_actions)
+      ~file_targets
+      ~directory_targets
+      ~subdirs_to_keep
+      ~targets_to_keep
+  =
+  remove_old_artifacts
+    ~dir
+    ~entries:files
+    ~file_targets
+    ~directory_targets
+    ~subdirs_to_keep
+    ~targets_to_keep;
+  remove_old_sub_dirs_in_anonymous_actions_dir
+    ~dir:(anonymous_actions_dir dir)
+    ~build_dir:dir
+    ~entries:anonymous_actions
+    ~directory_targets
+    ~subdirs_to_keep
+    ~targets_to_keep
 ;;
 
 let no_rule_found ~loc fn =
@@ -294,7 +333,10 @@ let no_rule_found ~loc fn =
 
 module rec Load_rules : sig
   val load_dir : dir:Path.t -> Loaded.t Memo.t
+  val load_file_selector : File_selector.t -> Loaded.t Memo.t
+  val load_alias : Alias.t -> Loaded.t Memo.t
   val load_dir_for_target : Path.Build.t -> Loaded.t Memo.t
+  val load_dir_for_directory_target : Path.Build.t -> Loaded.t Memo.t
   val is_under_directory_target : Path.t -> bool Memo.t
 
   val lookup_alias
@@ -387,15 +429,6 @@ end = struct
            | None, _ | _, None -> ()
            | Some rule1, Some rule2 -> report_rule_conflict target rule1 rule2));
     { Loaded.by_file_targets; by_directory_targets }
-  ;;
-
-  let lookup_alias alias =
-    load_dir ~dir:(Path.build (Alias.dir alias))
-    >>| function
-    | Source _ | External _ ->
-      Code_error.raise "Alias in a non-build dir" [ "alias", Alias.to_dyn alias ]
-    | Build { aliases; _ } -> Alias.Name.Map.find aliases (Alias.name alias)
-    | Build_under_directory_target _ -> None
   ;;
 
   let compute_alias_expansions ~(collected : Rules.Dir_rules.ready) ~dir =
@@ -528,92 +561,14 @@ end = struct
     ;;
   end
 
-  let rule_targets (rule : Rule.t) =
-    let { Targets.Validated.root; files; dirs } = rule.targets in
-    let paths names =
-      Filename.Set.to_list_map names ~f:(Path.Build.relative_fname root)
-      |> Path.Build.Set.of_list
-    in
-    Rule_targets.Declared
-      { files = paths files
-      ; subtrees = paths dirs
-      ; file_extensions = Path.Build.Map.empty
-      }
-  ;;
-
   module Normal = struct
     type t =
       { build_dir_only_sub_dirs : Build_only_sub_dirs.t
       ; directory_targets : Loc.t Path.Build.Map.t
       ; rules : Rules.t Memo.Lazy.t
-      ; source_rules : Rules.t Memo.Lazy.t
-      ; compilation_targets : Rule_targets.t Memo.Lazy.t
       }
 
-    let close_compilation_targets ~source_rules targets =
-      Memo.lazy_ ~name:"source-rule-compilation-targets" (fun () ->
-        let* targets = Memo.Lazy.force targets in
-        if Rule_targets.is_empty targets
-        then Memo.return targets
-        else (
-          match targets with
-          | All -> Memo.return Rule_targets.All
-          | Declared _ ->
-            let+ source_rules = Memo.Lazy.force source_rules in
-            let source_rules =
-              Rules.to_map source_rules
-              |> Path.Build.Map.values
-              |> List.concat_map ~f:(fun rules -> (Rules.Dir_rules.consume rules).rules)
-            in
-            let touches targets (rule : Rule.t) =
-              let { Targets.Validated.root; files; dirs } = rule.targets in
-              Filename.Set.exists files ~f:(fun name ->
-                Rule_targets.mem targets (Path.Build.relative_fname root name))
-              || Filename.Set.exists dirs ~f:(fun name ->
-                Rule_targets.intersects_directory
-                  targets
-                  (Path.Build.relative_fname root name))
-            in
-            (* Executing one output builds every output of its rule. If a source
-               rule touches compilation outputs, all its targets must use the
-               complete view, including through other multi-target source rules. *)
-            let rec close targets rules =
-              let targets, remaining, changed =
-                List.fold_left
-                  rules
-                  ~init:(targets, [], false)
-                  ~f:(fun (targets, remaining, changed) rule ->
-                    if touches targets rule
-                    then Rule_targets.union targets (rule_targets rule), remaining, true
-                    else targets, rule :: remaining, changed)
-              in
-              if changed then close targets remaining else targets
-            in
-            close targets source_rules))
-    ;;
-
-    let combine_exn
-          r
-          { build_dir_only_sub_dirs
-          ; directory_targets
-          ; rules
-          ; source_rules
-          ; compilation_targets
-          }
-      =
-      let source_rules =
-        Memo.lazy_ ~name:"union-source-rules" (fun () ->
-          let+ r = Memo.Lazy.force r.source_rules
-          and+ r' = Memo.Lazy.force source_rules in
-          Rules.union r r')
-      in
-      let compilation_targets =
-        Memo.lazy_ ~name:"union-compilation-targets" (fun () ->
-          let+ r = Memo.Lazy.force r.compilation_targets
-          and+ r' = Memo.Lazy.force compilation_targets in
-          Rule_targets.union r r')
-        |> close_compilation_targets ~source_rules
-      in
+    let combine_exn r { build_dir_only_sub_dirs; directory_targets; rules } =
       { build_dir_only_sub_dirs =
           Build_only_sub_dirs.union r.build_dir_only_sub_dirs build_dir_only_sub_dirs
       ; directory_targets = Path.Build.Map.union_exn r.directory_targets directory_targets
@@ -623,8 +578,6 @@ end = struct
             let+ r = Memo.Lazy.force r.rules
             and+ r' = Memo.Lazy.force rules in
             Rules.union r r')
-      ; source_rules
-      ; compilation_targets
       }
     ;;
 
@@ -682,11 +635,7 @@ end = struct
 
     let make_rules_gen_result
           ~of_
-          ({ Gen_rules.Rules.build_dir_only_sub_dirs
-           ; directory_targets
-           ; rules
-           ; stages = _
-           } as staged_rules)
+          { Gen_rules.Rules.build_dir_only_sub_dirs; directory_targets; rules }
       =
       check_all_directory_targets_are_descendant ~of_ directory_targets;
       check_all_sub_dirs_rule_dirs_are_descendant ~of_ build_dir_only_sub_dirs;
@@ -694,23 +643,9 @@ end = struct
         Memo.lazy_ ~name:"check-rules-are-descendant" (fun () ->
           let+ rules = rules in
           check_all_rules_are_descendant ~of_ rules;
-          rules)
+          Rules.restrict rules (Target_mask.subtree of_))
       in
-      let source_rules =
-        Memo.lazy_ ~name:"check-source-rules-are-descendant" (fun () ->
-          let+ rules = Gen_rules.Rules.source_rules staged_rules in
-          check_all_rules_are_descendant ~of_ rules;
-          rules)
-      in
-      { build_dir_only_sub_dirs
-      ; directory_targets
-      ; rules
-      ; source_rules
-      ; compilation_targets =
-          Memo.lazy_ ~name:"compilation-targets" (fun () ->
-            Gen_rules.Rules.compilation_targets staged_rules)
-          |> close_compilation_targets ~source_rules
-      }
+      { build_dir_only_sub_dirs; directory_targets; rules }
     ;;
   end
 
@@ -721,43 +656,23 @@ end = struct
   module rec Gen_rules : sig
     val gen_rules : Dir_triage.Build_directory.t -> gen_rules_result Memo.t
   end = struct
-    let combine_gen_rules_result ~parent ~child =
-      match parent with
-      | Under_directory_target { directory_target_ancestor } ->
-        Code_error.raise
-          "rules under a directory target aren't allowed"
-          [ "directory_target_ancestor", Path.Build.to_dyn directory_target_ancestor ]
-      | Normal r -> Normal (Normal.combine_exn r child)
-    ;;
-
     let call_rules_generator
-          ({ Dir_triage.Build_directory.dir; context_name; context_type = _; sub_dir } as
-           d)
+          { Dir_triage.Build_directory.dir; context_name; context_type = _; sub_dir }
       =
       let (module RG : Rule_generator) = (Build_config.get ()).rule_generator in
       let sub_dir_components = Path.Source.explode sub_dir |> Filename.L.to_string in
       RG.gen_rules context_name ~dir sub_dir_components
       >>= function
-      | Rules rules -> Memo.return @@ Normal (Normal.make_rules_gen_result ~of_:dir rules)
+      | Rules rules -> Memo.return (Normal.make_rules_gen_result ~of_:dir rules)
       | Unknown_context ->
         Code_error.raise
           "[gen_rules] did not specify rules for the context"
           [ "context_name", Context_name.to_dyn context_name ]
-      | Redirect_to_parent child ->
-        (match Dir_triage.Build_directory.parent d with
-         | None ->
-           Code_error.raise
-             "[gen_rules] returned Redirect_to_parent on a root directory"
-             [ "context_name", Context_name.to_dyn context_name ]
-         | Some parent ->
-           let child = Normal.make_rules_gen_result ~of_:dir child in
-           let+ parent = Gen_rules.gen_rules parent in
-           combine_gen_rules_result ~parent ~child)
     ;;
 
     let gen_rules_impl d =
       match Dir_triage.Build_directory.parent d with
-      | None -> call_rules_generator d
+      | None -> call_rules_generator d >>| fun rules -> Normal rules
       | Some d' ->
         Gen_rules.gen_rules d'
         >>= (function
@@ -765,7 +680,9 @@ end = struct
          | Normal rules ->
            if Path.Build.Map.mem rules.directory_targets d.dir
            then Memo.return (Under_directory_target { directory_target_ancestor = d.dir })
-           else call_rules_generator d)
+           else
+             let+ child = call_rules_generator d in
+             Normal (Normal.combine_exn rules child))
     ;;
 
     let gen_rules =
@@ -889,6 +806,74 @@ end = struct
       ]
   ;;
 
+  let inherited_descendants_to_keep ~dir declarations =
+    Path.Build.Map.foldi declarations ~init:Dir_set.empty ~f:(fun ancestor subdirs acc ->
+      if Path.Build.equal ancestor dir
+      then acc
+      else (
+        match Path.Local_gen.descendant dir ~of_:ancestor with
+        | None -> acc
+        | Some relative ->
+          let inherited =
+            List.fold_left
+              (Path.Local_gen.explode relative)
+              ~init:(Subdir_set.to_dir_set subdirs |> Dir_set.forget_root)
+              ~f:(fun dirs name -> Dir_set.descend dirs name |> Dir_set.forget_root)
+          in
+          Dir_set.union acc inherited))
+  ;;
+
+  let check_partial_directory_visibility
+        ({ Dir_triage.Build_directory.dir; context_type; sub_dir; _ } as build_dir)
+        rules_produced
+    =
+    match
+      ( Dir_triage.Build_directory.parent build_dir
+      , Path.Build.Map.find (Rules.to_map rules_produced) dir )
+    with
+    | None, _ | _, None -> Memo.return ()
+    | Some parent, Some dir_rules ->
+      let* is_source_dir =
+        match context_type with
+        | Empty -> Memo.return false
+        | With_sources ->
+          let module Source_tree = (val (Build_config.get ()).source_tree) in
+          let+ source_dir = Source_tree.find_dir sub_dir in
+          Option.is_some source_dir
+      in
+      if is_source_dir
+      then Memo.return ()
+      else
+        let* generated = Gen_rules.gen_rules parent in
+        (match generated with
+         | Under_directory_target _ -> Memo.return ()
+         | Normal { build_dir_only_sub_dirs; rules; _ } ->
+           let declared_subdir =
+             inherited_descendants_to_keep ~dir build_dir_only_sub_dirs |> Dir_set.here
+           in
+           if declared_subdir
+           then Memo.return ()
+           else
+             (* Unforced masks are ownership declarations too. Check the parent's
+               declarations without pulling unrelated producers or loading its
+               complete directory, which can depend on this request. *)
+             let+ rules = Memo.Lazy.force rules in
+             let here =
+               Target_mask.union
+                 (Target_mask.files_in_directory dir)
+                 (Target_mask.union
+                    (Target_mask.directories_in_directory dir)
+                    (Target_mask.aliases_in_directory dir))
+             in
+             if not (Target_mask.intersects (Rules.targets rules) here)
+             then
+               Code_error.raise
+                 "Generated rules in a directory not allowed by the parent"
+                 [ "dir", Path.Build.to_dyn dir
+                 ; "rules", Rules.Dir_rules.to_dyn dir_rules
+                 ])
+  ;;
+
   let descendants_to_keep
         { Dir_triage.Build_directory.dir; context_name = _; context_type; sub_dir }
         (build_dir_only_sub_dirs : Subdir_set.t)
@@ -970,6 +955,7 @@ end = struct
   let compile_directory_rules
         { Dir_triage.Build_directory.dir; context_name; context_type; sub_dir }
         ~build_dir_only_sub_dirs
+        ~mask
         rules_produced
     =
     let collected =
@@ -987,10 +973,20 @@ end = struct
     in
     let* copy_rules =
       let ctx_dir = Context_name.build_dir context_name in
-      create_copy_rules
-        ~dir:sub_dir
-        ~ctx_dir
-        ~non_target_source_filenames:source_filenames
+      let selected_targets =
+        List.fold_left rules ~init:Filename.Set.empty ~f:(fun names (rule : Rule.t) ->
+          Filename.Set.union
+            names
+            (Filename.Set.union rule.targets.files rule.targets.dirs))
+      in
+      let non_target_source_filenames =
+        Filename.Array.Set.to_list source_filenames
+        |> List.filter ~f:(fun filename ->
+          Filename.Set.mem selected_targets filename
+          || Target_mask.mem_file mask (Path.Build.relative_fname dir filename))
+        |> Filename.Array.Set.of_list
+      in
+      create_copy_rules ~dir:sub_dir ~ctx_dir ~non_target_source_filenames
     in
     let rules =
       if Filename.Array.Set.is_empty source_filenames
@@ -1009,138 +1005,53 @@ end = struct
       then report_rule_internal_dir_conflict name loc)
   ;;
 
-  let cleanup_staged_source_directory =
-    Memo.exec
+  let cleanup_target_names ~dir ~source_filenames rules =
+    let { Rules.Dir_rules.rules; aliases = _ } =
+      Rules.find rules (Path.build dir) |> Rules.Dir_rules.consume
+    in
+    List.fold_left
+      rules
+      ~init:(source_filenames, Filename.Set.empty)
+      ~f:(fun (files, dirs) (rule : Rule.t) ->
+        ( Filename.Set.union files rule.targets.files
+        , Filename.Set.union dirs rule.targets.dirs ))
+  ;;
+
+  let rec initial_cleanup build_dir =
+    Memo.exec (Lazy.force initial_cleanup_memo) build_dir
+
+  and initial_cleanup_memo =
+    lazy
       (Memo.create
-         "cleanup-staged-source-directory"
+         "initial-rule-cleanup"
          ~input:(module Dir_triage.Build_directory)
          (fun ({ Dir_triage.Build_directory.dir; context_type; sub_dir; _ } as build_dir) ->
+            let* (_ : Memo.Run.t) = Memo.current_run () in
+            (* Rule inheritance does not load parent directories. Clean their
+               stale children before an action can use a descendant, without
+               pulling any of the parent's suspended producers. *)
+            let* () =
+              Memo.Option.iter
+                (Dir_triage.Build_directory.parent build_dir)
+                ~f:(fun parent -> initial_cleanup parent >>| ignore)
+            in
             let module Source_tree = (val (Build_config.get ()).source_tree) in
             let* source_dir =
               match context_type with
               | Empty -> Memo.return None
               | With_sources -> Source_tree.find_dir sub_dir
             in
-            match source_dir with
-            | None -> Memo.return None
-            | Some source_dir ->
-              let* generated = Gen_rules.gen_rules build_dir in
-              (match generated with
-               | Under_directory_target _ -> Memo.return None
-               | Normal normal ->
-                 let* compilation_targets = Memo.Lazy.force normal.compilation_targets in
-                 (match compilation_targets with
-                  | All -> Memo.return None
-                  | Declared _ when Rule_targets.is_empty compilation_targets ->
-                    Memo.return None
-                  | Declared _ ->
-                    let+ rules_produced = Memo.Lazy.force normal.source_rules in
-                    let source_targets =
-                      Rule_targets.Declared
-                        { files =
-                            Source_tree.Dir.filenames source_dir
-                            |> Filename.Array.Set.to_list_map
-                                 ~f:(Path.Build.relative_fname dir)
-                            |> Path.Build.Set.of_list
-                        ; subtrees = Path.Build.Set.empty
-                        ; file_extensions = Path.Build.Map.empty
-                        }
-                    in
-                    let { Rules.Dir_rules.rules; aliases = _ } =
-                      Rules.find rules_produced (Path.build dir)
-                      |> Rules.Dir_rules.consume
-                    in
-                    let targets_to_keep =
-                      List.fold_left
-                        rules
-                        ~init:(Rule_targets.union compilation_targets source_targets)
-                        ~f:(fun targets rule ->
-                          Rule_targets.union targets (rule_targets rule))
-                    in
-                    let subdirs_to_keep =
-                      local_descendants_to_keep
-                        ~dir
-                        (Build_only_sub_dirs.find normal.build_dir_only_sub_dirs dir)
-                        ~source_dirs:(Source_tree.Dir.sub_dir_names source_dir)
-                        rules_produced
-                      |> Subdir_set.of_dir_set
-                    in
-                    (* Both views share this initial cleanup. Keep raw source
-                       targets: filtering fallback rules here would miss
-                       promotions from the compilation stage. *)
-                    remove_old_artifacts
-                      ~dir
-                      ~rules_here:Loaded.no_rules_here
-                      ~subdirs_to_keep
-                      ~stage:(Before_compilation targets_to_keep);
-                    Some compilation_targets))))
-  ;;
-
-  let load_build_directory_exn
-        ({ Dir_triage.Build_directory.dir; context_name = _; context_type; sub_dir = _ }
-         as build_dir)
-    =
-    (* Load all the rules *)
-    Gen_rules.gen_rules build_dir
-    >>= function
-    | Under_directory_target { directory_target_ancestor } ->
-      Memo.return (Loaded.Build_under_directory_target { directory_target_ancestor })
-    | Normal { rules; build_dir_only_sub_dirs; directory_targets; _ } ->
-      let build_dir_only_sub_dirs =
-        Build_only_sub_dirs.find build_dir_only_sub_dirs dir
-      in
-      check_directory_targets ~dir ~build_dir_only_sub_dirs directory_targets;
-      let* deferred_cleanup = cleanup_staged_source_directory build_dir in
-      let* rules_produced = Memo.Lazy.force rules in
-      let* source_dirs, collected, rules_here =
-        compile_directory_rules build_dir ~build_dir_only_sub_dirs rules_produced
-      in
-      let* descendants_to_keep =
-        descendants_to_keep build_dir build_dir_only_sub_dirs ~source_dirs rules_produced
-      in
-      validate_directory_targets
-        ~dir
-        ~real_directory_targets:(Rules.directory_targets rules_produced)
-        ~directory_targets;
-      (let subdirs_to_keep = Subdir_set.of_dir_set descendants_to_keep in
-       let stage =
-         match deferred_cleanup with
-         | None -> Complete
-         | Some targets ->
-           (* Early user actions must be sandboxed. Multi-target closure makes
-              any source rule owning a reserved output wait for this view, so
-              unused reserved names can now be removed safely.
-              Do not revisit unrelated paths created since initial cleanup. *)
-           After_compilation targets
-       in
-       remove_old_artifacts ~dir ~rules_here ~subdirs_to_keep ~stage;
-       remove_old_sub_dirs_in_anonymous_actions_dir
-         ~dir:
-           (Path.Build.append_local
-              Dpath.Build.anonymous_actions_dir
-              (Path.Build.local dir))
-         ~subdirs_to_keep);
-      let+ aliases =
-        match context_type with
-        | With_sources -> compute_alias_expansions ~collected ~dir
-        | Empty ->
-          (* There are no aliases in contexts without sources *)
-          Memo.return Alias.Name.Map.empty
-      in
-      Loaded.Build { Loaded.allowed_subdirs = descendants_to_keep; rules_here; aliases }
-  ;;
-
-  let load_source_directory =
-    Memo.exec
-      (Memo.create
-         "load-source-rule-stage"
-         ~input:(module Dir_triage.Build_directory)
-         (fun ({ Dir_triage.Build_directory.dir; _ } as build_dir) ->
-            Gen_rules.gen_rules build_dir
-            >>= function
-            | Under_directory_target { directory_target_ancestor } ->
-              Memo.return
-                (Loaded.Build_under_directory_target { directory_target_ancestor })
+            let source_filenames, source_dirs =
+              match source_dir with
+              | None -> Filename.Array.Set.empty, Filename.Array.Set.empty
+              | Some source_dir ->
+                ( Source_tree.Dir.filenames source_dir
+                , Source_tree.Dir.sub_dir_names source_dir )
+            in
+            let* generated = Gen_rules.gen_rules build_dir in
+            match generated with
+            | Under_directory_target _ ->
+              Memo.return (Filename.Set.empty, (Filename.Set.empty, Filename.Set.empty))
             | Normal normal ->
               let build_dir_only_sub_dirs =
                 Build_only_sub_dirs.find normal.build_dir_only_sub_dirs dir
@@ -1149,59 +1060,154 @@ end = struct
                 ~dir
                 ~build_dir_only_sub_dirs
                 normal.directory_targets;
-              let* _deferred_cleanup = cleanup_staged_source_directory build_dir in
-              let* rules_produced = Memo.Lazy.force normal.source_rules in
-              let+ _source_dirs, _collected, rules_here =
-                compile_directory_rules build_dir ~build_dir_only_sub_dirs rules_produced
+              let+ rules_produced = Memo.Lazy.force normal.rules in
+              let source_filenames =
+                Filename.Array.Set.to_list source_filenames |> Filename.Set.of_list
               in
-              Path.Build.Map.iteri
-                (Rules.directory_targets rules_produced)
-                ~f:(fun target _ ->
-                  if not (Path.Build.Map.mem normal.directory_targets target)
-                  then
-                    Code_error.raise
-                      "Rule stage produced an undeclared directory target"
-                      [ "target", Path.Build.to_dyn target ]);
-              (* Aliases and anonymous-action cleanup need the complete view. *)
-              Loaded.Build
-                { allowed_subdirs = Dir_set.empty
-                ; rules_here
-                ; aliases = Alias.Name.Map.empty
-                }))
+              let file_targets, directory_targets =
+                cleanup_target_names ~dir ~source_filenames rules_produced
+              in
+              let targets_to_keep =
+                Target_mask.inter (Rules.targets rules_produced) (Target_mask.subtree dir)
+              in
+              let subdirs_to_keep =
+                Dir_set.union
+                  (local_descendants_to_keep
+                     ~dir
+                     build_dir_only_sub_dirs
+                     ~source_dirs
+                     rules_produced)
+                  (inherited_descendants_to_keep ~dir normal.build_dir_only_sub_dirs)
+                |> Subdir_set.of_dir_set
+              in
+              let entries = read_cleanup_entries ~dir in
+              cleanup_directory
+                ~dir
+                ~entries
+                ~file_targets
+                ~directory_targets
+                ~subdirs_to_keep
+                ~targets_to_keep;
+              let names entries = List.map entries ~f:fst |> Filename.Set.of_list in
+              let files, anonymous_actions = entries in
+              source_filenames, (names files, names anonymous_actions)))
   ;;
 
-  let load_dir_for_target target =
-    let dir = Path.Build.parent_exn target in
-    get_dir_triage ~dir:(Path.build dir)
+  type request =
+    | Complete
+    | Target of Path.Build.t
+    | Directory_target of Path.Build.t
+    | Files of File_selector.t
+    | Alias of Alias.t
+
+  let request_mask ~dir = function
+    | Complete -> Target_mask.subtree dir
+    | Target target -> Target_mask.path target
+    | Directory_target target -> Target_mask.directories [ target ]
+    | Files selector -> Target_mask.paths_matching ~dir (File_selector.predicate selector)
+    | Alias alias -> Target_mask.aliases [ alias ]
+  ;;
+
+  let load_build_directory_exn
+        ({ Dir_triage.Build_directory.dir; context_name = _; context_type; sub_dir = _ }
+         as build_dir)
+        request
+    =
+    (* Load all the rules *)
+    Gen_rules.gen_rules build_dir
     >>= function
-    | Known loaded -> Memo.return loaded
-    | Build_directory build_dir ->
-      Gen_rules.gen_rules build_dir
-      >>= (function
-       | Under_directory_target { directory_target_ancestor } ->
-         Memo.return (Loaded.Build_under_directory_target { directory_target_ancestor })
-       | Normal normal ->
-         check_directory_targets
+    | Under_directory_target { directory_target_ancestor } ->
+      Memo.return (Loaded.Build_under_directory_target { directory_target_ancestor })
+    | Normal { rules; build_dir_only_sub_dirs = declared_subdirs; directory_targets } ->
+      let build_dir_only_sub_dirs = Build_only_sub_dirs.find declared_subdirs dir in
+      check_directory_targets ~dir ~build_dir_only_sub_dirs directory_targets;
+      let* source_filenames, (initial_files, initial_anonymous_actions) =
+        initial_cleanup build_dir
+      in
+      let mask = request_mask ~dir request in
+      let* rule_tree = Memo.Lazy.force rules in
+      let* { Rules.selected = rules_produced; revealed; pending } =
+        match request with
+        | Directory_target target -> Rules.load_directory_with_pending rule_tree target
+        | Complete | Target _ | Files _ | Alias _ ->
+          Rules.load_with_pending rule_tree mask
+      in
+      let* source_dirs, collected, rules_here =
+        compile_directory_rules build_dir ~build_dir_only_sub_dirs ~mask rules_produced
+      in
+      let* descendants_to_keep =
+        match request with
+        | Complete ->
+          descendants_to_keep build_dir build_dir_only_sub_dirs ~source_dirs revealed
+        | Target _ | Directory_target _ | Files _ | Alias _ ->
+          let+ () = check_partial_directory_visibility build_dir revealed in
+          Dir_set.union_all
+            [ local_descendants_to_keep ~dir build_dir_only_sub_dirs ~source_dirs revealed
+            ; inherited_descendants_to_keep ~dir declared_subdirs
+            ; Target_mask.alias_directories pending ~dir
+            ]
+      in
+      let real_directory_targets = Rules.directory_targets revealed in
+      Path.Build.Map.iteri real_directory_targets ~f:(fun target _ ->
+        if not (Path.Build.Map.mem directory_targets target)
+        then
+          Code_error.raise
+            "Rule stage produced an undeclared directory target"
+            [ "target", Path.Build.to_dyn target ]);
+      (match request with
+       | Complete ->
+         let within_request targets =
+           Path.Build.Map.filteri targets ~f:(fun path _ ->
+             Target_mask.mem_directory mask path)
+         in
+         validate_directory_targets
            ~dir
-           ~build_dir_only_sub_dirs:
-             (Build_only_sub_dirs.find normal.build_dir_only_sub_dirs dir)
-           normal.directory_targets;
-         let* targets = Memo.Lazy.force normal.compilation_targets in
-         if Rule_targets.is_empty targets || Rule_targets.mem targets target
-         then load_dir ~dir:(Path.build dir)
-         else load_source_directory build_dir)
+           ~real_directory_targets:(within_request real_directory_targets)
+           ~directory_targets:(within_request directory_targets)
+       | Target _ | Directory_target _ | Files _ | Alias _ -> ());
+      (let subdirs_to_keep = Subdir_set.of_dir_set descendants_to_keep in
+       let file_targets, directory_targets =
+         cleanup_target_names ~dir ~source_filenames revealed
+       in
+       let targets_to_keep = Target_mask.inter pending (Target_mask.subtree dir) in
+       (* A later query can refine the ownership masks while an action is
+          running. Only initial entries can be stale: newly created files may
+          be that action's temporary files, even within a compiler's object
+          directory. Reread the entries to account for earlier cleanup. *)
+       let files, anonymous_actions = read_cleanup_entries ~dir in
+       let retain_initial initial entries =
+         List.filter entries ~f:(fun (name, _) -> Filename.Set.mem initial name)
+       in
+       let entries =
+         ( retain_initial initial_files files
+         , retain_initial initial_anonymous_actions anonymous_actions )
+       in
+       cleanup_directory
+         ~dir
+         ~entries
+         ~file_targets
+         ~directory_targets
+         ~subdirs_to_keep
+         ~targets_to_keep);
+      let+ aliases =
+        match context_type, request with
+        | With_sources, (Complete | Alias _) -> compute_alias_expansions ~collected ~dir
+        | Empty, _ | With_sources, (Target _ | Directory_target _ | Files _) ->
+          Memo.return Alias.Name.Map.empty
+      in
+      Loaded.Build { Loaded.allowed_subdirs = descendants_to_keep; rules_here; aliases }
   ;;
 
-  let load_dir_impl ~dir : Loaded.t Memo.t =
+  let load_request ~dir request : Loaded.t Memo.t =
     Dune_trace.emit Debug (fun () -> Dune_trace.Event.load_dir dir);
     get_dir_triage ~dir
     >>= function
     | Known l -> Memo.return l
-    | Build_directory x -> load_build_directory_exn x
+    | Build_directory x -> load_build_directory_exn x request
   ;;
 
   let load_dir =
-    let load_dir_impl dir = load_dir_impl ~dir in
+    let load_dir_impl dir = load_request ~dir Complete in
     let memo =
       Memo.create_with_store
         "load-dir"
@@ -1210,6 +1216,51 @@ end = struct
         load_dir_impl
     in
     fun ~dir -> Memo.exec memo dir
+  ;;
+
+  let load_dir_for_target =
+    Memo.exec
+      (Memo.create
+         "load-target-rules"
+         ~input:(module Path.Build)
+         (fun target ->
+            load_request ~dir:(Path.build (Path.Build.parent_exn target)) (Target target)))
+  ;;
+
+  let load_dir_for_directory_target =
+    Memo.exec
+      (Memo.create
+         "load-directory-target-rules"
+         ~input:(module Path.Build)
+         (fun target ->
+            load_request
+              ~dir:(Path.build (Path.Build.parent_exn target))
+              (Directory_target target)))
+  ;;
+
+  let load_file_selector =
+    Memo.exec
+      (Memo.create
+         "load-file-selector-rules"
+         ~input:(module File_selector)
+         (fun selector -> load_request ~dir:(File_selector.dir selector) (Files selector)))
+  ;;
+
+  let load_alias =
+    Memo.exec
+      (Memo.create
+         "load-alias-rules"
+         ~input:(module Alias)
+         (fun alias -> load_request ~dir:(Path.build (Alias.dir alias)) (Alias alias)))
+  ;;
+
+  let lookup_alias alias =
+    load_alias alias
+    >>| function
+    | Source _ | External _ ->
+      Code_error.raise "Alias in a non-build dir" [ "alias", Alias.to_dyn alias ]
+    | Build { aliases; _ } -> Alias.Name.Map.find aliases (Alias.name alias)
+    | Build_under_directory_target _ -> None
   ;;
 
   let is_under_directory_target p =
@@ -1229,6 +1280,26 @@ end = struct
 end
 
 include Load_rules
+
+let get_directory_rule path =
+  let* declared = is_under_directory_target (Path.build path) in
+  if not declared
+  then Memo.return None
+  else
+    load_dir_for_directory_target path
+    >>= function
+    | Source _ | External _ ->
+      Code_error.raise "Directory target outside the build tree" []
+    | Build { rules_here; _ } ->
+      Memo.return (Path.Build.Map.find rules_here.by_directory_targets path)
+    | Build_under_directory_target { directory_target_ancestor } ->
+      let+ loaded = load_dir_for_directory_target directory_target_ancestor in
+      (match loaded with
+       | Build { rules_here; _ } ->
+         Path.Build.Map.find rules_here.by_directory_targets directory_target_ancestor
+       | Source _ | External _ | Build_under_directory_target _ ->
+         Code_error.raise "No owning directory target" [])
+;;
 
 let get_rule_internal path =
   load_dir_for_target path

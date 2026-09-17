@@ -394,6 +394,16 @@ let build_include_flags ~sctx ~dir ~expander ~dir_contents ~requires ~src =
   Command.Args.S [ includes; extra_flags ]
 ;;
 
+let object_path ~dir ~ext_obj name =
+  Path.Build.relative dir (name ^ Filename.Extension.to_string ext_obj)
+;;
+
+let rule_targets ~dir ~ext_obj ~kinds =
+  match kinds with
+  | [] -> Target_mask.empty
+  | _ :: _ -> Target_mask.file_extensions ~dir (Filename.Extension.Set.singleton ext_obj)
+;;
+
 let build_o_files
       ~sctx
       ~foreign_sources
@@ -416,7 +426,7 @@ let build_o_files
         let include_flags =
           build_include_flags ~sctx ~dir ~expander ~dir_contents ~requires ~src
         in
-        let dst = Path.Build.relative dir (obj ^ Filename.Extension.to_string ext_obj) in
+        let dst = object_path ~dir ~ext_obj obj in
         let+ () = build_c ~sctx ~dir ~expander ~include_flags (loc, src, dst) in
         dst
       in

@@ -2,6 +2,12 @@ open Import
 
 let filename = "compile_commands.json"
 
+let rule_targets ~dir =
+  Target_mask.union
+    (Target_mask.files [ Path.Build.relative dir filename ])
+    (Target_mask.aliases [ Alias.make Alias0.check ~dir ])
+;;
+
 (* A single entry in compile_commands.json *)
 type entry =
   { directory : Path.t

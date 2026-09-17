@@ -26,7 +26,8 @@ Reading a file whose rule depends on the library still creates a dependency cycl
 
   $ dune build
   Error: Dependency cycle between:
-     %{read:foo} at dune:3
+     library "foo" in _build/default
   -> _build/default/foo
   -> %{read:foo} at dune:3
+  -> library "foo" in _build/default
   [1]

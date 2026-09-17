@@ -39,6 +39,7 @@ include struct
   module Dir_set = Dir_set
   module Rule = Rule
   module Rules = Rules
+  module Target_mask = Target_mask
   module Build_system = Build_system
   module Context_name = Context_name
   module Dpath = Dpath
@@ -153,7 +154,6 @@ module Build_config = struct
   module Gen_rules = struct
     open Build_config.Gen_rules
     module Build_only_sub_dirs = Build_only_sub_dirs
-    module Rule_targets = Rule_targets
     module Rules = Rules
 
     let make
@@ -189,7 +189,6 @@ module Build_config = struct
       match t with
       | Unknown_context -> Unknown_context
       | Rules rules -> Rules (f rules)
-      | Redirect_to_parent rules -> Redirect_to_parent (f rules)
     ;;
 
     let combine x y =
@@ -197,10 +196,6 @@ module Build_config = struct
       | Unknown_context, _ -> Unknown_context
       | _, Unknown_context -> Unknown_context
       | Rules x, Rules y -> Rules (Rules.combine_exn x y)
-      | Rules x, Redirect_to_parent y -> Redirect_to_parent (Rules.combine_exn x y)
-      | Redirect_to_parent x, Rules y -> Redirect_to_parent (Rules.combine_exn x y)
-      | Redirect_to_parent x, Redirect_to_parent y ->
-        Redirect_to_parent (Rules.combine_exn x y)
     ;;
   end
 

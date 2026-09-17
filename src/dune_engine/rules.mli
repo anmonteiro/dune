@@ -1,4 +1,4 @@
-(** A collection of rules across a known finite set of directories *)
+(** A recursively staged collection of rules. *)
 
 open Import
 
@@ -41,26 +41,17 @@ module Dir_rules : sig
   val to_dyn : t -> Dyn.t
 end
 
-(** A value of type [t] holds a set of rules for multiple directories *)
+(** Direct rules and suspended producers, potentially spanning many directories. *)
 type t
 
+(** Directly available rules; this does not force any suspensions. *)
 val to_map : t -> Dir_rules.t Path.Build.Map.t
 
 module Produce : sig
-  (* CR-someday aalekseyev: the below comments are not quite right *)
-
   (** Add a rule to the system. This function must be called from the
-      [gen_rules] callback. All the target of the rule must be in the same
-      directory.
-
-      Assuming that [gen_rules ~dir:a] calls [add_rule r] where [r.dir] is [b],
-      one of the following assumption must hold:
-
-      - [a] and [b] are the same - [gen_rules ~dir:b] calls [load_dir ~dir:a]
-
-      The call to [load_dir ~dir:a] from [gen_rules ~dir:b] declares a directory
-      dependency from [b] to [a]. There must be no cyclic directory
-      dependencies. *)
+      [gen_rules] callback or one of its suspensions. A rule's targets must
+      share a directory and lie within every enclosing ownership mask.
+      Rules emitted for descendants are inherited automatically. *)
   val rule : Rule.t -> unit Memo.t
 
   module Alias : sig
@@ -86,6 +77,39 @@ val of_rules : Rule.t list -> t
 val produce : t -> unit Memo.t
 val collect : (unit -> 'a Memo.t) -> ('a * t) Memo.t
 val collect_unit : (unit -> unit Memo.t) -> t Memo.t
+
+(** Suspend rule production under a narrower target mask. Suspensions may
+    produce more suspensions, and are shared by all target lookups. *)
+val narrow : Target_mask.t -> (unit -> unit Memo.t) -> unit Memo.t
+
+(** Like [narrow], while separately exposing the memoized producer's result.
+    Forcing the result does not emit its rules a second time. *)
+val defer : Target_mask.t -> (unit -> 'a Memo.t) -> 'a Memo.Lazy.t Memo.t
+
+(** Validate and restrict a rule tree to its producer's ownership mask. *)
+val restrict : t -> Target_mask.t -> t
+
+(** Recursively pull matching suspensions. Multi-target rules expand the
+    request to all their outputs before returning a flat collection. *)
+val load : t -> Target_mask.t -> t Memo.t
+
+type loaded =
+  { selected : t
+  ; revealed : t
+  ; pending : Target_mask.t
+  }
+
+(** Also expose directly revealed rules and the masks of unforced suspensions,
+    for conservative artifact cleanup. *)
+val load_with_pending : t -> Target_mask.t -> loaded Memo.t
+
+(** Materialize a declared directory while discovering file rules. Directory
+    outputs do not pull file producers or descendants; file outputs of a mixed
+    rule still close over both kinds. Ordinary requests validate all conflicts. *)
+val load_directory_with_pending : t -> Path.Build.t -> loaded Memo.t
+
+(** Direct and suspended outputs, without evaluating suspensions. *)
+val targets : t -> Target_mask.t
 
 (** returns [Dir_rules.empty] for non-build paths *)
 val find : t -> Path.t -> Dir_rules.t
