@@ -1,6 +1,23 @@
 open Import
 open Memo.O
 
+let output_file path =
+  Path.Build.extend_basename path ~suffix:(Filename.of_string_exn ".output")
+;;
+
+let rule_targets ~dir ~source_files ~lib_config ~dialects ~project (tests : Tests.t) =
+  List.fold_left
+    [ Exe_rules.rule_targets ~dir ~source_files ~lib_config ~dialects ~project tests.exes
+    ; Target_mask.files
+        (Exe_rules.output_files ~dir ~lib_config tests.exes |> List.map ~f:output_file)
+    ; (match tests.action with
+       | None -> Target_mask.empty
+       | Some action -> Action_unexpanded.rule_targets ~dir ~targets:Infer action)
+    ]
+    ~init:(Target_mask.aliases_in_directory dir)
+    ~f:Target_mask.union
+;;
+
 let runtest_alias mode ~dir =
   (match mode with
    | `js mode -> Jsoo_rules.js_of_ocaml_runtest_alias ~dir ~mode
@@ -18,7 +35,7 @@ let test_kind ~dir dir_contents name ext =
     `Expect
       { Action_types.Diff.file1 = Path.build (Path.Build.relative dir expected_basename)
       ; file2 =
-          Path.Build.relative dir (name ^ Filename.Extension.to_string ext ^ ".output")
+          output_file (Path.Build.relative dir (name ^ Filename.Extension.to_string ext))
       ; optional = false
       ; mode = Text
       ; directory_diffs = true

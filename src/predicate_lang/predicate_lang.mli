@@ -42,6 +42,13 @@ module Glob : sig
       inside the set [xs] *)
   val of_string_set : String.Set.t -> t
 
+  (** Recognise finite combinations of literal names. [None] means the set
+      could not be determined without evaluating a general predicate. *)
+  val finite_elements : t -> String.Set.t option
+
+  (** Conservatively check whether any match can end in this suffix. *)
+  val may_match_suffix : t -> string -> bool
+
   val compare : t -> t -> Ordering.t
   val equal : t -> t -> bool
   val hash : t -> int

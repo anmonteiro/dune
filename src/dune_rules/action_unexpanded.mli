@@ -10,6 +10,15 @@ end
 
 val remove_locs : t -> t
 
+(** Infer possible file targets without evaluating variables or dependencies.
+    A singleton literal declaration resolves its target variable; other dynamic
+    target names conservatively cover files in [dir]. *)
+val rule_targets
+  :  dir:Path.Build.t
+  -> targets:String_with_vars.t Targets_spec.t
+  -> t
+  -> Target_mask.t
+
 (** Expand an action and return its target and dependencies.
 
     Expanding an action substitutes all [%{..}] forms, discovers dependencies

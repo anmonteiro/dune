@@ -10,8 +10,8 @@ rule.
   >  (action (bash "echo creating output dir && mkdir -p output/a && touch output/a/b")))
   > EOF
 
-Only complete directory loads emit `load-dir`; target lookups can use the
-source stage without loading the directory's compilation rules.
+Target lookups and complete directory views both emit `load-dir`. A target
+lookup only forces producers whose masks intersect its request.
 
   $ loadedDirs() {
   > jq -c 'select(.name == "load-dir") | .args'
@@ -26,6 +26,8 @@ source stage without loading the directory's compilation rules.
 
   $ build output/
   creating output dir
+  {"dir":"_build/default"}
+  {"dir":"_build/default/.dune"}
   {"dir":"_build/default/.dune"}
   $ find _build/default/output
   _build/default/output
@@ -37,6 +39,9 @@ and re-create output/b. The following should not re-run the rule that recreates
 output/
 
   $ build output/a/b
+  {"dir":"_build/default/output/a"}
+  {"dir":"_build/default"}
+  {"dir":"_build/default/.dune"}
   {"dir":"_build/default/.dune"}
   $ find _build/default/output
   _build/default/output
@@ -68,6 +73,9 @@ Now we try loading the rules in output/a and make sure that nothing is deleted:
   ]
 
   $ dune trace cat | loadedDirs
+  {"dir":"_build/default/output"}
+  {"dir":"_build/default"}
+  {"dir":"_build/default/.dune"}
   {"dir":"_build/default/.dune"}
 
   $ find _build/default/output

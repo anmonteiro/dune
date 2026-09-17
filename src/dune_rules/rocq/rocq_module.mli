@@ -62,5 +62,6 @@ val obj_files
   -> obj_files_mode:obj_files_mode
   -> (Path.Build.t * string) list
 
+val obj_extensions : mode:Rocq_mode.t -> Filename.Extension.t list
 val to_dyn : t -> Dyn.t
 val eval : dir:Path.Build.t -> standard:t list -> Ordered_set_lang.t -> t list

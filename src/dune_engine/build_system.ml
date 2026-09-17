@@ -389,7 +389,16 @@ let rec build_alias alias = Memo.exec (Lazy.force build_alias_memo) alias
 and build_file_digest path = Memo.exec (Lazy.force build_file_memo) path >>| fst
 
 and build_directory_targets path =
-  let+ (_ : Digest.t), kind = Memo.exec (Lazy.force build_file_memo) path in
+  let* directory_rule =
+    match Path.as_in_build_dir path with
+    | None -> Memo.return None
+    | Some path -> Load_rules.get_directory_rule path
+  in
+  let+ (_ : Digest.t), kind =
+    match directory_rule with
+    | None -> Memo.exec (Lazy.force build_file_memo) path
+    | Some rule -> build_rule_target (Path.as_in_build_dir_exn path) rule
+  in
   match kind with
   | Dir_target { targets } -> targets
   | File_target ->
@@ -852,6 +861,12 @@ and execute_anonymous_action { Rule.Anonymous_action.action; dir; loc } ~capture
 (* A rule can have multiple targets but calls to [execute_rule] are memoized,
    so the rule will be executed only once. *)
 and build_file_impl path =
+  Load_rules.get_rule_or_source path
+  >>= function
+  | Source digest -> Memo.return (digest, File_target)
+  | Rule (path, rule) -> build_rule_target path rule
+
+and build_rule_target path rule =
   let directory_digest contents =
     Digest.Feed.compute_digest
       (fun hasher contents ->
@@ -863,10 +878,6 @@ and build_file_impl path =
              Digest.Feed.string hasher (Path.Local.to_string path)))
       contents
   in
-  Load_rules.get_rule_or_source path
-  >>= function
-  | Source digest -> Memo.return (digest, File_target)
-  | Rule (path, rule) ->
     let* { facts = _; targets } =
       Memo.push_stack_frame
         (fun () -> execute_rule rule)
@@ -940,7 +951,7 @@ and eval_pred_impl g =
   let dir = File_selector.dir g in
   (* CR-soon amokhov: Change [Load_rules.load_dir] to return [Filename_set.t]s to save
      a bunch of set/list operations and reduce code duplication. *)
-  Load_rules.load_dir ~dir
+  Load_rules.load_file_selector g
   >>= function
   | Source { filenames } | External { filenames } ->
     Filename_set.create ~dir ~filter:(File_selector.test_basename g) filenames
@@ -1098,7 +1109,8 @@ let file_exists fn =
 ;;
 
 let files_of ~dir =
-  Load_rules.load_dir ~dir
+  Load_rules.load_file_selector
+    (File_selector.of_predicate_lang ~dir Predicate_lang.true_)
   >>= function
   | Source { filenames } | External { filenames } ->
     Memo.return (Filename_set.create ~dir filenames)

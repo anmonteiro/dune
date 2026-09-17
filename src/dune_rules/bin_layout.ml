@@ -116,6 +116,5 @@ let gen_rules ~dir rest =
   | [] -> make_dispatch ~dir Subdir_set.all (fun () -> Memo.return ())
   | [ key ] ->
     make_dispatch ~dir Subdir_set.empty (fun () -> symlink_rules_for_key ~dir key)
-  | _ :: _ :: _ ->
-    Build_config.Gen_rules.Redirect_to_parent Build_config.Gen_rules.Rules.empty
+  | _ :: _ :: _ -> Build_config.Gen_rules.no_rules
 ;;

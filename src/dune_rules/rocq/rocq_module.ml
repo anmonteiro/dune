@@ -62,15 +62,15 @@ let source x = x.source
 let prefix x = x.prefix
 let name x = x.name
 let build_vo_dir ~obj_dir x = List.fold_left x.prefix ~init:obj_dir ~f:Path.Build.relative
+let native_obj_extensions = [ Cm_kind.ext Cmi; Mode.plugin_ext Native ]
 
 let cmxs_of_mod ~wrapper_name x =
   let wrapper_split = String.split wrapper_name ~on:'.' in
   let native_base =
     "N" ^ String.concat ~sep:"_" (wrapper_split @ x.prefix @ [ x.name ])
   in
-  [ native_base ^ Filename.Extension.to_string (Cm_kind.ext Cmi)
-  ; native_base ^ Filename.Extension.to_string (Mode.plugin_ext Native)
-  ]
+  List.map native_obj_extensions ~f:(fun ext ->
+    native_base ^ Filename.Extension.to_string ext)
 ;;
 
 let dep_file x ~obj_dir =
@@ -94,13 +94,24 @@ let output_file x ~obj_dir =
 
 (* As of today we do the same for build and install, it used not to be
    the case *)
-let standard_obj_files ~(mode : Rocq_mode.t) _obj_files_mode name =
-  let ext, glob =
-    match mode with
-    | VosOnly -> ".vos", []
-    | _ -> ".vo", [ name ^ ".glob" ]
-  in
-  [ name ^ ext ] @ glob
+let standard_obj_extensions ~(mode : Rocq_mode.t) =
+  (match mode with
+   | VosOnly -> [ ".vos" ]
+   | Native | VoOnly -> [ ".vo"; ".glob" ])
+  |> List.map ~f:Filename.Extension.of_string_exn
+;;
+
+let obj_extensions ~(mode : Rocq_mode.t) =
+  standard_obj_extensions ~mode
+  @
+  match mode with
+  | Native -> native_obj_extensions
+  | VoOnly | VosOnly -> []
+;;
+
+let standard_obj_files ~mode _obj_files_mode name =
+  List.map (standard_obj_extensions ~mode) ~f:(fun ext ->
+    name ^ Filename.Extension.to_string ext)
 ;;
 
 (* XXX: Remove the install .coq-native hack once rules can output targets in
