@@ -1,5 +1,7 @@
 (** Dune sub-systems *)
 
+open Import
+
 (** This module allows to define sub-systems. The aim is to define everything
     related to the sub-system, such as the parser for [dune] files, the metadata
     attached to libraries and the specific rules in one place.
@@ -36,3 +38,5 @@ module Register_end_point (_ : End_point) : sig end
 (** Scan the sub-systems used by the library and generate rules for all of the
     ones that needs it. *)
 val gen_rules : Library_compilation_context.t -> unit Memo.t
+
+val rule_targets : dir:Path.Build.t -> Library.t -> Target_mask.t

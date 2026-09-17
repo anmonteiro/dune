@@ -128,8 +128,20 @@ end
 
 type Lib.Sub_system.t += Gen of (Library_compilation_context.t -> unit Memo.t)
 
+let rule_target_generators = Table.create (module Sub_system_name) 4
+
 module Register_end_point (M : End_point) = struct
   include Sub_system_info.Register (M.Info)
+
+  let () =
+    Table.set rule_target_generators M.Info.name (fun ~dir ~stanza info ->
+      match info with
+      | M.Info.T info -> M.rule_targets ~dir ~stanza ~info
+      | _ ->
+        Code_error.raise
+          "Sub_system.rule_targets: unexpected configuration"
+          [ "name", Dyn.string (Sub_system_name.to_string M.Info.name) ])
+  ;;
 
   let gen info (c : Library_compilation_context.t) =
     let* backends =
@@ -169,6 +181,16 @@ module Register_end_point (M : End_point) = struct
       let public_info = None
     end)
 end
+
+let rule_targets ~dir (stanza : Library.t) =
+  Sub_system_name.Map.foldi
+    stanza.sub_systems
+    ~init:Target_mask.empty
+    ~f:(fun name info acc ->
+      match Table.find rule_target_generators name with
+      | None -> acc
+      | Some targets -> Target_mask.union acc (targets ~dir ~stanza info))
+;;
 
 let gen_rules (c : Library_compilation_context.t) =
   Lib.Compile.sub_systems c.compile_info

@@ -5,9 +5,8 @@ Copy files from inside a directory target
 Copy from a generated sub-directory
 -----------------------------------
 
-Copying from a generated sub-directory still causes a cycle: `copy_files`
-needs complete directory enumeration before the source stage has finished
-collecting the rule that produces that directory.
+Directory materialization does not need to enumerate the file rules that
+depend on its contents.
 
   $ cat >dune <<EOF
   > (rule
@@ -18,16 +17,9 @@ collecting the rule that produces that directory.
   > EOF
 
   $ dune build
-  Error: Dependency cycle between:
-     Computing directory contents of _build/default
-  -> { dir = In_build_dir "default/foo"
-     ; predicate = Element (Glob "*")
-     ; only_generated_files = false
-     }
-  -> Computing directory contents of _build/default
-  [1]
-
-  $ test ! -e _build/default/foo
+  $ test -f _build/default/x
+  $ test -f _build/default/y
+  $ test -f _build/default/z
 
 Copy from a generated directory somewhere else
 ----------------------------------------------
@@ -51,3 +43,20 @@ Copy from a generated directory somewhere else
   x
   y
   z
+
+Deferred file rules must still be checked for conflicts with directory targets
+after their names are discovered.
+
+  $ mkdir conflict
+  $ cat >conflict/dune <<EOF
+  > (rule
+  >  (target (dir foo))
+  >  (deps (sandbox always))
+  >  (action (system "mkdir foo && touch foo/foo")))
+  > (copy_files foo/*)
+  > EOF
+  $ dune build conflict/foo
+  Error: Multiple rules generated for _build/default/conflict/foo:
+  - conflict/dune:5
+  - conflict/dune:1
+  [1]

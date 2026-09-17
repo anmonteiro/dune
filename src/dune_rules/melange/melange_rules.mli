@@ -1,5 +1,7 @@
 open Import
 
+val emit_rule_targets : dir:Path.Build.t -> Melange_stanzas.Emit.t -> Target_mask.t
+
 val setup_melange_sources_copy_rules
   :  sctx:Super_context.t
   -> dir:Path.Build.t

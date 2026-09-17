@@ -40,8 +40,7 @@ Show that the menhir stanza must live next to the source
   $ dune build
 
 A generated module list in the parser's own directory can describe both the
-Menhir inputs and the library modules. Currently Menhir forces complete rule
-loading before the independent list-producing rule can be built.
+Menhir inputs and the library modules.
 
   $ make_menhir_project 3.25 3.0
   $ mkdir same-dir
@@ -59,14 +58,24 @@ loading before the independent list-producing rule can be built.
   $ cp src/a/my_parser.mly same-dir/other_parser.mly
   $ echo parser >same-dir/modules.in
   $ dune build same-dir/dynamic_parser.cma
-  Error: Dependency cycle between:
-     (:include _build/default/same-dir/parser-lst) at same-dir/dune:4
-  [1]
 
 Changes to the list must also update the selected parser without cleaning.
 
   $ echo other_parser >same-dir/modules.in
   $ dune build same-dir/dynamic_parser.cma
-  Error: Dependency cycle between:
-     (:include _build/default/same-dir/parser-lst) at same-dir/dune:4
-  [1]
+
+Dynamic module names can refer to grammar files copied from another directory.
+
+  $ mkdir copied-input
+  $ cat >copied-input/dune <<EOF
+  > (copy_files ../src/a/*.mly)
+  > (rule
+  >  (target parsers)
+  >  (action (write-file %{target} my_parser)))
+  > (menhir (modules (:include parsers)))
+  > (library (name copied_parser) (modes byte))
+  > EOF
+  $ cat >copied-input/copied_parser.ml <<EOF
+  > let parse = My_parser.main
+  > EOF
+  $ dune build copied-input/copied_parser.cma copied-input/my_parser.ml

@@ -157,6 +157,19 @@ let gen_wrapped_compat_modules (lib : Library.t) cctx =
     |> Super_context.add_rule sctx ~loc ~dir:(Compilation_context.dir cctx))
 ;;
 
+let foreign_archive_files ~dir ~lib_config ~mode archive_name =
+  let { Lib_config.ext_lib; ext_dll; _ } = lib_config in
+  ( Foreign.Archive.Name.lib_file archive_name ~dir ~ext_lib ~mode
+  , Foreign.Archive.Name.dll_file archive_name ~dir ~ext_dll ~mode )
+;;
+
+let foreign_archive_targets ~dir ~lib_config archive_name =
+  List.concat_map [ Mode.Select.All; Only Byte; Only Native ] ~f:(fun mode ->
+    let static, dynamic = foreign_archive_files ~dir ~lib_config ~mode archive_name in
+    [ static; dynamic ])
+  |> Target_mask.files
+;;
+
 (* Rules for building static and dynamic libraries using [ocamlmklib]. *)
 let ocamlmklib
       ~loc
@@ -192,12 +205,8 @@ let ocamlmklib
       |> Command.run ~dir:(Path.build (Context.build_dir ctx)) ~sandbox ocaml.ocamlmklib
       |> Super_context.add_rule sctx ~dir ~loc
   in
-  let { Lib_config.ext_lib; ext_dll; _ } = ocaml.lib_config in
-  let dynamic_target =
-    Foreign.Archive.Name.dll_file archive_name ~dir ~ext_dll ~mode:stubs_mode
-  in
-  let static_target =
-    Foreign.Archive.Name.lib_file archive_name ~dir ~ext_lib ~mode:stubs_mode
+  let static_target, dynamic_target =
+    foreign_archive_files ~dir ~lib_config:ocaml.lib_config ~mode:stubs_mode archive_name
   in
   if build_targets_together
   then
@@ -229,6 +238,17 @@ let ocamlmklib
     in
     Memo.when_ dynamically_linked_foreign_archives (fun () ->
       build ~sandbox:Sandbox_config.needs_sandboxing ~custom:false [ dynamic_target ])
+;;
+
+let foreign_rule_targets ~dir ~lib_config (lib : Foreign_library.t) =
+  Target_mask.union
+    (foreign_archive_targets ~dir ~lib_config lib.archive_name)
+    (Target_mask.union
+       (Foreign_rules.rule_targets
+          ~dir
+          ~ext_obj:lib_config.Lib_config.ext_obj
+          ~kinds:[ Stubs lib.stubs ])
+       (Target_mask.aliases_in_directory dir))
 ;;
 
 (* Build a static and a dynamic archive for a foreign library. Note that the
@@ -408,6 +428,26 @@ let iter_modes_concurrently (t : _ Ocaml.Mode.Dict.t) ~(f : Ocaml.Mode.t -> unit
   let+ () = Memo.when_ t.byte (fun () -> f Byte)
   and+ () = Memo.when_ t.native (fun () -> f Native) in
   ()
+;;
+
+let archive_targets ~dir ~lib_config (lib : Library.t) =
+  let archives =
+    List.map
+      (lib_config.Lib_config.ext_lib
+       :: List.concat_map Mode.all ~f:(fun mode ->
+         [ Mode.compiled_lib_ext mode; Mode.plugin_ext mode ]))
+      ~f:(fun ext -> Library.archive lib ~dir ~ext)
+    |> Target_mask.files
+  in
+  match lib.stdlib with
+  | None -> archives
+  | Some _ ->
+    Target_mask.union
+      archives
+      (Target_mask.file_extensions
+         ~dir
+         (Filename.Extension.Set.of_list
+            [ Cm_kind.ext Cmx; Cm_kind.ext Cmo; lib_config.ext_obj ]))
 ;;
 
 let setup_build_archives (lib : Library.t) ~top_sorted_modules ~cctx ~expander ~lib_info =
@@ -605,9 +645,10 @@ let library_rules
       ~lib_config
   in
   let+ () =
-    Memo.when_
-      (not (Library.is_virtual lib))
-      (fun () -> setup_build_archives lib ~lib_info ~top_sorted_modules ~cctx ~expander)
+    Rules.narrow (archive_targets ~dir ~lib_config lib) (fun () ->
+      Memo.when_
+        (not (Library.is_virtual lib))
+        (fun () -> setup_build_archives lib ~lib_info ~top_sorted_modules ~cctx ~expander))
   and+ () =
     let vlib_stubs_o_files = Virtual_rules.stubs_o_files implements in
     Memo.when_
@@ -627,15 +668,16 @@ let library_rules
     let source_modules =
       Modules.fold_user_written source_modules ~init:[] ~f:(fun m acc -> m :: acc)
     in
-    Sub_system.gen_rules
-      { super_context = sctx
-      ; dir
-      ; stanza = lib
-      ; scope
-      ; source_modules
-      ; compile_info
-      ; for_
-      }
+    Rules.narrow (Sub_system.rule_targets ~dir lib) (fun () ->
+      Sub_system.gen_rules
+        { super_context = sctx
+        ; dir
+        ; stanza = lib
+        ; scope
+        ; source_modules
+        ; compile_info
+        ; for_
+        })
   and+ () =
     Unused_libs_rules.gen_rules_for_context cctx compile_info ~loc:lib.buildable.loc
   and+ merlin =
@@ -706,6 +748,33 @@ let compile_context (lib : Library.t) ~sctx ~dir_contents ~expander ~scope ~for_
     ~compile_info
     ~lib_info
     ~for_
+;;
+
+let rule_targets ~dir ~source_files ~lib_config ~dialects (lib : Library.t) =
+  let obj_dir = Library.obj_dir lib ~dir in
+  let merlin = Merlin_ident.for_lib (Library.best_name lib) in
+  let module_targets =
+    List.fold_left source_files ~init:Target_mask.empty ~f:(fun acc (dir, _) ->
+      Target_mask.union acc (Module_compilation.rule_targets ~dir ~obj_dir))
+  in
+  List.fold_left
+    [ module_targets
+    ; archive_targets ~dir ~lib_config lib
+    ; Target_mask.files [ Merlin_ident.merlin_file_path dir merlin ]
+    ; Buildable_rules.rule_targets ~dir ~source_files ~lib_config ~dialects lib.buildable
+    ; Sub_system.rule_targets ~dir lib
+    ; (match Library.stubs_archive lib, lib.implements with
+       | None, None -> Target_mask.empty
+       | None, Some _ ->
+         foreign_archive_targets
+           ~dir
+           ~lib_config
+           (Foreign.Archive.Name.stubs (Lib_name.Local.to_string (snd lib.name)))
+       | Some archive, _ ->
+         foreign_archive_targets ~dir ~lib_config (Foreign.Archive.name archive ~mode:All))
+    ]
+    ~init:Target_mask.empty
+    ~f:Target_mask.union
 ;;
 
 let rules (lib : Library.t) ~sctx ~dir_contents ~expander ~scope =

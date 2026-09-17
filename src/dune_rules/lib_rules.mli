@@ -1,5 +1,19 @@
 open Import
 
+val rule_targets
+  :  dir:Path.Build.t
+  -> source_files:(Path.Build.t * Filename.Array.Set.t) list
+  -> lib_config:Lib_config.t
+  -> dialects:Dialect.DB.t
+  -> Library.t
+  -> Target_mask.t
+
+val foreign_rule_targets
+  :  dir:Path.Build.t
+  -> lib_config:Lib_config.t
+  -> Foreign_library.t
+  -> Target_mask.t
+
 val foreign_rules
   :  Foreign_library.t
   -> sctx:Super_context.t

@@ -2495,10 +2495,8 @@ let setup_rules ~components ~dir ctx =
        let pkg_digest = Pkg_digest.of_string pkg_digest_string in
        let* db = DB.of_ctx ctx ~allow_sharing:true in
        setup_package_rules db ~package_universe:(Dependencies ctx) ~dir ~pkg_digest)
-  | _, ".pkg" :: _ :: _ ->
-    Memo.return @@ Gen_rules.redirect_to_parent Gen_rules.Rules.empty
-  | true, ".dev-tool" :: _ :: _ :: _ ->
-    Memo.return @@ Gen_rules.redirect_to_parent Gen_rules.Rules.empty
+  | _, ".pkg" :: _ :: _ -> Memo.return @@ Gen_rules.no_rules
+  | true, ".dev-tool" :: _ :: _ :: _ -> Memo.return @@ Gen_rules.no_rules
   | is_default, [] ->
     let sub_dirs =
       Filename.pkg_dir_basename
