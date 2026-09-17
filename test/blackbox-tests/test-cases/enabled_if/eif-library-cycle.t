@@ -1,6 +1,8 @@
-Test cycles in enabled_if field of libraries
+Test generated inputs in the enabled_if field of libraries.
 
-  $ make_dune_project 3.15
+A library can read a file produced by an independent rule in the same directory.
+
+  $ make_dune_project 3.25
 
   $ cat > dune << EOF
   > (library
@@ -10,8 +12,21 @@ Test cycles in enabled_if field of libraries
   > EOF
 
   $ dune build
+
+Reading a file whose rule depends on the library still creates a dependency cycle.
+
+  $ cat > dune << EOF
+  > (library
+  >  (name foo)
+  >  (enabled_if %{read:foo}))
+  > (rule
+  >  (deps foo.cma)
+  >  (action (with-stdout-to foo (echo true))))
+  > EOF
+
+  $ dune build
   Error: Dependency cycle between:
-     library "foo" in _build/default
+     %{read:foo} at dune:3
+  -> _build/default/foo
   -> %{read:foo} at dune:3
-  -> library "foo" in _build/default
   [1]

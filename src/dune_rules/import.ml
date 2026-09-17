@@ -153,6 +153,7 @@ module Build_config = struct
   module Gen_rules = struct
     open Build_config.Gen_rules
     module Build_only_sub_dirs = Build_only_sub_dirs
+    module Rule_targets = Rule_targets
     module Rules = Rules
 
     let make
@@ -160,7 +161,7 @@ module Build_config = struct
           ?(directory_targets = Rules.empty.directory_targets)
           rules
       =
-      let rules = { Rules.build_dir_only_sub_dirs; directory_targets; rules } in
+      let rules = Rules.create ~build_dir_only_sub_dirs ~directory_targets rules in
       Gen_rules_result.rules_here rules
     ;;
 
