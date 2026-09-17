@@ -374,9 +374,8 @@ Expanded destinations must not conflict with literal mappings.
   Leaving directory 'dynamic'
   [1]
 
-Reading a mapping from a child directory in the same qualified group currently
-creates a dependency cycle, even if the file already exists in the source tree.
-The mappings must be resolved before Dune can load the group's directories.
+Mappings can read a source file in a child directory of the same qualified
+group. Changing the file updates the namespace without cleaning.
 
   $ printf public >dynamic/lib/internal/mapping
   $ cat >dynamic/lib/dune <<EOF
@@ -386,21 +385,24 @@ The mappings must be resolved before Dune can load the group's directories.
   > (library (name renamed))
   > EOF
   $ dune build --root=dynamic '%{cmi:lib/Public.Leaf}'
+
+  $ printf exposed >dynamic/lib/internal/mapping
+  $ dune build --root=dynamic '%{cmi:lib/Exposed.Leaf}'
+  $ dune build --root=dynamic '%{cmi:lib/Public.Leaf}'
   Entering directory 'dynamic'
-  Error: Dependency cycle between:
-     Computing directory contents of _build/default/lib
-  -> %{read:internal/mapping} at lib/dune:3
-  -> Computing directory contents of _build/default/lib
-  -> required by %{cmi:lib/Public.Leaf} at command line:1
+  File "command line", line 1, characters 0-22:
+  Error: Module Public.Leaf does not exist.
   Leaving directory 'dynamic'
   [1]
 
-Generating the mapping file in a child directory has the same limitation.
+The mapping file can also be generated in a child directory. Its input changes
+are tracked before resolving the namespace.
 
+  $ printf public >dynamic/lib/internal/generated-mapping.in
   $ cat >dynamic/lib/internal/dune <<EOF
   > (rule
   >  (target generated-mapping)
-  >  (action (write-file %{target} public)))
+  >  (action (copy generated-mapping.in %{target})))
   > EOF
   $ cat >dynamic/lib/dune <<EOF
   > (include_subdirs
@@ -409,12 +411,13 @@ Generating the mapping file in a child directory has the same limitation.
   > (library (name renamed))
   > EOF
   $ dune build --root=dynamic '%{cmi:lib/Public.Leaf}'
+
+  $ printf exposed >dynamic/lib/internal/generated-mapping.in
+  $ dune build --root=dynamic '%{cmi:lib/Exposed.Leaf}'
+  $ dune build --root=dynamic '%{cmi:lib/Public.Leaf}'
   Entering directory 'dynamic'
-  Error: Dependency cycle between:
-     Computing directory contents of _build/default/lib
-  -> %{read:internal/generated-mapping} at lib/dune:3
-  -> Computing directory contents of _build/default/lib
-  -> required by %{cmi:lib/Public.Leaf} at command line:1
+  File "command line", line 1, characters 0-22:
+  Error: Module Public.Leaf does not exist.
   Leaving directory 'dynamic'
   [1]
 
