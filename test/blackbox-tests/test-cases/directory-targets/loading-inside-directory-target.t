@@ -1,7 +1,7 @@
 This test tries to load the rules in a directory that is a target of another
 rule.
 
-  $ make_directory_targets_project 3.4
+  $ make_directory_targets_project 3.23
 
   $ cat >dune <<EOF
   > (rule
@@ -9,6 +9,9 @@ rule.
   >  (targets (dir output))
   >  (action (bash "echo creating output dir && mkdir -p output/a && touch output/a/b")))
   > EOF
+
+Only complete directory loads emit `load-dir`; target lookups can use the
+source stage without loading the directory's compilation rules.
 
   $ loadedDirs() {
   > jq -c 'select(.name == "load-dir") | .args'
@@ -23,9 +26,7 @@ rule.
 
   $ build output/
   creating output dir
-  {"dir":"_build/default"}
   {"dir":"_build/default/.dune"}
-  {"dir":"_build"}
   $ find _build/default/output
   _build/default/output
   _build/default/output/a
@@ -36,10 +37,7 @@ and re-create output/b. The following should not re-run the rule that recreates
 output/
 
   $ build output/a/b
-  {"dir":"_build/default/output/a"}
-  {"dir":"_build/default"}
   {"dir":"_build/default/.dune"}
-  {"dir":"_build"}
   $ find _build/default/output
   _build/default/output
   _build/default/output/a
@@ -70,10 +68,7 @@ Now we try loading the rules in output/a and make sure that nothing is deleted:
   ]
 
   $ dune trace cat | loadedDirs
-  {"dir":"_build/default/output"}
-  {"dir":"_build/default"}
   {"dir":"_build/default/.dune"}
-  {"dir":"_build"}
 
   $ find _build/default/output
   _build/default/output
