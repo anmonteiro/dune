@@ -21,3 +21,34 @@ Implementations may refer to virtual library's modules
   (** @canonical Vlib.Foo *)
   module Foo = Vlib__Foo
   --------
+
+An implementation registers inherited stubs archives even when it has no
+foreign stubs of its own.
+
+  $ mkdir -p foreign-stubs/vlib foreign-stubs/impl
+  $ cat >foreign-stubs/dune-project <<EOF
+  > (lang dune 3.25)
+  > EOF
+  $ cat >foreign-stubs/vlib/dune <<EOF
+  > (library
+  >  (name vlib)
+  >  (virtual_modules vmod)
+  >  (foreign_stubs
+  >   (language c)
+  >   (names stubs)))
+  > EOF
+  $ cat >foreign-stubs/vlib/vmod.mli <<EOF
+  > val value : int
+  > EOF
+  $ cat >foreign-stubs/vlib/stubs.c <<EOF
+  > void placeholder(void) {}
+  > EOF
+  $ cat >foreign-stubs/impl/dune <<EOF
+  > (library
+  >  (name impl)
+  >  (implements vlib))
+  > EOF
+  $ cat >foreign-stubs/impl/vmod.ml <<EOF
+  > let value = 42
+  > EOF
+  $ (cd foreign-stubs && dune build impl/impl.cma)

@@ -16,6 +16,12 @@ val test : t -> string -> bool
 (** Returns textual representation of a glob. *)
 val to_string : t -> string
 
+(** Return the exact matched string when the glob contains no wildcard. *)
+val as_literal : t -> string option
+
+(** A literal suffix shared by every match, or the empty string when unknown. *)
+val literal_suffix : t -> string
+
 (** Converts string to glob. Throws [Invalid_argument] exception if string is
     not a valid glob. *)
 val of_string : string -> t

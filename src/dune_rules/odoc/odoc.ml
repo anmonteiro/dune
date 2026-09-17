@@ -1123,28 +1123,29 @@ let setup_package_aliases_format sctx (pkg : Package.t) (output : Output_format.
     let dir = Path.Build.append_source (Context.build_dir ctx) pkg_dir in
     Output_format.alias output ~dir
   in
-  match (output : Output_format.t) with
-  | Markdown ->
-    let directory_target = Paths.markdown ctx (Pkg name) in
-    let toplevel_index = Paths.markdown_index ctx in
-    let deps =
-      let open Action_builder.O in
-      let+ () = Action_builder.path (Path.build directory_target)
-      and+ () = Action_builder.path (Path.build toplevel_index) in
-      ()
-    in
-    Rules.Produce.Alias.add_deps alias deps
-  | Html | Json ->
-    let* libs =
-      Context.name ctx |> libs_of_pkg ~pkg:name >>| List.map ~f:(fun lib -> Lib lib)
-    in
-    let deps =
-      Pkg name :: libs
-      |> List.map ~f:(Dep.format_alias output ctx)
-      |> Dune_engine.Dep.Set.of_list_map ~f:(fun f -> Dune_engine.Dep.alias f)
-      |> Action_builder.deps
-    in
-    Rules.Produce.Alias.add_deps alias deps
+  Rules.narrow (Target_mask.aliases [ alias ]) (fun () ->
+    match (output : Output_format.t) with
+    | Markdown ->
+      let directory_target = Paths.markdown ctx (Pkg name) in
+      let toplevel_index = Paths.markdown_index ctx in
+      let deps =
+        let open Action_builder.O in
+        let+ () = Action_builder.path (Path.build directory_target)
+        and+ () = Action_builder.path (Path.build toplevel_index) in
+        ()
+      in
+      Rules.Produce.Alias.add_deps alias deps
+    | Html | Json ->
+      let* libs =
+        Context.name ctx |> libs_of_pkg ~pkg:name >>| List.map ~f:(fun lib -> Lib lib)
+      in
+      let deps =
+        Pkg name :: libs
+        |> List.map ~f:(Dep.format_alias output ctx)
+        |> Dune_engine.Dep.Set.of_list_map ~f:(fun f -> Dune_engine.Dep.alias f)
+        |> Action_builder.deps
+      in
+      Rules.Produce.Alias.add_deps alias deps)
 ;;
 
 let setup_package_aliases sctx (pkg : Package.t) =
@@ -1397,5 +1398,5 @@ let gen_rules sctx ~dir rest =
            setup_pkg_html_rules sctx ~pkg:name ~for_
        in
        ())
-  | _ -> Memo.return (Gen_rules.redirect_to_parent Gen_rules.Rules.empty)
+  | _ -> Memo.return Gen_rules.no_rules
 ;;

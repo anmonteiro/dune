@@ -24,6 +24,71 @@ open Import
 
 type stanza = Menhir_stanza.t
 
+let targets ~dir m ~cmly =
+  let base = [ m ^ ".ml"; m ^ ".mli" ] in
+  List.map ~f:(Path.Build.relative dir) (if cmly then (m ^ ".cmly") :: base else base)
+;;
+
+let mock m = m ^ "__mock"
+let mock_ml ~dir m = Path.Build.relative dir (mock m ^ ".ml.mock")
+let inferred_mli ~dir m = Path.Build.relative dir (mock m ^ ".mli.inferred")
+let conflicts ~dir m = Path.Build.relative dir (m ^ ".conflicts")
+
+let possible_basenames ~dir ~source_files (stanza : stanza) =
+  match stanza.merge_into with
+  | Some basename -> [ basename ]
+  | None ->
+    Parser_generator_rules.possible_basenames
+      ~dir
+      ~source_files
+      ~source_extension:Filename.Extension.mly
+      ~modules:stanza.modules
+;;
+
+let source_files ~dir ~source_files stanza =
+  possible_basenames ~dir ~source_files stanza
+  |> List.concat_map ~f:(fun base -> targets ~dir base ~cmly:false)
+;;
+
+let targets_for_basename ~dir base =
+  let mock = mock_ml ~dir base in
+  let preprocessed =
+    Module.File.make Dialect.ocaml (Path.build mock)
+    |> Module.File.pped
+    |> Module.File.path
+    |> Path.as_in_build_dir_exn
+  in
+  Target_mask.files
+    (mock
+     :: preprocessed
+     :: inferred_mli ~dir base
+     :: conflicts ~dir base
+     :: targets ~dir base ~cmly:true)
+;;
+
+let rule_targets ~dir ~source_files ~obj_dirs (stanza : stanza) =
+  let known =
+    possible_basenames ~dir ~source_files stanza
+    |> List.fold_left ~init:Target_mask.empty ~f:(fun acc base ->
+      Target_mask.union acc (targets_for_basename ~dir base))
+  in
+  let dynamic =
+    if
+      Option.is_some stanza.merge_into
+      || Ordered_set_lang.Unexpanded.is_expanded stanza.modules
+    then Target_mask.empty
+    else
+      Target_mask.file_extensions
+        ~dir
+        (Filename.Extension.Set.of_list
+           (List.map
+              [ ".ml"; ".mli"; ".cmly"; ".conflicts"; ".mock"; ".inferred" ]
+              ~f:Filename.Extension.of_string_exn))
+  in
+  List.fold_left obj_dirs ~init:(Target_mask.union known dynamic) ~f:(fun mask obj_dir ->
+    Target_mask.union mask (Target_mask.subtree (Obj_dir.obj_dir obj_dir)))
+;;
+
 module type PARAMS = sig
   (* [cctx] is the compilation context. *)
 
@@ -100,10 +165,7 @@ module Run (P : PARAMS) = struct
      corresponding source file, and [targets m] is the list of targets that
      Menhir must build. *)
 
-  let targets m ~cmly =
-    let base = [ m ^ ".ml"; m ^ ".mli" ] in
-    List.map ~f:(Path.Build.relative dir) (if cmly then (m ^ ".cmly") :: base else base)
-  ;;
+  let targets = targets ~dir
 
   (* The following definitions control where the mock [.ml] file and the
      inferred [.mli] file are created and how they are named. *)
@@ -111,9 +173,8 @@ module Run (P : PARAMS) = struct
   (* We change the module's base name, and use dummy extensions, so as to
      minimize the risk of confusing the build system (and the user). *)
 
-  let mock m = m ^ "__mock"
-  let mock_ml m : Path.Build.t = Path.Build.relative dir (mock m ^ ".ml.mock")
-  let inferred_mli m : Path.Build.t = Path.Build.relative dir (mock m ^ ".mli.inferred")
+  let mock_ml = mock_ml ~dir
+  let inferred_mli = inferred_mli ~dir
 
   (* ------------------------------------------------------------------------ *)
 
@@ -157,10 +218,7 @@ module Run (P : PARAMS) = struct
       | Some explain -> Expander.eval_blang expander explain
     in
     if explain
-    then
-      [ Command.Args.A "--explain"
-      ; Hidden_targets [ Path.Build.relative dir (base ^ ".conflicts") ]
-      ]
+    then [ Command.Args.A "--explain"; Hidden_targets [ conflicts ~dir base ] ]
     else []
   ;;
 
@@ -381,7 +439,14 @@ module Run (P : PARAMS) = struct
     let open Memo.O in
     let* () = Memo.Lazy.force check
     and* stanzas = Memo.Lazy.force stanzas in
-    Memo.sequential_iter stanzas ~f:process
+    Memo.sequential_iter stanzas ~f:(fun ((stanza, _) as item) ->
+      let base = Option.value_exn stanza.merge_into in
+      let mask =
+        Target_mask.union
+          (targets_for_basename ~dir base)
+          (Target_mask.subtree (Compilation_context.obj_dir cctx |> Obj_dir.obj_dir))
+      in
+      Rules.narrow mask (fun () -> process item))
   ;;
 end
 

@@ -4,7 +4,7 @@ open Re
 
 type t =
   | Literal of string
-  | Re of Re.t
+  | Re of { re : Re.t; suffix : string }
 
 let no_slash        = diff any (char '/')
 let no_slash_no_dot = diff any (set "./")
@@ -48,7 +48,7 @@ let finalize st =
         | [] -> re
         | _ :: _ -> str (String.of_list acc) :: re
       in
-      Re (loop re st)
+      Re { re = loop re st; suffix = String.of_list acc }
   in
   try_str [] st
 }

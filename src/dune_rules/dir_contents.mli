@@ -61,6 +61,7 @@ module Standalone_or_root : sig
   val rules : t -> Rules.t Memo.t
 
   val source_files : t -> (Path.Build.t * Filename.Array.Set.t) list Memo.t
+  val source_directories : t -> Source_file_dir.t Nonempty_list.t Memo.t
   val root : t -> dir_contents Memo.t
   val subdirs : t -> dir_contents list Memo.t
 end

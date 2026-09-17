@@ -179,6 +179,15 @@ include Sub_system.Register_end_point (struct
     module Backend = Backend
     module Info = Inline_tests_info.Tests
 
+    let rule_targets ~dir ~(stanza : Library.t) ~info:_ =
+      Target_mask.union
+        (Target_mask.subtree
+           (Path.Build.relative
+              dir
+              (Inline_tests_info.inline_test_dirname (snd stanza.name))))
+        (Target_mask.aliases_in_directory dir)
+    ;;
+
     let gen_rules
           { Sub_system.Library_compilation_context.super_context = sctx
           ; dir

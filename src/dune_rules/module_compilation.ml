@@ -756,6 +756,20 @@ let build_root_module cctx root_module =
   build_module cctx root_module
 ;;
 
+let rule_targets ~dir ~obj_dir =
+  List.fold_left
+    [ Target_mask.subtree (Obj_dir.obj_dir obj_dir)
+    ; Target_mask.subtree (Path.Build.relative dir Melange.Source.dir)
+    ; Target_mask.subtree
+        (Module.wrapped_compat_dir (Path.build dir) |> Path.as_in_build_dir_exn)
+    ; Target_mask.file_extensions
+        ~dir
+        (Filename.Extension.Set.singleton Filename.Extension.ml_gen)
+    ]
+    ~init:(Target_mask.aliases_in_directory dir)
+    ~f:Target_mask.union
+;;
+
 let build_all cctx =
   let for_wrapped_compat = lazy (Compilation_context.for_wrapped_compat cctx) in
   let modules = Compilation_context.modules cctx in
@@ -786,12 +800,16 @@ let build_all cctx =
            build_module cctx m))
 ;;
 
+let build_all cctx =
+  let dir = Compilation_context.dir cctx in
+  let obj_dir = Compilation_context.obj_dir cctx in
+  Rules.narrow (rule_targets ~dir ~obj_dir) (fun () -> build_all cctx)
+;;
+
+let empty_intf_path path = Path.set_extension path ~ext:Filename.Extension.mli
+
 let with_empty_intf ~sctx ~dir module_ =
-  let name =
-    Module.file module_ ~ml_kind:Impl
-    |> Option.value_exn
-    |> Path.set_extension ~ext:Filename.Extension.mli
-  in
+  let name = Module.file module_ ~ml_kind:Impl |> Option.value_exn |> empty_intf_path in
   let rule =
     Action_builder.write_file
       (Path.as_in_build_dir_exn name)

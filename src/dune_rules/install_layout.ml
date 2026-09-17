@@ -177,9 +177,7 @@ let gen_rules context_name ~dir rest =
              | Directory -> Action_builder.symlink_dir ~src ~dst
            in
            Rules.Produce.rule (Rule.make ~info:(Rule.Info.of_loc_opt None) ~targets build))))
-  | _ :: _ :: _ ->
-    Memo.return
-    @@ Build_config.Gen_rules.redirect_to_parent Build_config.Gen_rules.Rules.empty
+  | _ :: _ :: _ -> Memo.return @@ Build_config.Gen_rules.no_rules
 ;;
 
 module For_rocq_only = struct

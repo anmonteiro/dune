@@ -2,6 +2,19 @@
 
 open Import
 
+val rule_targets
+  :  dialects:Dialect.DB.t
+  -> preprocess:_ Preprocess.Per_module.t
+  -> Path.Build.t list
+  -> Target_mask.t
+
+val rule_target_families
+  :  dir:Path.Build.t
+  -> dialects:Dialect.DB.t
+  -> preprocess:_ Preprocess.Per_module.t
+  -> empty_intf:bool
+  -> Target_mask.t
+
 val make
   :  Super_context.t
   -> dir:Path.Build.t

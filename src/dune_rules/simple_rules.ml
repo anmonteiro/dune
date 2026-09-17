@@ -135,6 +135,52 @@ let add_corrections ~(rule : Rule_conf.t) action =
     |> Action.Full.add_corrections Produce
 ;;
 
+let rule_targets ~dir (rule : Rule_conf.t) =
+  let targets =
+    match rule.targets with
+    | Infer -> Target_mask.files_in_directory dir
+    | Static { targets; multiplicity = _ } ->
+      List.fold_left
+        targets
+        ~init:
+          (Action_unexpanded.rule_targets ~dir ~targets:rule.targets (snd rule.action))
+        ~f:(fun mask (target, kind) ->
+          let targets =
+            match
+              Option.bind (String_with_vars.text_only target) ~f:Filename.of_string
+            with
+            | None ->
+              (match kind with
+               | Targets_spec.Kind.File -> Target_mask.files_in_directory dir
+               | Directory -> Target_mask.directories_in_directory dir)
+            | Some target ->
+              let path = Path.Build.relative_fname dir target in
+              (match kind with
+               | File -> Target_mask.files [ path ]
+               | Directory -> Target_mask.directories [ path ])
+          in
+          Target_mask.union mask targets)
+  in
+  Target_mask.union
+    targets
+    (Target_mask.aliases (List.map rule.aliases ~f:(Alias.make ~dir)))
+;;
+
+let copy_files_targets ~dir (def : Copy_files.t) =
+  let files =
+    match String_with_vars.text_only def.files with
+    | None -> Target_mask.files_in_directory dir
+    | Some glob ->
+      let basename = Filename.basename glob in
+      (match Dune_rpc.Private.Glob.of_string_result basename with
+       | Error _ -> Target_mask.files_in_directory dir
+       | Ok glob -> Target_mask.files_matching ~dir (Predicate_lang.Glob.of_glob glob))
+  in
+  Target_mask.union
+    files
+    (Target_mask.aliases (Option.to_list def.alias |> List.map ~f:(Alias.make ~dir)))
+;;
+
 let user_rule sctx ~dir ~expander (rule : Rule_conf.t) =
   Expander.eval_blang expander rule.enabled_if
   >>= function
