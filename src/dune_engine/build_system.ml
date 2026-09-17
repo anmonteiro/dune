@@ -1097,17 +1097,34 @@ include Internal
    the results of both [Action_builder.static_deps] and [Action_builder.exec]
    are cached. *)
 let file_exists fn =
-  Load_rules.load_dir ~dir:(Path.parent_exn fn)
-  >>= function
-  | Source { filenames } | External { filenames } ->
-    Filename.Array.Set.mem filenames (Path.basename fn) |> Memo.return
-  | Build { rules_here; _ } ->
-    Memo.return
-      (Path.Build.Map.mem rules_here.by_file_targets (Path.as_in_build_dir_exn fn))
-  | Build_under_directory_target { directory_target_ancestor } ->
-    let+ path_map = build_dir (Path.build directory_target_ancestor) in
-    (* Note that in the case of directory targets, we also check if directories exist. *)
-    Targets.Produced.mem_any path_map (Path.as_in_build_dir_exn fn)
+  match Path.as_in_build_dir fn with
+  | None ->
+    Load_rules.load_dir ~dir:(Path.parent_exn fn)
+    >>| (function
+     | Source { filenames } | External { filenames } ->
+       Filename.Array.Set.mem filenames (Path.basename fn)
+     | Build _ | Build_under_directory_target _ ->
+       Code_error.raise "Build directory for a source path" [ "path", Path.to_dyn fn ])
+  | Some path when Path.Build.equal path Path.Build.root -> Memo.return false
+  | Some path ->
+    Load_rules.get_rule fn
+    >>= (function
+     | None -> Memo.return false
+     | Some { Rule.targets; _ } ->
+       if Path.Build.equal targets.root (Path.Build.parent_exn path)
+       then Memo.return (Filename.Set.mem targets.files (Path.Build.basename path))
+       else (
+         let directory_target_ancestor =
+           Filename.Set.find targets.dirs ~f:(fun name ->
+             Path.Build.is_descendant
+               path
+               ~of_:(Path.Build.relative_fname targets.root name))
+           |> Option.value_exn
+           |> Path.Build.relative_fname targets.root
+         in
+         let+ path_map = build_dir (Path.build directory_target_ancestor) in
+         (* Inside a directory target, directory names count as existing files too. *)
+         Targets.Produced.mem_any path_map path))
 ;;
 
 let files_of ~dir =

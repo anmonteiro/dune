@@ -5,10 +5,9 @@ Copy files from inside a directory target
 Copy from a generated sub-directory
 -----------------------------------
 
-This test just documents that copying from a generated sub-directory
-causes a cycle. In theory, it would be possible to avoid but it would
-requires deep changes in Dune. The cycle exists at the moment because
-Dune loads all the rules of a directory at once.
+Copying from a generated sub-directory still causes a cycle: `copy_files`
+needs complete directory enumeration before the source stage has finished
+collecting the rule that produces that directory.
 
   $ cat >dune <<EOF
   > (rule
@@ -28,7 +27,7 @@ Dune loads all the rules of a directory at once.
   -> Computing directory contents of _build/default
   [1]
 
-  $ ls _build/default/
+  $ test ! -e _build/default/foo
 
 Copy from a generated directory somewhere else
 ----------------------------------------------

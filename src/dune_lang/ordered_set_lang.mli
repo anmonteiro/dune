@@ -69,6 +69,9 @@ module Unexpanded : sig
 
   val has_standard : t -> bool
 
+  (** Whether no variable expansion or [:include] is required. *)
+  val is_expanded : t -> bool
+
   type position =
     | Pos
     | Neg

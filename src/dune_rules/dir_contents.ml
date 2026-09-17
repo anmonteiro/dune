@@ -53,19 +53,39 @@ module Standalone_or_root = struct
   type nonrec standalone_or_root =
     { root : t
     ; subdirs : t Path.Build.Map.t
+    }
+
+  type physical =
+    { dirs : Source_file_dir.t Nonempty_list.t
     ; rules : Rules.t
     }
 
-  type nonrec t = { contents : standalone_or_root Memo.Lazy.t }
+  type nonrec t =
+    { physical : physical Memo.Lazy.t
+    ; contents : standalone_or_root Memo.Lazy.t
+    }
 
   let empty ~dir ~source_dir =
-    { contents =
+    { physical =
+        Memo.Lazy.of_val
+          { dirs =
+              Nonempty_list.
+                [ { Source_file_dir.dir
+                  ; path_to_root = []
+                  ; files =
+                      (match source_dir with
+                       | None -> Filename.Array.Set.empty
+                       | Some source_dir -> Source_tree.Dir.filenames source_dir)
+                  ; source_dir
+                  ; stanzas = []
+                  }
+                ]
+          ; rules = Rules.empty
+          }
+    ; contents =
         Memo.Lazy.create ~name:"empty-dir-contents" (fun () ->
           Memo.return
-            { root = empty Standalone ~dir ~source_dir
-            ; rules = Rules.empty
-            ; subdirs = Path.Build.Map.empty
-            })
+            { root = empty Standalone ~dir ~source_dir; subdirs = Path.Build.Map.empty })
     }
   ;;
 
@@ -80,8 +100,14 @@ module Standalone_or_root = struct
   ;;
 
   let rules t =
-    let+ contents = Memo.Lazy.force t.contents in
-    contents.rules
+    let+ physical = Memo.Lazy.force t.physical in
+    physical.rules
+  ;;
+
+  let source_files t =
+    let+ physical = Memo.Lazy.force t.physical in
+    Nonempty_list.to_list_map physical.dirs ~f:(fun { Source_file_dir.dir; files; _ } ->
+      dir, files)
   ;;
 end
 
@@ -267,7 +293,30 @@ end = struct
 
   let make_standalone sctx st_dir ~dir (d : Dune_file.t) =
     let human_readable_description () = human_readable_description dir in
-    { Standalone_or_root.contents =
+    let stanzas = Dune_file.stanzas d in
+    let physical =
+      Memo.lazy_
+        ~name:"standalone-physical-contents"
+        ~human_readable_description
+        (fun () ->
+           let+ dirs, rules =
+             Rules.collect (fun () ->
+               let* stanzas = stanzas in
+               let src_dir = Dune_file.dir d in
+               let+ files = load_text_files sctx st_dir stanzas ~src_dir ~dir in
+               Nonempty_list.
+                 [ { Source_file_dir.dir
+                   ; path_to_root = []
+                   ; files
+                   ; source_dir = Some st_dir
+                   ; stanzas
+                   }
+                 ])
+           in
+           { Standalone_or_root.dirs; rules })
+    in
+    { Standalone_or_root.physical
+    ; contents =
         Memo.lazy_ ~name:"standalone-dir-contents" ~human_readable_description (fun () ->
           let include_subdirs = Loc.none, Include_subdirs.No in
           let ctx = Super_context.context sctx in
@@ -275,25 +324,10 @@ end = struct
             let+ ocaml = Context.ocaml ctx in
             ocaml.lib_config
           in
-          let stanzas = Dune_file.stanzas d in
           let project = Dune_file.project d in
-          let+ files, rules =
-            Rules.collect (fun () ->
-              let src_dir = Dune_file.dir d in
-              stanzas >>= load_text_files sctx st_dir ~src_dir ~dir)
-          in
-          let dirs =
-            Memo.lazy_ ~name:"standalone-source-file-dirs" (fun () ->
-              let+ stanzas = stanzas in
-              Nonempty_list.
-                [ { Source_file_dir.dir
-                  ; path_to_root = []
-                  ; files
-                  ; source_dir = Some st_dir
-                  ; stanzas
-                  }
-                ])
-          in
+          let+ { Standalone_or_root.dirs; rules = _ } = Memo.Lazy.force physical in
+          let files = (Nonempty_list.hd dirs).files in
+          let dirs = Memo.Lazy.of_val dirs in
           let loc = loc_of_dune_file st_dir in
           let ml, melange =
             language_sources sctx ~dir ~project ~lib_config ~loc ~include_subdirs ~dirs
@@ -320,7 +354,6 @@ end = struct
                     and+ dirs = Memo.Lazy.force dirs in
                     Rocq_sources.of_dir stanzas ~dir ~include_subdirs ~dirs)
               }
-          ; rules
           ; subdirs = Path.Build.Map.empty
           })
     }
@@ -465,38 +498,37 @@ end = struct
       let loc, qualif_mode = qualification in
       loc, Include_subdirs.Include qualif_mode
     in
-    let+ dir_renames =
-      match snd qualification with
-      | Unqualified | Qualified { dirs = [] } -> Memo.return Dir_renames.empty
-      | Qualified { dirs } -> Dir_renames.expand sctx ~dir dirs
-    in
     let loc = loc_of_dune_file source_dir in
-    let contents =
+    let stanzas = Dune_file.stanzas dune_file in
+    let physical =
       Memo.lazy_
-        ~name:"group-dir-contents"
+        ~name:"group-physical-contents"
         ~human_readable_description:(fun () -> human_readable_description dir)
         (fun () ->
-           let ctx = Super_context.context sctx in
-           let stanzas = Dune_file.stanzas dune_file in
-           let project = Dune_file.project dune_file in
-           let+ (files, subdirs), rules =
+           let+ (root, subdirs), rules =
              Rules.collect (fun () ->
                Memo.fork_and_join
                  (fun () ->
-                    stanzas
-                    >>= load_text_files
-                          sctx
-                          source_dir
-                          ~src_dir:(Dune_file.dir dune_file)
-                          ~dir)
+                    let* stanzas = stanzas in
+                    let+ files =
+                      load_text_files
+                        sctx
+                        source_dir
+                        stanzas
+                        ~src_dir:(Dune_file.dir dune_file)
+                        ~dir
+                    in
+                    { Source_file_dir.dir
+                    ; path_to_root = []
+                    ; files
+                    ; source_dir = Some source_dir
+                    ; stanzas
+                    })
                  (fun () ->
                     let* components = components in
                     Memo.parallel_map
                       components
                       ~f:(fun { dir; path_to_group_root; source_dir; stanzas } ->
-                        let path_to_root =
-                          Dir_renames.translate dir_renames path_to_group_root
-                        in
                         let+ files =
                           load_text_files
                             sctx
@@ -506,24 +538,37 @@ end = struct
                             ~dir
                         in
                         { Source_file_dir.dir
-                        ; path_to_root
+                        ; path_to_root = path_to_group_root
                         ; files
                         ; source_dir = Some source_dir
                         ; stanzas
                         })))
            in
-           let dirs =
-             Memo.lazy_ ~name:"group-source-file-dirs" (fun () ->
-               let+ stanzas = stanzas in
-               Nonempty_list.(
-                 { Source_file_dir.dir
-                 ; path_to_root = []
-                 ; files
-                 ; source_dir = Some source_dir
-                 ; stanzas
-                 }
-                 :: subdirs))
+           { Standalone_or_root.dirs = Nonempty_list.(root :: subdirs); rules })
+    in
+    let contents =
+      Memo.lazy_
+        ~name:"group-dir-contents"
+        ~human_readable_description:(fun () -> human_readable_description dir)
+        (fun () ->
+           let ctx = Super_context.context sctx in
+           let project = Dune_file.project dune_file in
+           let* { Standalone_or_root.dirs = root :: subdirs; rules = _ } =
+             Memo.Lazy.force physical
            in
+           let+ dir_renames =
+             match snd qualification with
+             | Unqualified | Qualified { dirs = [] } -> Memo.return Dir_renames.empty
+             | Qualified { dirs } -> Dir_renames.expand sctx ~dir dirs
+           in
+           let files = root.files in
+           let subdirs =
+             List.map subdirs ~f:(fun (source : Source_file_dir.t) ->
+               { source with
+                 path_to_root = Dir_renames.translate dir_renames source.path_to_root
+               })
+           in
+           let dirs = Memo.Lazy.of_val Nonempty_list.(root :: subdirs) in
            let lib_config =
              let+ ocaml = Context.ocaml ctx in
              ocaml.lib_config
@@ -584,11 +629,10 @@ end = struct
              }
            in
            { Standalone_or_root.root
-           ; rules
            ; subdirs = Path.Build.Map.of_list_map_exn subdirs ~f:(fun x -> x.dir, x)
            })
     in
-    { Standalone_or_root.contents }
+    { Standalone_or_root.physical; contents }
   ;;
 
   let get0_impl (sctx, dir) : triage Memo.t =
@@ -604,8 +648,7 @@ end = struct
     | Standalone (st_dir, d) ->
       Memo.return @@ Standalone_or_root (make_standalone sctx st_dir ~dir d)
     | Group_root root ->
-      let+ group_root = make_group_root sctx root ~dir in
-      Standalone_or_root group_root
+      Memo.return @@ Standalone_or_root (make_group_root sctx root ~dir)
   ;;
 
   let memo0 =
@@ -623,15 +666,15 @@ end = struct
   let get sctx ~dir =
     Memo.exec memo0 (sctx, dir)
     >>= function
-    | Standalone_or_root { contents } ->
-      let+ { root; rules = _; subdirs = _ } = Memo.Lazy.force contents in
+    | Standalone_or_root { physical = _; contents } ->
+      let+ { root; subdirs = _ } = Memo.Lazy.force contents in
       root
     | Group_part group_root ->
       Memo.exec memo0 (sctx, group_root)
       >>= (function
        | Group_part _ -> assert false
-       | Standalone_or_root { contents } ->
-         let+ { root; rules = _; subdirs = _ } = Memo.Lazy.force contents in
+       | Standalone_or_root { physical = _; contents } ->
+         let+ { root; subdirs = _ } = Memo.Lazy.force contents in
          root)
   ;;
 

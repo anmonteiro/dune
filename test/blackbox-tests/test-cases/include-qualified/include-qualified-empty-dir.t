@@ -1,7 +1,7 @@
 Test `(include_subdirs qualified)` in the presence of invalid module name
 directories that don't contain source files
 
-  $ make_dune_project 3.22
+  $ make_dune_project 3.25
 
   $ cat > dune <<EOF
   > (include_subdirs qualified)
@@ -26,6 +26,11 @@ source files. The library should still compile.
   $ touch bar-baz/hello.ml
 
   $ dune build ./hello.txt
+
+Building an unrelated rule does not need the module namespace. Building the
+library still validates directory names.
+
+  $ dune build bar.cma
   File "bar-baz", line 1, characters 0-0:
   Error: "bar-baz" is an invalid module name.
   Module names must be non-empty, start with a letter, and composed only of the

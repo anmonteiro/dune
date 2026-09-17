@@ -56,7 +56,11 @@ module Standalone_or_root : sig
   type dir_contents := t
   type t
 
+  (** Ordinary rules and physical filenames, without expanding directory mappings
+      or computing the module namespace. *)
   val rules : t -> Rules.t Memo.t
+
+  val source_files : t -> (Path.Build.t * Filename.Array.Set.t) list Memo.t
   val root : t -> dir_contents Memo.t
   val subdirs : t -> dir_contents list Memo.t
 end
