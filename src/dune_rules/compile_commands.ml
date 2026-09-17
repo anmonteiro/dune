@@ -2,6 +2,12 @@ open Import
 
 let filename = "compile_commands.json"
 
+let rule_targets ~dir =
+  Target_mask.union
+    (Target_mask.files [ Path.Build.relative dir filename ])
+    (Target_mask.aliases [ Alias.make Alias0.check ~dir ])
+;;
+
 (* A single entry in compile_commands.json *)
 type entry =
   { directory : Path.t
@@ -162,6 +168,12 @@ let gen_rules sctx ~rules =
           when Buildable.has_foreign_stubs buildable -> (dune_file, stanza) :: acc
         | _ -> acc)
     in
+    if List.is_empty foreign_stanzas
+    then Memo.return ()
+    else
+    let* rules =
+      Rules.load rules (Target_mask.path (Path.Build.relative build_dir filename))
+    in
     let has_existing_rule =
       let { Rules.Dir_rules.rules; _ } =
         Rules.find rules (Path.build build_dir) |> Rules.Dir_rules.consume
@@ -170,7 +182,7 @@ let gen_rules sctx ~rules =
       List.exists rules ~f:(fun { Rule.targets = { files; dirs; _ }; _ } ->
         Filename.Set.mem files filename || Filename.Set.mem dirs filename)
     in
-    if List.is_empty foreign_stanzas || has_existing_rule
+    if has_existing_rule
     then Memo.return ()
     else (
       let gen_path = Path.Build.relative build_dir filename in

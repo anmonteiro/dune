@@ -17,8 +17,10 @@ Changing the list must change the available modules without cleaning.
   $ touch source/first.ml source/second.ml
   $ echo first >source/lst
   $ dune build '%{cmi:source/First}'
+  $ test -f _build/default/source/.source_list.objs/byte/source_list__First.cmi
   $ echo second >source/lst
   $ dune build '%{cmi:source/Second}'
+  $ test ! -e _build/default/source/.source_list.objs/byte/source_list__First.cmi
   $ dune build '%{cmi:source/First}'
   File "command line", line 1, characters 0-19:
   Error: Module First does not exist.
@@ -34,6 +36,12 @@ An input is not a compilation output just because its extension is `.ml`.
   > EOF
   $ echo first >source/modules.ml
   $ dune build '%{cmi:source/First}'
+
+A direct request in an internal generated directory must inherit its parent's
+ownership declarations without loading the complete parent directory first.
+
+  $ dune build --build-dir _build-generated-dir \
+  >   source/.source_list.objs/byte/source_list__First.cmi
 
 An ordinary rule can generate the list alongside a rule generating an OCaml
 source. Changing the input must discover and compile the newly selected module.
@@ -243,6 +251,11 @@ later compilation stage. Direct target and alias requests must both reject it.
   Error: Multiple rules generated for _build/default/duplicate/duplicate.cma:
   - duplicate/dune:4
   - duplicate/dune:1
+  -> required by { dir = In_build_dir "default/duplicate"
+     ; predicate = True
+     ; only_generated_files = true
+     }
+  -> required by alias duplicate/all
   [1]
 
 The same validation applies to every target of a rule. Requesting its data
@@ -268,6 +281,11 @@ output must not hide a conflict on another output produced by that rule.
   Error: Multiple rules generated for _build/default/mixed/mixed.cma:
   - mixed/dune:7
   - mixed/dune:1
+  -> required by { dir = In_build_dir "default/mixed"
+     ; predicate = True
+     ; only_generated_files = true
+     }
+  -> required by alias mixed/all
   [1]
 
 Fallback selection must likewise account for promotion by a later stage. Both
@@ -331,8 +349,8 @@ building the very library whose module list it describes.
   -> (modules) field at cycle/dune:5
   [1]
 
-Older projects retain complete rule loading. Their unsandboxed actions can
-leave temporary files, which must survive the build that creates them.
+Unsandboxed actions can leave temporary files, which must survive the build
+that creates them when its rule loading has already completed.
 
   $ mkdir cleanup
   $ echo '(lang dune 3.22)' >cleanup/dune-project
@@ -390,7 +408,7 @@ files before compilation, even if the source stage loaded first.
   $ test ! -e _build/default/empty-interface/b.mli
 
 Dynamic module lists are supported since 3.13. Reading an independent rule in
-the same directory currently cycles when the project predates staged loading.
+the same directory also works for projects that predate staged loading.
 
   $ mkdir legacy
   $ cat >legacy/dune-project <<EOF
@@ -407,14 +425,8 @@ the same directory currently cycles when the project predates staged loading.
   > EOF
   $ touch legacy/value.ml
   $ dune build legacy/legacy.cma
-  Error: Dependency cycle between:
-     (modules) field at legacy/dune:4
-  -> (:include _build/default/legacy/lst) at legacy/dune:7
-  -> (modules) field at legacy/dune:4
-  [1]
 
 A custom test action must not prevent its module list from being generated.
-Currently the custom action makes the entire directory load eagerly and cycle.
 
   $ mkdir custom-action
   $ cat >custom-action/dune <<EOF
@@ -431,11 +443,7 @@ Currently the custom action makes the entire directory load eagerly and cycle.
   > let () = print_endline "custom test"
   > EOF
   $ dune build @custom-action/runtest
-  Error: Dependency cycle between:
-     (modules) field at custom-action/dune:4
-  -> (:include _build/default/custom-action/lst) at custom-action/dune:7
-  -> (modules) field at custom-action/dune:4
-  [1]
+  custom test
 
 Pulling a module list through several descendant directories must discover
 all intermediate producers and track changes to the leaf input.
@@ -468,8 +476,7 @@ all intermediate producers and track changes to the leaf input.
   $ dune build '%{cmi:nested/Second}'
 
 Copying generated files upward must not force unrelated rules in the child.
-The child can itself copy an independent parent output. Currently complete
-directory enumeration makes these two copy_files stanzas cycle.
+The child can itself copy an independent parent output.
 
   $ mkdir -p copied-list/child
   $ cat >copied-list/dune <<EOF
@@ -490,16 +497,156 @@ directory enumeration makes these two copy_files stanzas cycle.
   > EOF
   $ touch copied-list/value.ml
   $ dune build copied-list/copied_list.cma
-  Error: Dependency cycle between:
-     Computing directory contents of _build/default/copied-list
-  -> { dir = In_build_dir "default/copied-list"
-     ; predicate = Element (Glob "seed")
-     ; only_generated_files = false
-     }
-  -> Computing directory contents of _build/default/copied-list/child
-  -> { dir = In_build_dir "default/copied-list/child"
-     ; predicate = Element (Glob "*.modules")
-     ; only_generated_files = false
-     }
-  -> Computing directory contents of _build/default/copied-list
+
+Configurator runtime files are available even when the only action is attached
+to an alias, without building a local executable first.
+
+  $ mkdir configurator-alias
+  $ cat >configurator-alias/dune-project <<EOF
+  > (lang dune 3.13)
+  > EOF
+  $ cat >configurator-alias/dune <<EOF
+  > (rule
+  >  (alias check)
+  >  (action
+  >   (bash "test -f .dune/configurator && test -f .dune/configurator.v2")))
+  > EOF
+  $ (cd configurator-alias && dune build @check)
+
+Alias-only requests also remove anonymous-action directories belonging to
+source directories that no longer exist.
+
+  $ mkdir -p anonymous-cleanup/child
+  $ cat >anonymous-cleanup/dune <<EOF
+  > (alias (name check))
+  > EOF
+  $ cat >anonymous-cleanup/child/dune <<EOF
+  > (rule (alias check) (action (echo child-action)))
+  > EOF
+  $ dune build @anonymous-cleanup/check
+  child-action
+  $ test -d _build/.actions/default/anonymous-cleanup/child
+  $ rm -r anonymous-cleanup/child
+  $ dune build @anonymous-cleanup/check
+  $ test ! -e _build/.actions/default/anonymous-cleanup/child
+
+Explicit targets do not disable inference from the action. Both the explicit
+target and an additional inferred target must find the same complete rule.
+
+  $ mkdir static-inferred
+  $ cat >static-inferred/dune <<EOF
+  > (rule
+  >  (targets declared)
+  >  (action
+  >   (progn
+  >    (write-file declared explicit)
+  >    (write-file extra inferred))))
+  > EOF
+  $ dune build --build-dir _build-inferred-extra static-inferred/extra
+  $ cat _build-inferred-extra/default/static-inferred/declared
+  explicit
+  $ cat _build-inferred-extra/default/static-inferred/extra
+  inferred
+  $ dune build --build-dir _build-inferred-declared static-inferred/declared
+  $ cat _build-inferred-declared/default/static-inferred/extra
+  inferred
+
+The additional inferred target may have a dynamic name even when the explicit
+target declaration is static.
+
+  $ mkdir dynamic-inferred
+  $ cat >dynamic-inferred/dune <<EOF
+  > (rule
+  >  (target declared)
+  >  (action
+  >   (progn
+  >    (write-file declared explicit)
+  >    (write-file %{env:DUNE_STAGE_EXTRA_TARGET=extra} inferred))))
+  > EOF
+  $ DUNE_STAGE_EXTRA_TARGET=extra dune build dynamic-inferred/extra
+  $ cat _build/default/dynamic-inferred/declared
+  explicit
+  $ cat _build/default/dynamic-inferred/extra
+  inferred
+  $ DUNE_STAGE_EXTRA_TARGET=renamed dune build dynamic-inferred/renamed
+  $ cat _build/default/dynamic-inferred/renamed
+  inferred
+
+Target variables backed by a single literal declaration stay precise. Loading
+the seed must not force the independent rules whose conditions read that seed.
+
+  $ mkdir -p bound-targets/child
+  $ cat >bound-targets/dune <<EOF
+  > (rule
+  >  (target seed)
+  >  (action (write-file %{target} true)))
+  > (rule
+  >  (target single)
+  >  (enabled_if (= %{read:seed} true))
+  >  (action (write-file %{target} single)))
+  > (rule
+  >  (targets multiple)
+  >  (enabled_if (= %{read:seed} true))
+  >  (action (write-file %{targets} multiple)))
+  > (rule
+  >  (target from-child)
+  >  (action (chdir child (write-file %{target} parent))))
+  > EOF
+  $ dune build bound-targets/seed
+  $ dune build bound-targets/single bound-targets/multiple bound-targets/from-child
+  $ cat _build/default/bound-targets/single
+  single
+  $ cat _build/default/bound-targets/multiple
+  multiple
+  $ cat _build/default/bound-targets/from-child
+  parent
+
+Quoted multi-target variables retain the ordinary target-directory validation.
+
+  $ mkdir quoted-targets
+  $ cat >quoted-targets/dune <<EOF
+  > (rule
+  >  (targets a b)
+  >  (action
+  >   (progn
+  >    (write-file a first)
+  >    (write-file b second)
+  >    (write-file "%{targets}" joined))))
+  > EOF
+  $ dune build '"quoted-targets/a b"'
+  File "quoted-targets/dune", line 7, characters 15-27:
+  7 |    (write-file "%{targets}" joined))))
+                     ^^^^^^^^^^^^
+  Error: This action has targets in a different directory than the current one,
+  this is not allowed by dune at the moment:
+  - quoted-targets/a
+  - "quoted-targets/a ./b"
+  - quoted-targets/b
   [1]
+
+Refining a directory's rules must not remove fresh temporary files created
+after its initial cleanup. A later build still removes those stale files.
+
+  $ mkdir cleanup-inventory
+  $ cat >cleanup-inventory/dune-project <<EOF
+  > (lang dune 3.22)
+  > EOF
+  $ cat >cleanup-inventory/dune <<EOF
+  > (rule
+  >  (target lst)
+  >  (deps (sandbox none))
+  >  (action
+  >   (progn
+  >    (write-file %{target} value)
+  >    (no-infer (write-file compiler.tmp temporary)))))
+  > (library
+  >  (name temporary_files)
+  >  (modes byte)
+  >  (modules (:include lst)))
+  > EOF
+  $ touch cleanup-inventory/value.ml
+  $ dune build cleanup-inventory/temporary_files.cma
+  $ cat _build/default/cleanup-inventory/compiler.tmp
+  temporary
+  $ dune build cleanup-inventory/lst
+  $ test ! -e _build/default/cleanup-inventory/compiler.tmp

@@ -20,4 +20,10 @@ Testing the _RocqProject generation.
   Error: Multiple rules generated for _build/default/_RocqProject:
   - dune:6
   - dune:1
+  -> required by { dir = In_build_dir "default"
+     ; predicate = True
+     ; only_generated_files = true
+     }
+  -> required by alias all
+  -> required by alias default
   [1]
