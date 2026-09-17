@@ -17,27 +17,23 @@ Changing the list must change the available modules without cleaning.
   $ touch source/first.ml source/second.ml
   $ echo first >source/lst
   $ dune build '%{cmi:source/First}'
-  Error: Dependency cycle between:
-     (modules) field at source/dune:1
-  -> (:include _build/default/source/lst) at source/dune:4
-  -> (modules) field at source/dune:1
-  -> required by %{cmi:source/First} at command line:1
-  [1]
   $ echo second >source/lst
   $ dune build '%{cmi:source/Second}'
-  Error: Dependency cycle between:
-     (modules) field at source/dune:1
-  -> (:include _build/default/source/lst) at source/dune:4
-  -> (modules) field at source/dune:1
-  -> required by %{cmi:source/Second} at command line:1
-  [1]
   $ dune build '%{cmi:source/First}'
-  Error: Dependency cycle between:
-     (modules) field at source/dune:1
-  -> (:include _build/default/source/lst) at source/dune:4
-  -> (modules) field at source/dune:1
-  -> required by %{cmi:source/First} at command line:1
+  File "command line", line 1, characters 0-19:
+  Error: Module First does not exist.
   [1]
+
+An input is not a compilation output just because its extension is `.ml`.
+
+  $ cat >source/dune <<EOF
+  > (library
+  >  (name source_list)
+  >  (modes byte)
+  >  (modules (:include modules.ml)))
+  > EOF
+  $ echo first >source/modules.ml
+  $ dune build '%{cmi:source/First}'
 
 An ordinary rule can generate the list alongside a rule generating an OCaml
 source. Changing the input must discover and compile the newly selected module.
@@ -58,63 +54,28 @@ source. Changing the input must discover and compile the newly selected module.
   $ touch generated/handwritten.ml
   $ echo handwritten >generated/lst.in
   $ dune build generated/generated_list.cma
-  Error: Dependency cycle between:
-     (modules) field at generated/dune:7
-  -> (:include _build/default/generated/lst) at generated/dune:10
-  -> (modules) field at generated/dune:7
-  [1]
   $ echo generated >generated/lst.in
   $ dune build generated/generated_list.cma
-  Error: Dependency cycle between:
-     (modules) field at generated/dune:7
-  -> (:include _build/default/generated/lst) at generated/dune:10
-  -> (modules) field at generated/dune:7
-  [1]
   $ dune build '%{cmi:generated/Generated}'
-  Error: Dependency cycle between:
-     (modules) field at generated/dune:7
-  -> (:include _build/default/generated/lst) at generated/dune:10
-  -> (modules) field at generated/dune:7
-  -> required by %{cmi:generated/Generated} at command line:1
-  [1]
   $ dune build '%{cmi:generated/Handwritten}'
-  Error: Dependency cycle between:
-     (modules) field at generated/dune:7
-  -> (:include _build/default/generated/lst) at generated/dune:10
-  -> (modules) field at generated/dune:7
-  -> required by %{cmi:generated/Handwritten} at command line:1
+  File "command line", line 1, characters 0-28:
+  Error: Module Handwritten does not exist.
   [1]
 
 Building only the data file must not delete still-valid compilation artifacts.
 
   $ dune build generated/lst
-  Error: Dependency cycle between:
-     (modules) field at generated/dune:7
-  -> (:include _build/default/generated/lst) at generated/dune:10
-  -> (modules) field at generated/dune:7
-  [1]
   $ test -f _build/default/generated/generated_list.cma
-  [1]
   $ test -f _build/default/generated/generated.ml
-  [1]
+  $ test -d _build/default/generated/.generated_list.objs
 
 Requesting the data and compilation targets in either order must agree, even
 when neither target exists yet.
 
   $ dune build --build-dir _build-data-first \
   >   generated/lst generated/generated_list.cma
-  Error: Dependency cycle between:
-     (modules) field at generated/dune:7
-  -> (:include _build-data-first/default/generated/lst) at generated/dune:10
-  -> (modules) field at generated/dune:7
-  [1]
   $ dune build --build-dir _build-library-first \
   >   generated/generated_list.cma generated/lst
-  Error: Dependency cycle between:
-     (modules) field at generated/dune:7
-  -> (:include _build-library-first/default/generated/lst) at generated/dune:10
-  -> (modules) field at generated/dune:7
-  [1]
 
 Removing the library must still allow stale compilation artifacts to be removed
 when the directory's complete target set is requested.
@@ -142,12 +103,6 @@ Mappings can likewise read source or generated data in the group root.
   $ touch mapping/internal/leaf.ml
   $ printf public >mapping/mapping
   $ dune build '%{cmi:mapping/Public.Leaf}'
-  Error: Dependency cycle between:
-     Computing directory contents of _build/default/mapping
-  -> %{read:mapping} at mapping/dune:3
-  -> Computing directory contents of _build/default/mapping
-  -> required by %{cmi:mapping/Public.Leaf} at command line:1
-  [1]
   $ rm mapping/mapping
   $ cat >mapping/dune <<EOF
   > (include_subdirs
@@ -160,26 +115,11 @@ Mappings can likewise read source or generated data in the group root.
   > EOF
   $ printf public >mapping/mapping.in
   $ dune build '%{cmi:mapping/Public.Leaf}'
-  Error: Dependency cycle between:
-     Computing directory contents of _build/default/mapping
-  -> %{read:mapping} at mapping/dune:3
-  -> Computing directory contents of _build/default/mapping
-  -> required by %{cmi:mapping/Public.Leaf} at command line:1
-  [1]
   $ printf exposed >mapping/mapping.in
   $ dune build '%{cmi:mapping/Exposed.Leaf}'
-  Error: Dependency cycle between:
-     Computing directory contents of _build/default/mapping
-  -> %{read:mapping} at mapping/dune:3
-  -> Computing directory contents of _build/default/mapping
-  -> required by %{cmi:mapping/Exposed.Leaf} at command line:1
-  [1]
   $ dune build '%{cmi:mapping/Public.Leaf}'
-  Error: Dependency cycle between:
-     Computing directory contents of _build/default/mapping
-  -> %{read:mapping} at mapping/dune:3
-  -> Computing directory contents of _build/default/mapping
-  -> required by %{cmi:mapping/Public.Leaf} at command line:1
+  File "command line", line 1, characters 0-26:
+  Error: Module Public.Leaf does not exist.
   [1]
 
 Fallback rules use their generated contents only while the source is absent.
@@ -199,28 +139,10 @@ Adding and removing the source file must update the selected modules.
   $ touch fallback/first.ml fallback/second.ml
   $ echo first >fallback/lst.in
   $ dune build '%{cmi:fallback/First}'
-  Error: Dependency cycle between:
-     (modules) field at fallback/dune:5
-  -> (:include _build/default/fallback/lst) at fallback/dune:8
-  -> (modules) field at fallback/dune:5
-  -> required by %{cmi:fallback/First} at command line:1
-  [1]
   $ echo second >fallback/lst
   $ dune build '%{cmi:fallback/Second}'
-  Error: Dependency cycle between:
-     (modules) field at fallback/dune:5
-  -> (:include _build/default/fallback/lst) at fallback/dune:8
-  -> (modules) field at fallback/dune:5
-  -> required by %{cmi:fallback/Second} at command line:1
-  [1]
   $ rm fallback/lst
   $ dune build '%{cmi:fallback/First}'
-  Error: Dependency cycle between:
-     (modules) field at fallback/dune:5
-  -> (:include _build/default/fallback/lst) at fallback/dune:8
-  -> (modules) field at fallback/dune:5
-  -> required by %{cmi:fallback/First} at command line:1
-  [1]
 
 Partially present fallback targets must still be rejected during an early
 lookup of the source file.
@@ -240,10 +162,23 @@ lookup of the source file.
   >  (modules (:include lst)))
   > EOF
   $ dune build fallback/lst
-  Error: Dependency cycle between:
-     (modules) field at fallback/dune:8
-  -> (:include _build/default/fallback/lst) at fallback/dune:11
-  -> (modules) field at fallback/dune:8
+  File "fallback/dune", lines 1-7, characters 0-110:
+  1 | (rule
+  2 |  (targets lst other)
+  3 |  (mode fallback)
+  4 |  (action
+  5 |   (progn
+  6 |    (copy lst.in lst)
+  7 |    (write-file other ""))))
+  Error: Some of the targets of this fallback rule are present in the source
+  tree, and some are not. This is not allowed. Either none of the targets must
+  be present in the source tree, either they must all be.
+  
+  The following targets are present:
+  - fallback/lst
+  
+  The following targets are not:
+  - fallback/other
   [1]
 
 Promotion must use the generated contents, not an early copy of the old source.
@@ -263,22 +198,10 @@ Promotion must use the generated contents, not an early copy of the old source.
   $ echo first >promotion/lst
   $ echo second >promotion/lst.in
   $ dune build '%{cmi:promotion/Second}'
-  Error: Dependency cycle between:
-     (modules) field at promotion/dune:5
-  -> (:include _build/default/promotion/lst) at promotion/dune:8
-  -> (modules) field at promotion/dune:5
-  -> required by %{cmi:promotion/Second} at command line:1
-  [1]
   $ cat promotion/lst
-  first
+  second
   $ echo first >promotion/lst.in
   $ dune build '%{cmi:promotion/First}'
-  Error: Dependency cycle between:
-     (modules) field at promotion/dune:5
-  -> (:include _build/default/promotion/lst) at promotion/dune:8
-  -> (modules) field at promotion/dune:5
-  -> required by %{cmi:promotion/First} at command line:1
-  [1]
   $ cat promotion/lst
   first
 
@@ -294,10 +217,10 @@ In standard mode, the same source and generated target must conflict.
   >  (modules (:include lst)))
   > EOF
   $ dune build promotion/lst
-  Error: Dependency cycle between:
-     (modules) field at promotion/dune:4
-  -> (:include _build/default/promotion/lst) at promotion/dune:7
-  -> (modules) field at promotion/dune:4
+  Error: Multiple rules generated for _build/default/promotion/lst:
+  - promotion/dune:1
+  - file present in source tree
+  Hint: rm -f promotion/lst
   [1]
 
 A target from an ordinary rule cannot conceal the same target produced by a
@@ -403,6 +326,7 @@ building the very library whose module list it describes.
   $ dune build cycle/recursive.cma
   Error: Dependency cycle between:
      (modules) field at cycle/dune:5
+  -> _build/default/cycle/lst
   -> (:include _build/default/cycle/lst) at cycle/dune:8
   -> (modules) field at cycle/dune:5
   [1]
@@ -451,13 +375,7 @@ files before compilation, even if the source stage loaded first.
   > EOF
   $ touch empty-interface/b.ml
   $ dune build empty-interface/empty_interface.cma
-  Error: Dependency cycle between:
-     (modules) field at empty-interface/dune:4
-  -> (:include _build/default/empty-interface/lst) at empty-interface/dune:7
-  -> (modules) field at empty-interface/dune:4
-  [1]
   $ test -f _build/default/empty-interface/b.mli
-  [1]
 
   $ cat >empty-interface/dune <<EOF
   > (rule
@@ -469,9 +387,4 @@ files before compilation, even if the source stage loaded first.
   >  (modules (:include lst)))
   > EOF
   $ dune build empty-interface/empty_interface.cma
-  Error: Dependency cycle between:
-     (modules) field at empty-interface/dune:4
-  -> (:include _build/default/empty-interface/lst) at empty-interface/dune:7
-  -> (modules) field at empty-interface/dune:4
-  [1]
   $ test ! -e _build/default/empty-interface/b.mli

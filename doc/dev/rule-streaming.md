@@ -80,3 +80,45 @@ Interpreting a `library` stanza requires knowing the set of `.ml`
 files in the current directory. Knowing this requires interpreting
 `copy_files` in the current directory. So the interpretation of
 `library` stanzas will need to go under a `narrow` as well.
+
+## Pull-based source and compilation stages
+
+The rule loader implements a smaller step towards this proposal, without
+arbitrary masks or recursively generated suspensions. Ordinary rules and
+physical source discovery form a source stage. Module discovery, expanded
+directory mappings, and compilation rules form a deferred compilation stage.
+Each stage is memoized independently.
+
+The compilation stage declares a conservative output set before expanding
+module lists or directory mappings. Declarations contain exact files,
+subtrees, and filename extensions within specified directories. The latter
+cover generated alias sources whose names depend on directory mappings.
+Generators without such a declaration retain complete rule loading.
+
+A file lookup pulls the source stage alone unless the requested target may
+belong to the compilation stage. Multi-target source rules connect their
+outputs: if one output may also be a compilation output, requesting any of
+them requires the complete stage. This preserves duplicate-rule checks and
+fallback selection in the presence of promoted compilation outputs. Deferred
+rules are checked against their declared outputs when loaded.
+
+This allows module lists and directory mappings to read source files or
+ordinary rule outputs in the same directory or `include_subdirs` group.
+Dependencies on the compilation that consumes those files remain cycles.
+Source copies, promotion, and fallback use the same validation in both views.
+Aliases and directory enumeration still require the complete view. Both views
+share an initial cleanup pass using the source rules and conservative output
+declarations. Complete loading then removes unused deferred outputs without
+touching unrelated files created during the build.
+
+This requires source-stage actions to export only their declared outputs, so
+partial loading is limited to directory groups using language version 3.23 or
+later, where user rules must be sandboxed. Multi-target closure ensures that
+any source rule exporting a possible compilation output waits for complete
+loading. Older projects retain their original complete loading and cleanup,
+so unsandboxed actions can continue using temporary files in the build tree.
+
+This does not implement the full proposal above. In particular, `copy_files`
+still needs complete directory enumeration, and unsupported rule generators,
+including Menhir and library subsystems, retain their existing loading
+granularity.

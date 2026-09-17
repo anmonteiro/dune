@@ -20,17 +20,148 @@ module Gen_rules = struct
     let union a b = Path.Build.Map.union a b ~f:(fun _ a b -> Some (Subdir_set.union a b))
   end
 
+  module Rule_targets = struct
+    type t =
+      | All
+      | Declared of
+          { files : Path.Build.Set.t
+          ; subtrees : Path.Build.Set.t
+          ; file_extensions : Filename.Extension.Set.t Path.Build.Map.t
+          }
+
+    let empty =
+      Declared
+        { files = Path.Build.Set.empty
+        ; subtrees = Path.Build.Set.empty
+        ; file_extensions = Path.Build.Map.empty
+        }
+    ;;
+
+    let union a b =
+      match a, b with
+      | All, _ | _, All -> All
+      | Declared a, Declared b ->
+        Declared
+          { files = Path.Build.Set.union a.files b.files
+          ; subtrees = Path.Build.Set.union a.subtrees b.subtrees
+          ; file_extensions =
+              Path.Build.Map.union a.file_extensions b.file_extensions ~f:(fun _ a b ->
+                Some (Filename.Extension.Set.union a b))
+          }
+    ;;
+
+    let is_empty = function
+      | All -> false
+      | Declared { files; subtrees; file_extensions } ->
+        Path.Build.Set.is_empty files
+        && Path.Build.Set.is_empty subtrees
+        && Path.Build.Map.for_all file_extensions ~f:Filename.Extension.Set.is_empty
+    ;;
+
+    let mem t path =
+      match t with
+      | All -> true
+      | Declared { files; subtrees; file_extensions } ->
+        Path.Build.Set.mem files path
+        || Path.Build.Set.exists subtrees ~f:(fun of_ ->
+          Path.Build.is_descendant path ~of_)
+        ||
+          (match
+             ( Path.Build.parent path
+             , Path.Build.extension path |> Filename.Extension.Or_empty.extension )
+           with
+          | Some dir, Some extension ->
+            (match Path.Build.Map.find file_extensions dir with
+             | None -> false
+             | Some extensions -> Filename.Extension.Set.mem extensions extension)
+          | None, _ | _, None -> false)
+    ;;
+
+    let intersects_directory t dir =
+      match t with
+      | All -> true
+      | Declared { files; subtrees; file_extensions } ->
+        mem t dir
+        || Path.Build.Set.exists files ~f:(fun path ->
+          Path.Build.is_descendant path ~of_:dir)
+        || Path.Build.Set.exists subtrees ~f:(fun path ->
+          Path.Build.is_descendant path ~of_:dir || Path.Build.is_descendant dir ~of_:path)
+        || Path.Build.Map.existsi file_extensions ~f:(fun path extensions ->
+          (not (Filename.Extension.Set.is_empty extensions))
+          && Path.Build.is_descendant path ~of_:dir)
+    ;;
+  end
+
   module Rules = struct
+    type stage =
+      | Source of Rules.t Memo.Lazy.t
+      | Compilation of
+          { targets : Rule_targets.t Memo.Lazy.t
+          ; rules : Rules.t Memo.Lazy.t
+          }
+
     type nonrec t =
       { build_dir_only_sub_dirs : Build_only_sub_dirs.t
       ; directory_targets : Loc.t Path.Build.Map.t
       ; rules : Rules.t Memo.t
+      ; stages : stage list
       }
 
     let empty =
       { build_dir_only_sub_dirs = Path.Build.Map.empty
       ; directory_targets = Path.Build.Map.empty
       ; rules = Memo.return Rules.empty
+      ; stages = []
+      }
+    ;;
+
+    let source_stage rules =
+      Source (Memo.lazy_ ~name:"source-rule-stage" (fun () -> rules))
+    ;;
+
+    let compilation_stage ~targets rules =
+      let targets = Memo.lazy_ ~name:"rule-stage-targets" (fun () -> targets) in
+      let rules =
+        Memo.lazy_ ~name:"rule-stage" (fun () ->
+          let open Memo.O in
+          let+ rules = rules
+          and+ targets = Memo.Lazy.force targets in
+          let check_target target =
+            if not (Rule_targets.mem targets target)
+            then
+              Code_error.raise
+                "Rule stage produced a target outside its declaration"
+                [ "target", Path.Build.to_dyn target ]
+          in
+          Rules.to_map rules
+          |> Path.Build.Map.iter ~f:(fun dir_rules ->
+            let { Rules.Dir_rules.rules; aliases = _ } =
+              Rules.Dir_rules.consume dir_rules
+            in
+            List.iter rules ~f:(fun rule ->
+              Targets.Validated.iter
+                rule.Rule.targets
+                ~file:check_target
+                ~dir:check_target));
+          rules)
+      in
+      Compilation { targets; rules }
+    ;;
+
+    let collect_stages stages =
+      let open Memo.O in
+      let+ rules =
+        Memo.parallel_map stages ~f:(function Source rules | Compilation { rules; _ } ->
+            Memo.Lazy.force rules)
+      in
+      List.fold_left rules ~init:Rules.empty ~f:Rules.union
+    ;;
+
+    let of_stages ~build_dir_only_sub_dirs ~directory_targets stages =
+      { build_dir_only_sub_dirs
+      ; directory_targets
+      ; rules = collect_stages stages
+      ; stages
       }
     ;;
 
@@ -39,19 +170,49 @@ module Gen_rules = struct
           ?(directory_targets = empty.directory_targets)
           rules
       =
-      { build_dir_only_sub_dirs; directory_targets; rules }
+      of_stages ~build_dir_only_sub_dirs ~directory_targets [ source_stage rules ]
     ;;
 
-    let combine_exn r { build_dir_only_sub_dirs; directory_targets; rules } =
-      { build_dir_only_sub_dirs =
-          Build_only_sub_dirs.union r.build_dir_only_sub_dirs build_dir_only_sub_dirs
-      ; directory_targets = Path.Build.Map.union_exn r.directory_targets directory_targets
-      ; rules =
-          (let open Memo.O in
-           let+ r = r.rules
-           and+ r' = rules in
-           Rules.union r r')
-      }
+    let create_staged
+          ?(build_dir_only_sub_dirs = empty.build_dir_only_sub_dirs)
+          ?(directory_targets = empty.directory_targets)
+          ~source_rules
+          ~compilation_rules
+          ~compilation_targets
+          ()
+      =
+      of_stages
+        ~build_dir_only_sub_dirs
+        ~directory_targets
+        [ source_stage source_rules
+        ; compilation_stage ~targets:compilation_targets compilation_rules
+        ]
+    ;;
+
+    let source_rules t =
+      List.filter t.stages ~f:(function
+        | Source _ -> true
+        | Compilation _ -> false)
+      |> collect_stages
+    ;;
+
+    let compilation_targets t =
+      let open Memo.O in
+      let+ targets =
+        Memo.parallel_map t.stages ~f:(function
+          | Source _ -> Memo.return Rule_targets.empty
+          | Compilation { targets; _ } -> Memo.Lazy.force targets)
+      in
+      List.fold_left targets ~init:Rule_targets.empty ~f:Rule_targets.union
+    ;;
+
+    let combine_exn r { build_dir_only_sub_dirs; directory_targets; rules = _; stages } =
+      of_stages
+        ~build_dir_only_sub_dirs:
+          (Build_only_sub_dirs.union r.build_dir_only_sub_dirs build_dir_only_sub_dirs)
+        ~directory_targets:
+          (Path.Build.Map.union_exn r.directory_targets directory_targets)
+        (r.stages @ stages)
     ;;
   end
 
