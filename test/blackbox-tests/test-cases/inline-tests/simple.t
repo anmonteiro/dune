@@ -62,3 +62,29 @@ The expected behavior for the following three tests is to output nothing: the te
   11 |   (backend backend_simple)))
   Fatal error: exception File ".foo_simple.inline-tests/main.ml-gen", line 1, characters 40-46: Assertion failed
   [1]
+
+Inline-test rule generation must not prevent an independent rule from
+providing the library's module list. Currently this dependency cycles.
+
+  $ make_dune_project 3.25
+  $ mkdir dynamic
+  $ cat >dynamic/dune <<EOF
+  > (rule
+  >  (target lst)
+  >  (action (write-file %{target} test)))
+  > (library
+  >  (name dynamic_tests)
+  >  (modules (:include lst))
+  >  (inline_tests
+  >   (modes byte)
+  >   (backend backend_simple)))
+  > EOF
+  $ cat >dynamic/test.ml <<EOF
+  > (*TEST: assert (1 = 1) *)
+  > EOF
+  $ dune build @dynamic/runtest
+  Error: Dependency cycle between:
+     (modules) field at dynamic/dune:4
+  -> (:include _build/default/dynamic/lst) at dynamic/dune:6
+  -> (modules) field at dynamic/dune:4
+  [1]
