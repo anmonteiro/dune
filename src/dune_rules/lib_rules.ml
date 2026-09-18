@@ -682,8 +682,58 @@ let compile_context_data (lib : Library.t) ~dir_contents ~scope ~for_ =
   let dir = Dir_contents.dir dir_contents in
   let libs = Scope.libs scope in
   let* lib_id, local_lib, compile_info = resolve_compile_info lib ~dir ~scope in
-  let+ source_modules =
+  let* source_modules =
     Dir_contents.ml dir_contents ~for_ >>= Ml_sources.modules ~libs ~for_:(Library lib_id)
+  in
+  let+ () =
+    if lib.dune_version < (3, 25)
+    then Memo.return ()
+    else (
+      let preprocess =
+        match for_ with
+        | Ocaml -> lib.buildable.preprocess
+        | Melange -> lib.buildable.melange_preprocess
+      in
+      let references =
+        Module_reference.Per_item.explicit_references preprocess.config
+        @ Module_reference.Per_item.explicit_references lib.buildable.lint
+      in
+      match references with
+      | [] -> Memo.return ()
+      | _ :: _ ->
+        let add_paths modules ~init =
+          Modules.fold_user_written modules ~init ~f:(fun module_ paths ->
+            Module_name.Path.Set.add paths (Module.path module_))
+        in
+        let paths = add_paths source_modules ~init:Module_name.Path.Set.empty in
+        let missing =
+          List.filter references ~f:(fun reference ->
+            not (Module_name.Path.Set.mem paths (Module_reference.path reference)))
+        in
+        let+ paths =
+          match missing with
+          | [] -> Memo.return paths
+          | _ :: _ ->
+            (* Shared lint and preprocessing may refer to modules selected only
+               by the other declared mode, even if its compiler is unavailable. *)
+            let { Lib_mode.Map.ocaml = { byte; native }; melange } =
+              Lib_info.modes (Lib.info local_lib)
+            in
+            let for_, enabled =
+              match for_ with
+              | Ocaml -> Compilation_mode.Melange, melange
+              | Melange -> Ocaml, byte || native
+            in
+            if enabled
+            then
+              let+ modules =
+                Dir_contents.ml dir_contents ~for_
+                >>= Ml_sources.modules ~libs ~for_:(Library lib_id)
+              in
+              add_paths modules ~init:paths
+            else Memo.return paths
+        in
+        List.iter missing ~f:(Module_reference.validate_exists ~modules:paths))
   in
   let parameters = Lib.parameters local_lib in
   local_lib, compile_info, source_modules, parameters

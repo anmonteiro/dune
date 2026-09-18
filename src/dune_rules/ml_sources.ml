@@ -498,9 +498,17 @@ let modules t ~libs ~for_ = modules_and_obj_dir t ~libs ~for_ >>| fst
 
 let virtual_modules ~lookup_vlib ~libs ~for_ ~version vlib =
   let+ modules =
-    match Lib_info.modules vlib ~for_ with
+    match Lib_info.modules_by_mode vlib with
     | External modules ->
-      Option.value_exn modules |> Modules.With_vlib.drop_vlib |> Memo.return
+      let modules =
+        match Compilation_mode.Per_mode.get modules ~for_ with
+        | Some modules -> modules
+        | None ->
+          (* Virtual module names and wrapping are shared by both modes. A mixed
+             library installed without Melange only has OCaml metadata. *)
+          Compilation_mode.Per_mode.choose modules |> Option.value_exn
+      in
+      Modules.With_vlib.drop_vlib modules |> Memo.return
     | Local ->
       let src_dir = Lib_info.src_dir vlib |> Path.as_in_build_dir_exn in
       lookup_vlib ~dir:src_dir
@@ -733,6 +741,17 @@ let has_instances (lib : Buildable.t) =
 let validate_qualified_module_references ~include_subdirs per_module =
   Module_reference.Per_item.explicit_references per_module
   |> List.iter ~f:(Module_reference.validate_qualified ~include_subdirs)
+;;
+
+let validate_module_references ~modules per_module =
+  match Module_reference.Per_item.explicit_references per_module with
+  | [] -> ()
+  | references ->
+    let module_paths =
+      Module_trie.fold modules ~init:Module_name.Path.Set.empty ~f:(fun module_ acc ->
+        Module_name.Path.Set.add acc (Module.path module_))
+    in
+    List.iter references ~f:(Module_reference.validate_exists ~modules:module_paths)
 ;;
 
 let validate_buildable_preprocessing ~include_subdirs ~for_ buildable =
@@ -1240,7 +1259,9 @@ let modules_of_stanzas =
         ~for_:Ocaml
     in
     let () =
-      validate_buildable_preprocessing ~include_subdirs ~for_:Ocaml exes.buildable
+      validate_buildable_preprocessing ~include_subdirs ~for_:Ocaml exes.buildable;
+      validate_module_references ~modules exes.buildable.preprocess.config;
+      validate_module_references ~modules exes.buildable.lint
     in
     let has_instances = has_instances exes.buildable in
     let modules =
@@ -1401,7 +1422,9 @@ let modules_of_stanzas =
              in
              let () =
                validate_qualified_module_references ~include_subdirs mel.preprocess.config;
-               validate_qualified_module_references ~include_subdirs mel.lint
+               validate_qualified_module_references ~include_subdirs mel.lint;
+               validate_module_references ~modules mel.preprocess.config;
+               validate_module_references ~modules mel.lint
              in
              let modules =
                Modules.make_wrapped

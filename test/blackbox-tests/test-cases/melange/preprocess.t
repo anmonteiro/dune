@@ -135,7 +135,7 @@ other mode; those mappings are simply unused in this mode:
   > EOF
   $ dune build --root=mixed @all
 
-A reference missing from both modes is currently accepted silently:
+A reference missing from both modes is rejected:
 
   $ cat >mixed/dune <<'EOF'
   > (library
@@ -146,8 +146,15 @@ A reference missing from both modes is currently accepted silently:
   >  (preprocess (per_module ((action (run cat %{input-file})) Missing))))
   > EOF
   $ dune build --root=mixed @all
+  Entering directory 'mixed'
+  File "dune", line 6, characters 59-66:
+  6 |  (preprocess (per_module ((action (run cat %{input-file})) Missing))))
+                                                                 ^^^^^^^
+  Error: Module Missing doesn't exist.
+  Leaving directory 'mixed'
+  [1]
 
-A module excluded from both modes is also silently accepted:
+A module excluded from both modes is also rejected:
 
   $ cat >mixed/dune <<'EOF'
   > (library
@@ -158,9 +165,15 @@ A module excluded from both modes is also silently accepted:
   >  (lint (per_module ((action (run true)) Excluded))))
   > EOF
   $ dune build --root=mixed @all
+  Entering directory 'mixed'
+  File "dune", line 6, characters 40-48:
+  6 |  (lint (per_module ((action (run true)) Excluded))))
+                                              ^^^^^^^^
+  Error: Module Excluded doesn't exist.
+  Leaving directory 'mixed'
+  [1]
 
-Modules selected only by a disabled mode should not count as library members,
-but their references are currently accepted:
+Modules selected only by a disabled mode do not count as library members:
 
   $ cat >mixed/dune <<'EOF'
   > (library
@@ -171,6 +184,13 @@ but their references are currently accepted:
   >  (preprocess (per_module ((action (run cat %{input-file})) B))))
   > EOF
   $ dune build --root=mixed @all
+  Entering directory 'mixed'
+  File "dune", line 6, characters 59-60:
+  6 |  (preprocess (per_module ((action (run cat %{input-file})) B))))
+                                                                 ^
+  Error: Module B doesn't exist.
+  Leaving directory 'mixed'
+  [1]
 
   $ cat >mixed/dune <<'EOF'
   > (library
@@ -181,3 +201,10 @@ but their references are currently accepted:
   >  (preprocess (per_module ((action (run cat %{input-file})) A))))
   > EOF
   $ dune build --root=mixed @all
+  Entering directory 'mixed'
+  File "dune", line 6, characters 59-60:
+  6 |  (preprocess (per_module ((action (run cat %{input-file})) A))))
+                                                                 ^
+  Error: Module A doesn't exist.
+  Leaving directory 'mixed'
+  [1]

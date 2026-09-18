@@ -18,8 +18,7 @@ Regression test for GH-15578: qualified modules can be selected in
 
   $ dune build
 
-Explicit references should name modules selected by the stanza, but a missing
-module is currently accepted silently:
+Explicit references must name modules selected by the stanza:
 
   $ cat >dune <<'EOF'
   > (include_subdirs qualified)
@@ -32,8 +31,13 @@ module is currently accepted silently:
   > EOF
 
   $ dune build
+  File "dune", line 7, characters 30-37:
+  7 |      (run cat %{input-file})) Missing))))
+                                    ^^^^^^^
+  Error: Module Missing doesn't exist.
+  [1]
 
-A missing lint reference is also silently accepted:
+A missing lint reference is also rejected:
 
   $ cat >dune <<'EOF'
   > (include_subdirs qualified)
@@ -42,8 +46,13 @@ A missing lint reference is also silently accepted:
   >  (lint (per_module ((action (run true)) Missing))))
   > EOF
   $ dune build
+  File "dune", line 4, characters 40-47:
+  4 |  (lint (per_module ((action (run true)) Missing))))
+                                              ^^^^^^^
+  Error: Module Missing doesn't exist.
+  [1]
 
-An existing module excluded from the stanza is silently accepted too:
+An existing module excluded from the stanza is rejected too:
 
   $ touch foo/excluded.ml
   $ cat >dune <<'EOF'
@@ -54,6 +63,11 @@ An existing module excluded from the stanza is silently accepted too:
   >  (preprocess (per_module ((action (run cat %{input-file})) Foo.Excluded))))
   > EOF
   $ dune build
+  File "dune", line 5, characters 59-71:
+  5 |  (preprocess (per_module ((action (run cat %{input-file})) Foo.Excluded))))
+                                                                 ^^^^^^^^^^^^
+  Error: Module Foo.Excluded doesn't exist.
+  [1]
 
 A slash-separated source path is rejected with a hint for the corresponding
 logical module reference:
