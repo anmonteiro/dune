@@ -152,9 +152,11 @@ prefix takes precedence. The destination specifies the complete replacement
 path relative to the directory containing the stanza, including any renamed
 parent directories.
 
-The ``dirs`` field does not select which subdirectories are included. Directories
-not covered by a mapping keep their usual module names. Omitting ``dirs`` is
-equivalent to ``(include_subdirs qualified)``.
+.. note::
+
+   The ``dirs`` field does not select which subdirectories are included.
+   Directories not covered by a mapping keep their usual module names. Omitting
+   ``dirs`` is equivalent to ``(include_subdirs qualified)``.
 
 Existing group interface files do not need to be renamed. With the mappings
 above, ``internal/internal.ml`` defines ``Public``, and
