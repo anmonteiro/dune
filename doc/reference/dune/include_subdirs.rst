@@ -116,7 +116,8 @@ Renaming Directories
 
 The structured form of ``include_subdirs`` requires ``(lang dune 3.25)`` or later,
 including when ``dirs`` is omitted. In ``qualified`` mode, it accepts a ``dirs``
-field to choose module names independently of source directory names:
+field to allow renaming the module group interface names, independently of
+source directory naming:
 
 .. code:: dune
 
@@ -124,11 +125,9 @@ field to choose module names independently of source directory names:
     (mode qualified)
     (dirs (internal as public)))
 
-Each ``(source as destination)`` entry maps a source directory path to a module
-group path. In this example, ``internal/leaf.ml`` becomes ``Public.Leaf`` rather
-than ``Internal.Leaf``. In a wrapped library named ``example``, clients refer to
-it as ``Example.Public.Leaf``. The source files stay in ``internal/``; the
-mapping does not rename or move files on disk.
+In this example, ``internal/leaf.ml`` becomes ``Public.Leaf`` rather than
+``Internal.Leaf``. In a wrapped library named ``example``, clients refer to it as
+``Example.Public.Leaf``. The source files stay in ``internal/``.
 
 Both sides use ``/``-separated paths, not dotted module references. The
 destination describes the module hierarchy and need not exist on disk.
@@ -164,19 +163,22 @@ modules, such as a library's ``modules`` field, use the mapped names.
 Directory mappings have the following restrictions:
 
 - ``dirs`` is only allowed with ``(mode qualified)``.
-- Source and destination paths are relative to the directory containing the
-  stanza and must refer to descendants of that directory, not the directory
-  itself or a parent.
+- Mappings apply only to child directories, including nested ones. Source and
+  destination paths are relative to the directory containing the stanza.
 - Source and destination paths must have the same number of components. A
   mapping cannot flatten the hierarchy or introduce an extra level.
 - Destination components must form valid OCaml module names after capitalization.
-  Mapped module paths must not conflict with another module or module group.
-- Mappings for the same source directory must agree on the destination after
-  variable expansion and path normalization. Repeating an identical mapping is
-  allowed.
-- Generated sources must not replace handwritten implementations or interfaces
-  at the mapped module path. A generated implementation can still be paired
-  with a handwritten interface, and vice versa.
+- A source directory can have only one destination. Repeating the same mapping
+  is allowed: ``(internal as public)`` and ``(./internal as ./public)`` are
+  equivalent. If a mapping uses variables, this rule applies to their expanded
+  values.
+- Mappings cannot overwrite another module or module group, or give a module
+  two implementations or two interfaces, whether handwritten or generated.
+  Pairing a generated implementation with a handwritten interface (or vice
+  versa) is allowed.
+
+Variables
+~~~~~~~~~
 
 Source and destination paths support :doc:`/concepts/variables`, for example
 ``(internal as %{read:../config/mapping})``. A mapping can read a generated file;
@@ -184,9 +186,5 @@ changes to that file update the module namespace on subsequent builds.
 
 .. warning::
 
-   Files read by a mapping must be outside the qualified directory group.
-   Reading a source file or generated file inside the group, including its
-   included subdirectories, creates a dependency cycle: Dune needs the mapping
-   to determine the group's contents before it can read the file. Put mapping
-   files in a separate directory outside the group, as in ``../config/mapping``
-   above.
+   Keep files read by a mapping outside the qualified directory group, as in
+   ``../config/mapping`` above, to avoid dependency cycles.
