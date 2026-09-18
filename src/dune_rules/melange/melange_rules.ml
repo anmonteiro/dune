@@ -505,14 +505,20 @@ let melange_compile_flags ~sctx ~dir (mel : Melange_stanzas.Emit.t) =
 let emit_rule_targets ~dir (mel : Melange_stanzas.Emit.t) =
   let exe_target = Melange_stanzas.Emit.exe_target mel in
   let obj_dir = Obj_dir.make_for_exe_target ~dir exe_target in
-  let merlin_ident = Merlin_ident.for_exe_target exe_target in
   List.fold_left
     [ Module_compilation.rule_targets ~dir ~obj_dir
     ; Target_mask.subtree (Path.Build.relative dir Melange.Source.dir)
-    ; Target_mask.files [ Merlin_ident.merlin_file_path dir merlin_ident ]
     ; Target_mask.subtree (Melange_stanzas.Emit.target_dir ~dir mel)
+    ; Pp_spec_rules.lint_rule_targets ~dir mel.lint
+    ; Target_mask.aliases
+        (List.map
+           [ Alias0.check
+           ; Alias0.all
+           ; Option.value mel.alias ~default:Melange_stanzas.Emit.implicit_alias
+           ]
+           ~f:(Alias.make ~dir))
     ]
-    ~init:(Target_mask.aliases_in_directory dir)
+    ~init:Target_mask.empty
     ~f:Target_mask.union
 ;;
 

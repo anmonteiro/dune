@@ -39,4 +39,4 @@ module Register_end_point (_ : End_point) : sig end
     ones that needs it. *)
 val gen_rules : Library_compilation_context.t -> unit Memo.t
 
-val rule_targets : dir:Path.Build.t -> Library.t -> Target_mask.t
+val rule_targets : dir:Path.Build.t -> Library.t -> Target_mask.t Memo.t

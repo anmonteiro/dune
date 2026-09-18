@@ -7,7 +7,7 @@ val rule_targets
   -> dialects:Dialect.DB.t
   -> project:Dune_project.t
   -> Tests.t
-  -> Target_mask.t
+  -> Target_mask.t Memo.t
 
 val rules
   :  Tests.t

@@ -10,6 +10,31 @@ type region =
   | Subtree of Path.Build.t * basename
   | In_directory of Path.Build.t * basename
 
+let compare_basename a b =
+  match a, b with
+  | Any, Any -> Ordering.Eq
+  | Any, _ -> Ordering.Lt
+  | _, Any -> Ordering.Gt
+  | Name a, Name b -> Filename.compare a b
+  | Name _, _ -> Ordering.Lt
+  | _, Name _ -> Ordering.Gt
+  | Extensions a, Extensions b -> Filename.Extension.Set.compare a b
+  | Extensions _, _ -> Ordering.Lt
+  | _, Extensions _ -> Ordering.Gt
+  | Matching a, Matching b -> List.compare a b ~compare:Predicate_lang.Glob.compare
+;;
+
+let compare_region a b =
+  match a, b with
+  | Subtree (a, names_a), Subtree (b, names_b)
+  | In_directory (a, names_a), In_directory (b, names_b) ->
+    let open Ordering.O in
+    let= () = Path.Build.compare a b in
+    compare_basename names_a names_b
+  | Subtree _, In_directory _ -> Ordering.Lt
+  | In_directory _, Subtree _ -> Ordering.Gt
+;;
+
 type t =
   { files : region list
   ; directories : region list
@@ -56,6 +81,10 @@ let extension_predicate extensions =
   Glob.of_string ("*" ^ Glob.to_string glob) |> Predicate_lang.Glob.of_glob
 ;;
 
+let matching predicates =
+  Matching (List.sort_uniq predicates ~compare:Predicate_lang.Glob.compare)
+;;
+
 let basename_inter a b =
   match a, b with
   | Any, x | x, Any -> Some x
@@ -79,7 +108,7 @@ let basename_inter a b =
     Option.some_if
       (not (Filename.Extension.Set.is_empty extensions))
       (Extensions extensions)
-  | Matching a, Matching b -> Some (Matching (a @ b))
+  | Matching a, Matching b -> Some (matching (a @ b))
   | Matching predicates, Extensions extensions
   | Extensions extensions, Matching predicates ->
     let extensions =
@@ -91,7 +120,7 @@ let basename_inter a b =
     in
     if Filename.Extension.Set.is_empty extensions
     then None
-    else Some (Matching (extension_predicate extensions :: predicates))
+    else Some (matching (extension_predicate extensions :: predicates))
 ;;
 
 let region_inter ~include_root a b =
@@ -129,7 +158,10 @@ let region_inter ~include_root a b =
 ;;
 
 let inter_regions ~include_root a b =
+  (* Repeated restrictions must not multiply equivalent regions through each
+     Cartesian intersection. *)
   List.concat_map a ~f:(fun a -> List.filter_map b ~f:(region_inter ~include_root a))
+  |> List.sort_uniq ~compare:compare_region
 ;;
 
 let inter a b =
@@ -161,27 +193,27 @@ let intersects_directory t dir =
   || intersects_regions ~include_root:false t.aliases below
 ;;
 
-let region_mem ~include_root region path =
-  match region with
-  | Subtree (root, names) ->
-    Path.Build.is_descendant path ~of_:root
-    && (include_root || not (Path.Build.equal root path))
-    &&
-      (match Path.Build.parent path with
-      | None ->
-        (match names with
-         | Any -> true
-         | Name _ | Extensions _ | Matching _ -> false)
-      | Some _ -> basename_mem names (Path.Build.basename path))
-  | In_directory (dir, names) ->
-    (match Path.Build.parent path with
-     | None -> false
-     | Some parent ->
-       Path.Build.equal dir parent && basename_mem names (Path.Build.basename path))
-;;
-
 let mem ~include_root regions path =
-  List.exists regions ~f:(fun region -> region_mem ~include_root region path)
+  let location =
+    Option.map (Path.Build.parent path) ~f:(fun parent ->
+      parent, Path.Build.basename path)
+  in
+  List.exists regions ~f:(function
+    | Subtree (root, names) ->
+      Path.Build.is_descendant path ~of_:root
+      && (include_root || not (Path.Build.equal root path))
+      &&
+        (match location with
+        | None ->
+          (match names with
+           | Any -> true
+           | Name _ | Extensions _ | Matching _ -> false)
+        | Some (_, basename) -> basename_mem names basename)
+    | In_directory (dir, names) ->
+      (match location with
+       | None -> false
+       | Some (parent, basename) ->
+         Path.Build.equal dir parent && basename_mem names basename))
 ;;
 
 let mem_file t path = mem ~include_root:true t.files path

@@ -363,7 +363,7 @@ let targets t =
   Id.Map.fold
     t.suspensions
     ~init:(direct_targets t.direct ~rule_mask)
-    ~f:(fun { mask; _ } targets -> Target_mask.union targets mask)
+    ~f:(fun { mask; _ } targets -> Target_mask.union mask targets)
 ;;
 
 let filter_direct direct mask =
@@ -402,7 +402,7 @@ let load_requested t requested ~directory_only =
       ~f:(fun a b ->
         { selected = union a.selected b.selected
         ; revealed = union a.revealed b.revealed
-        ; pending = Target_mask.union a.pending b.pending
+        ; pending = Target_mask.union b.pending a.pending
         })
   in
   let count rules =

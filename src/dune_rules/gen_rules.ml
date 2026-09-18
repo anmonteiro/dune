@@ -35,15 +35,12 @@ let install_stanza_rules ~ctx_dir ~expander (install_conf : Install_conf.t) =
 ;;
 
 module For_stanza = struct
-  type ('merlin, 'cctx, 'js, 'source_dirs) t =
-    { merlin : 'merlin
-    ; cctx : 'cctx
-    ; js : 'js
-    ; source_dirs : 'source_dirs
+  type t =
+    { merlin : Merlin.group list
+    ; cctx : (Loc.t * Compilation_context.t) list
     }
 
-  let empty_none = { merlin = []; cctx = []; js = None; source_dirs = None }
-  let empty_list = { merlin = []; cctx = Loc.Map.empty; js = []; source_dirs = [] }
+  let empty = { merlin = []; cctx = [] }
 
   let add_map hds tl =
     List.fold_left hds ~init:tl ~f:(fun tl (loc, hd) ->
@@ -62,36 +59,17 @@ module For_stanza = struct
                 :: List.map current ~f:(fun (k, v) -> k, Some v)))))
   ;;
 
-  let cons acc x =
-    { merlin = List.rev_append x.merlin acc.merlin
-    ; cctx = add_map x.cctx acc.cctx
-    ; source_dirs =
-        (match x.source_dirs with
-         | None -> acc.source_dirs
-         | Some source_dir -> source_dir :: acc.source_dirs)
-    ; js =
-        (match x.js with
-         | None -> acc.js
-         | Some js -> List.rev_append acc.js js)
-    }
-  ;;
-
-  let rev t = { t with merlin = List.rev t.merlin; source_dirs = List.rev t.source_dirs }
-
   let if_available f = function
-    | false -> Memo.return empty_none
+    | false -> Memo.return empty
     | true -> f ()
   ;;
 
   let with_cctx_merlin ~loc (cctx, merlin) =
-    { empty_none with
-      merlin = [ Merlin.group ~default:merlin ~alternatives:[] ]
-    ; cctx = [ loc, cctx ]
-    }
+    { merlin = [ Merlin.group ~default:merlin ~alternatives:[] ]; cctx = [ loc, cctx ] }
   ;;
 
   let if_available_buildable ~loc f = function
-    | false -> Memo.return empty_none
+    | false -> Memo.return empty
     | true -> f () >>| with_cctx_merlin ~loc
   ;;
 
@@ -102,7 +80,7 @@ module For_stanza = struct
     match Stanza.repr stanza with
     | Toplevel_stanza.T toplevel ->
       let+ () = Toplevel.Stanza.setup ~sctx ~dir ~toplevel in
-      empty_none
+      empty
     | Library.T lib ->
       let* enabled_if =
         Lib.DB.available_by_lib_id
@@ -111,14 +89,14 @@ module For_stanza = struct
       in
       if_available
         (fun () ->
+           let* dir_contents = dir_contents in
            let+ cctx_merlins = Lib_rules.rules lib ~sctx ~scope ~dir_contents ~expander in
            match cctx_merlins.ocaml, cctx_merlins.melange with
-           | None, None -> empty_none
+           | None, None -> empty
            | Some cctx_merlin, None | None, Some cctx_merlin ->
              with_cctx_merlin ~loc:lib.buildable.loc cctx_merlin
            | Some (ocaml_cctx, ocaml_merlin), Some (melange_cctx, melange_merlin) ->
-             { empty_none with
-               merlin =
+             { merlin =
                  [ Merlin.group ~default:ocaml_merlin ~alternatives:[ melange_merlin ] ]
              ; cctx = [ lib.buildable.loc, ocaml_cctx; lib.buildable.loc, melange_cctx ]
              })
@@ -126,69 +104,48 @@ module For_stanza = struct
     | Foreign_library.T lib ->
       Expander.eval_blang expander lib.enabled_if
       >>= if_available (fun () ->
+        let* dir_contents = dir_contents in
         let+ () = Lib_rules.foreign_rules lib ~sctx ~dir ~dir_contents ~expander in
-        empty_none)
+        empty)
     | Executables.T exes ->
       Expander.eval_blang expander exes.enabled_if
       >>= if_available (fun () ->
+        let* dir_contents = dir_contents in
         let+ () =
           Memo.Option.iter exes.install_conf ~f:(install_stanza_rules ~expander ~ctx_dir)
         and+ cctx_merlin = Exe_rules.rules exes ~sctx ~scope ~expander ~dir_contents in
-        { (with_cctx_merlin ~loc:exes.buildable.loc cctx_merlin) with
-          js =
-            Some
-              (Nonempty_list.to_list exes.names
-               |> List.concat_map ~f:(fun (_, exe) ->
-                 List.map Js_of_ocaml.Mode.all ~f:(fun mode ->
-                   Path.Build.relative
-                     dir
-                     (exe ^ Filename.Extension.to_string (Js_of_ocaml.Ext.exe ~mode)))))
-        })
+        with_cctx_merlin ~loc:exes.buildable.loc cctx_merlin)
     | Alias_conf.T alias ->
       let+ () = Simple_rules.alias sctx alias ~dir ~expander in
-      empty_none
+      empty
     | Tests.T tests ->
       Expander.eval_blang expander tests.exes.enabled_if
       >>= if_available_buildable ~loc:tests.exes.buildable.loc (fun () ->
+        let* dir_contents = dir_contents in
         Test_rules.rules tests ~sctx ~dir ~scope ~expander ~dir_contents)
-    | Copy_files.T { files = glob; _ } ->
-      let+ source_dirs =
-        let+ src_glob = Expander.No_deps.expand_str expander glob in
-        match Filename.is_relative src_glob with
-        | false -> None
-        | true ->
-          (match
-             let error_loc = String_with_vars.loc glob in
-             Path.relative (Path.source src_dir) src_glob ~error_loc
-           with
-           | In_source_tree s -> Some (Path.Source.parent_exn s)
-           | In_build_dir _ | External _ -> None)
-      in
-      { empty_none with source_dirs }
     | Install_conf.T i ->
       let+ () = install_stanza_rules ~ctx_dir ~expander i in
-      empty_none
+      empty
     (* There is probably something to do with documentation stanzas, as they
        also generate install rules. *)
     | Plugin.T p ->
       let+ () = Plugin_rules.setup_rules ~sctx ~dir p in
-      empty_none
+      empty
     | Cinaps.T cinaps ->
       let+ () = Cinaps.gen_rules sctx cinaps ~dir ~scope in
-      empty_none
+      empty
     | Mdx.T mdx ->
       Expander.eval_blang expander (Mdx.enabled_if mdx)
       >>= if_available (fun () ->
         let+ () = Mdx.gen_rules ~sctx ~dir ~scope ~expander mdx in
-        empty_none)
+        empty)
     | Melange_stanzas.Emit.T mel ->
       Expander.eval_blang expander mel.enabled_if
       >>= if_available_buildable ~loc:mel.loc (fun () ->
+        let* dir_contents = dir_contents in
         Melange_rules.setup_emit_cmj_rules ~dir_contents ~scope ~sctx ~expander mel)
-    | _ -> Memo.return empty_none
+    | _ -> Memo.return empty
   ;;
-
-  let collect results = List.fold_left results ~init:empty_list ~f:cons |> rev
 end
 
 let define_all_alias ~dir ~project ~js_targets =
@@ -222,14 +179,12 @@ let stanza_targets
       stanza
   =
   match Stanza.repr stanza with
-  | Library.T lib ->
-    Memo.return (Lib_rules.rule_targets ~dir ~source_files ~lib_config ~dialects lib)
+  | Library.T lib -> Lib_rules.rule_targets ~dir ~source_files ~lib_config ~dialects lib
   | Executables.T exes ->
     Memo.return
       (Exe_rules.rule_targets ~dir ~source_files ~lib_config ~dialects ~project exes)
   | Tests.T tests ->
-    Memo.return
-      (Test_rules.rule_targets ~dir ~source_files ~lib_config ~dialects ~project tests)
+    Test_rules.rule_targets ~dir ~source_files ~lib_config ~dialects ~project tests
   | Foreign_library.T lib ->
     Memo.return (Lib_rules.foreign_rule_targets ~dir ~lib_config lib)
   | Alias_conf.T alias -> Memo.return (Target_mask.aliases [ Alias.make alias.name ~dir ])
@@ -265,6 +220,16 @@ let stanza_context_loc stanza =
   | _ -> None
 ;;
 
+let stanza_merlin_ident stanza =
+  match Stanza.repr stanza with
+  | Library.T lib -> Some (Merlin_ident.for_lib (Library.best_name lib))
+  | Executables.T exes | Tests.T { exes; _ } ->
+    Some (Merlin_ident.for_exe_target (Executables.exe_target exes))
+  | Melange_stanzas.Emit.T mel ->
+    Some (Merlin_ident.for_exe_target (Melange_stanzas.Emit.exe_target mel))
+  | _ -> None
+;;
+
 let gen_rules_for_stanzas
       sctx
       standalone_or_root
@@ -280,6 +245,7 @@ let gen_rules_for_stanzas
   let dialects = Dune_project.dialects project in
   let* scope = Scope.DB.find_by_dir ctx_dir
   and* expander = Super_context.expander sctx ~dir:ctx_dir in
+  let dir_contents = Dir_contents.Standalone_or_root.root standalone_or_root in
   let* prepared =
     Memo.parallel_map stanzas ~f:(fun stanza ->
       let* targets =
@@ -296,7 +262,6 @@ let gen_rules_for_stanzas
       let+ prepared =
         Rules.defer targets (fun () ->
           let* () = Memo.Lazy.force Configurator_rules.force_files in
-          let* dir_contents = Dir_contents.Standalone_or_root.root standalone_or_root in
           For_stanza.of_stanza
             stanza
             ~sctx
@@ -321,29 +286,69 @@ let gen_rules_for_stanzas
         Loc.Map.set cctxs loc cctx)
   in
   let* () =
-    let targets =
-      Target_mask.union
-        (Target_mask.aliases_in_directory ctx_dir)
-        (Target_mask.subtree
-           (Path.Build.relative_fname ctx_dir Merlin_ident.merlin_folder_name))
-    in
-    Rules.narrow targets (fun () ->
-      let* results =
-        Memo.parallel_map prepared ~f:(fun (_, _, prepared) -> Memo.Lazy.force prepared)
+    Rules.narrow
+      (Target_mask.aliases [ Alias.make Alias0.all ~dir:ctx_dir ])
+      (fun () ->
+         let* js_targets =
+           Memo.parallel_map stanzas ~f:(fun stanza ->
+             match Stanza.repr stanza with
+             | Executables.T exes ->
+               let+ enabled = Expander.eval_blang expander exes.enabled_if in
+               if not enabled
+               then []
+               else
+                 Nonempty_list.to_list exes.names
+                 |> List.concat_map ~f:(fun (_, exe) ->
+                   List.map Js_of_ocaml.Mode.all ~f:(fun mode ->
+                     Path.Build.relative
+                       ctx_dir
+                       (exe ^ Filename.Extension.to_string (Js_of_ocaml.Ext.exe ~mode))))
+             | _ -> Memo.return [])
+           >>| List.concat
+         in
+         define_all_alias ~dir:ctx_dir ~project ~js_targets)
+  in
+  let more_src_dirs =
+    Memo.lazy_ ~name:"merlin-source-directories" (fun () ->
+      let* source_dirs =
+        Memo.List.filter_map stanzas ~f:(fun stanza ->
+          match Stanza.repr stanza with
+          | Copy_files.T { files = glob; _ } ->
+            let+ src_glob = Expander.No_deps.expand_str expander glob in
+            if not (Filename.is_relative src_glob)
+            then None
+            else (
+              let error_loc = String_with_vars.loc glob in
+              match Path.relative (Path.source src_dir) src_glob ~error_loc with
+              | In_source_tree s -> Some (Path.Source.parent_exn s)
+              | In_build_dir _ | External _ -> None)
+          | _ -> Memo.return None)
       in
-      let { For_stanza.merlin = merlins; cctx = _; js = js_targets; source_dirs } =
-        For_stanza.collect results
-      in
-      let* dir_contents = Dir_contents.Standalone_or_root.root standalone_or_root in
-      let+ () =
-        let more_src_dirs =
-          Merlin.more_src_dirs dir_contents ~source_dirs:(src_dir :: source_dirs)
-        in
-        Memo.parallel_iter
-          merlins
-          ~f:(Merlin.add_rules sctx ~dir:ctx_dir ~more_src_dirs ~expander)
-      and+ () = define_all_alias ~dir:ctx_dir ~project ~js_targets in
-      ())
+      let+ dir_contents = dir_contents in
+      Merlin.more_src_dirs dir_contents ~source_dirs:(src_dir :: source_dirs))
+  in
+  let* () =
+    Memo.when_
+      (Context.merlin (Super_context.context sctx))
+      (fun () ->
+         Memo.parallel_iter prepared ~f:(fun (stanza, _, prepared) ->
+           match stanza_merlin_ident stanza with
+           | None -> Memo.return ()
+           | Some ident ->
+             let targets =
+               Target_mask.union
+                 (Target_mask.files [ Merlin_ident.merlin_file_path ctx_dir ident ])
+                 (Target_mask.aliases [ Alias.make Alias0.check ~dir:ctx_dir ])
+             in
+             Rules.narrow targets (fun () ->
+               let* { For_stanza.merlin; _ } = Memo.Lazy.force prepared in
+               match merlin with
+               | [] -> Memo.return ()
+               | _ :: _ ->
+                 let* more_src_dirs = Memo.Lazy.force more_src_dirs in
+                 Memo.parallel_iter
+                   merlin
+                   ~f:(Merlin.add_rules sctx ~dir:ctx_dir ~more_src_dirs ~expander))))
   in
   let+ () =
     Memo.parallel_iter prepared ~f:(fun (stanza, targets, _) ->
@@ -448,30 +453,20 @@ let gen_rules_for_stanzas
 ;;
 
 let gen_common_directory_rules sctx ~dir source_dir =
-  let aliases = Target_mask.aliases_in_directory dir in
   let* () =
-    Rules.narrow aliases (fun () ->
-      let* () = Memo.Lazy.force Configurator_rules.force_files in
-      Format_rules.setup_alias sctx ~dir)
+    Rules.narrow
+      (Target_mask.aliases [ Alias.make Alias0.fmt ~dir ])
+      (fun () ->
+         let* () = Memo.Lazy.force Configurator_rules.force_files in
+         Format_rules.setup_alias sctx ~dir)
   in
   let* () =
-    let targets =
-      Filename.Array.Set.union
-        (Source_tree.Dir.filenames source_dir)
-        (Source_tree.Dir.sub_dir_names source_dir)
-      |> Filename.Array.Set.to_list
-      |> List.filter ~f:Cram_test.is_cram_suffix
-      |> List.fold_left ~init:aliases ~f:(fun targets name ->
-        Target_mask.union
-          targets
-          (Target_mask.subtree
-             (Path.Build.relative dir (".cram." ^ Filename.to_string name))))
-    in
+    let* targets = Cram_rules.rule_targets ~dir source_dir in
     Rules.narrow targets (fun () ->
       let* () = Memo.Lazy.force Configurator_rules.force_files in
       Cram_rules.rules source_dir ~sctx ~dir)
   in
-  Rules.narrow aliases (fun () ->
+  Rules.narrow (Revdep_rules.rule_targets ~dir) (fun () ->
     let* () = Memo.Lazy.force Configurator_rules.force_files in
     Revdep_rules.add ~sctx ~dir)
 ;;
@@ -481,8 +476,13 @@ let gen_rules_source_only sctx ~dir source_dir =
     let* sctx = sctx in
     let+ () = gen_common_directory_rules sctx ~dir source_dir
     and+ () =
-      Rules.narrow (Target_mask.aliases_in_directory dir) (fun () ->
-        define_all_alias ~dir ~js_targets:[] ~project:(Source_tree.Dir.project source_dir))
+      Rules.narrow
+        (Target_mask.aliases [ Alias.make Alias0.all ~dir ])
+        (fun () ->
+           define_all_alias
+             ~dir
+             ~js_targets:[]
+             ~project:(Source_tree.Dir.project source_dir))
     in
     ())
 ;;

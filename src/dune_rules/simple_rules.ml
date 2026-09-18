@@ -138,7 +138,14 @@ let add_corrections ~(rule : Rule_conf.t) action =
 let rule_targets ~dir (rule : Rule_conf.t) =
   let targets =
     match rule.targets with
-    | Infer -> Target_mask.files_in_directory dir
+    | Infer ->
+      let targets =
+        Action_unexpanded.rule_targets ~dir ~targets:rule.targets (snd rule.action)
+      in
+      (* Targetless rules must remain reachable so expansion reports their error. *)
+      if Target_mask.is_empty targets && List.is_empty rule.aliases
+      then Target_mask.files_in_directory dir
+      else targets
     | Static { targets; multiplicity = _ } ->
       List.fold_left
         targets
