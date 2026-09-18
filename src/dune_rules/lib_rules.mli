@@ -6,7 +6,7 @@ val rule_targets
   -> lib_config:Lib_config.t
   -> dialects:Dialect.DB.t
   -> Library.t
-  -> Target_mask.t
+  -> Target_mask.t Memo.t
 
 val foreign_rule_targets
   :  dir:Path.Build.t

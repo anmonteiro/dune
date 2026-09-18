@@ -18,6 +18,15 @@ let has_preprocessing preprocess =
     | Action _ | Pps { staged = false; _ } | Future_syntax _ -> true)
 ;;
 
+let lint_rule_targets ~dir lint =
+  if
+    Module_reference.Per_item.exists lint ~f:(function
+      | Preprocess.No_preprocessing -> false
+      | Action _ | Pps _ | Future_syntax _ -> true)
+  then Target_mask.aliases [ Alias.make Alias0.lint ~dir ]
+  else Target_mask.empty
+;;
+
 let possible_files file ~ml_kind ~preprocess =
   let ml_source = Module.File.ml_source file ~ml_kind in
   if not preprocess

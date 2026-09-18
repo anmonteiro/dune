@@ -1,7 +1,7 @@
 The error message for (copy_files ...) from another non sub directory should report the
 version that introduced this feature:
 
-  $ dune build
+  $ dune build @all
   File "src/dune", line 1, characters 12-24:
   1 | (copy_files ../to_copy/*)
                   ^^^^^^^^^^^^

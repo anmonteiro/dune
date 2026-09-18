@@ -74,7 +74,7 @@ let rule_targets ~dir ~source_files ~lib_config ~dialects (buildable : Buildable
        | None -> Target_mask.empty
        | Some ctypes -> Ctypes_rules.rule_targets ~dir ctypes)
     ]
-    ~init:(Target_mask.aliases_in_directory dir)
+    ~init:(Pp_spec_rules.lint_rule_targets ~dir buildable.lint)
     ~f:Target_mask.union
 ;;
 

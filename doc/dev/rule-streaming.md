@@ -125,6 +125,22 @@ Generators such as Menhir and library subsystems participate through their
 own declarations and suspensions. Dependencies on the compilation that
 consumes these inputs remain genuine cycles.
 
+Source inventories retain each producer's mask and discover filenames only for
+the requested source family. OCaml, foreign, documentation, and Rocq discovery
+therefore need not force unrelated data rules. Header and test-expectation
+queries select their own filenames. Compilation rules are suspended per module,
+with generated alias/root sources suspended separately. Merlin configurations
+are per stanza, and alias producers declare their actual alias names. JS/Wasm
+archives and legacy documentation outputs also have separate producers.
+
+Validation associated with a producer runs when it is forced. Formatting can
+therefore proceed without evaluating unrelated buildable stanzas or installing
+their locked dependencies.
+
+Module selection and ownership validation still share a directory-group
+namespace. Selecting sources by extension does not make an explicit modules
+field independent of other producers of OCaml sources in that group.
+
 Cleanup only considers entries present when a directory is first loaded. It
 conservatively retains possible outputs of unforced suspensions and refines
 that set as rules are revealed, without deleting fresh temporary files from
