@@ -4,7 +4,7 @@ open Dune_lang.Decoder
 module Emit = struct
   type t =
     { loc : Loc.t
-    ; target : string
+    ; target : string option
     ; alias : Alias.Name.t option
     ; module_systems : (Melange.Module_system.t * Filename.Extension.t) Nonempty_list.t
     ; modules : Modules_settings.t
@@ -112,7 +112,15 @@ module Emit = struct
                     `melange.emit` stanza to that folder"
                ]
          in
-         field "target" (plain_string (fun ~loc s -> of_string ~loc s))
+         let* target = field_o "target" (plain_string (fun ~loc s -> of_string ~loc s)) in
+         match target with
+         | Some _ -> return target
+         | None ->
+           Syntax.since
+             ~what:"Omitting the target field in a melange.emit stanza"
+             Stanza.syntax
+             (3, 25)
+           >>> return None
        and+ alias = field_o "alias" Dune_lang.Alias.decode
        and+ module_systems =
          field
@@ -162,7 +170,12 @@ module Emit = struct
   ;;
 
   let exe_target t = Exe_target.melange_emit t.target
-  let target_dir (emit : t) ~dir = Path.Build.relative dir emit.target
+
+  let target_dir (emit : t) ~dir =
+    match emit.target with
+    | None -> dir
+    | Some target -> Path.Build.relative dir target
+  ;;
 end
 
 let () =
