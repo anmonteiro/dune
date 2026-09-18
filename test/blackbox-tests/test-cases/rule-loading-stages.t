@@ -663,16 +663,10 @@ Loading seed must not expand the condition of an independent inferred rule.
   >  (action (write-file result ready)))
   > EOF
   $ dune build inferred-producers/seed
-  Error: Dependency cycle between:
-     %{read:seed} at inferred-producers/dune:4
-  [1]
   $ dune build inferred-producers/result
-  Error: Dependency cycle between:
-     %{read:seed} at inferred-producers/dune:4
-  [1]
+  $ test -f _build/default/inferred-producers/seed
   $ cat _build/default/inferred-producers/result
-  cat: _build/default/inferred-producers/result: No such file or directory
-  [1]
+  ready
 
 An alias used to generate a module list must not prepare the library that
 consumes that list. Both the independent alias and the library should build.
@@ -691,21 +685,7 @@ consumes that list. Both the independent alias and the library should build.
   > EOF
   $ touch alias-producers/value.ml
   $ dune build @alias-producers/ready
-  Error: Dependency cycle between:
-     (modules) field at alias-producers/dune:6
-  -> _build/default/alias-producers/modules.list
-  -> (:include _build/default/alias-producers/modules.list) at
-     alias-producers/dune:9
-  -> (modules) field at alias-producers/dune:6
-  [1]
   $ dune build alias-producers/alias_consumer.cma
-  Error: Dependency cycle between:
-     (modules) field at alias-producers/dune:6
-  -> _build/default/alias-producers/modules.list
-  -> (:include _build/default/alias-producers/modules.list) at
-     alias-producers/dune:9
-  -> (modules) field at alias-producers/dune:6
-  [1]
 
 Discovering OCaml sources must not prepare unrelated data producers. The data
 rule's condition can depend on the library whose sources are being discovered.
@@ -726,22 +706,9 @@ rule's condition can depend on the library whose sources are being discovered.
   > EOF
   $ touch source-producers/value.ml
   $ dune build source-producers/source_consumer.cma
-  Error: Dependency cycle between:
-     Computing directory contents of _build/default/source-producers
-  -> _build/default/source-producers/stamp
-  -> %{read:stamp} at source-producers/dune:10
-  -> Computing directory contents of _build/default/source-producers
-  [1]
   $ dune build source-producers/report.txt
-  Error: Dependency cycle between:
-     %{read:stamp} at source-producers/dune:10
-  -> Computing directory contents of _build/default/source-producers
-  -> _build/default/source-producers/stamp
-  -> %{read:stamp} at source-producers/dune:10
-  [1]
   $ cat _build/default/source-producers/report.txt
-  cat: _build/default/source-producers/report.txt: No such file or directory
-  [1]
+  ready
 
 The same separation applies to sources discovered in a qualified directory
 group. A data producer in a child must not block the group's compilation.
@@ -765,22 +732,9 @@ group. A data producer in a child must not block the group's compilation.
   > EOF
   $ touch grouped-producers/child/value.ml
   $ dune build grouped-producers/grouped_consumer.cma
-  Error: Dependency cycle between:
-     Computing directory contents of _build/default/grouped-producers
-  -> _build/default/grouped-producers/stamp
-  -> %{read:../stamp} at grouped-producers/child/dune:3
-  -> Computing directory contents of _build/default/grouped-producers
-  [1]
   $ dune build grouped-producers/child/report.txt
-  Error: Dependency cycle between:
-     %{read:../stamp} at grouped-producers/child/dune:3
-  -> Computing directory contents of _build/default/grouped-producers
-  -> _build/default/grouped-producers/stamp
-  -> %{read:../stamp} at grouped-producers/child/dune:3
-  [1]
   $ cat _build/default/grouped-producers/child/report.txt
-  cat: _build/default/grouped-producers/child/report.txt: No such file or directory
-  [1]
+  ready
 
 An independent alias must not prepare an unrelated library. The invalid module
 list is still diagnosed when the library itself is requested.
@@ -794,11 +748,6 @@ list is still diagnosed when the library itself is requested.
   >  (modules (:include missing.list)))
   > EOF
   $ dune build @independent-alias/ready
-  Error: No rule found for independent-alias/missing.list
-  -> required by (:include _build/default/independent-alias/missing.list) at
-     independent-alias/dune:5
-  -> required by (modules) field at independent-alias/dune:2
-  [1]
   $ dune build independent-alias/broken.cma
   Error: No rule found for independent-alias/missing.list
   -> required by (:include _build/default/independent-alias/missing.list) at
@@ -819,11 +768,6 @@ missing foreign source remains an error when its configuration is requested.
   > EOF
   $ touch merlin-producers/good.ml merlin-producers/bad.ml
   $ dune build merlin-producers/.merlin-conf/lib-good
-  File "merlin-producers/dune", line 5, characters 36-43:
-  5 |  (foreign_stubs (language c) (names missing)))
-                                          ^^^^^^^
-  Error: Object "missing" has no source; "missing.c" must be present.
-  [1]
   $ dune build merlin-producers/.merlin-conf/lib-bad
   File "merlin-producers/dune", line 5, characters 36-43:
   5 |  (foreign_stubs (language c) (names missing)))
@@ -845,4 +789,140 @@ trace records rule generation, not just which compilation actions execute.
   $ DUNE_TRACE=debug dune build module-producers/.modules.objs/byte/a.cmo
   $ dune trace cat | jq -sr '[.[] | select(.name == "rule_generated") | .args.target_files[]? | select(endswith(".cmo"))] | unique[]'
   _build/default/module-producers/.modules.objs/byte/a.cmo
-  _build/default/module-producers/.modules.objs/byte/b.cmo
+
+Refining the module producers must retain artifacts owned by an unforced
+sibling, including when switching between exact file and alias requests.
+
+  $ dune build module-producers/.modules.objs/byte/b.cmo
+  $ test -f _build/default/module-producers/.modules.objs/byte/a.cmo
+  $ dune build module-producers/.modules.objs/byte/a.cmo
+  $ test -f _build/default/module-producers/.modules.objs/byte/b.cmo
+  $ dune build @module-producers/check
+  $ test -f _build/default/module-producers/.modules.objs/byte/a.cmo
+  $ test -f _build/default/module-producers/.modules.objs/byte/b.cmo
+
+Source discovery still selects generated files in custom dialects. A data
+producer depending on the resulting library remains independent.
+
+  $ mkdir dialect-producers
+  $ cat >dialect-producers/dune-project <<EOF
+  > (lang dune 3.25)
+  > (dialect
+  >  (name copy)
+  >  (implementation
+  >   (extension copied)
+  >   (preprocess (run cat %{input-file}))))
+  > EOF
+  $ cat >dialect-producers/dune <<EOF
+  > (library (name dialect_consumer) (modes byte))
+  > (rule
+  >  (target value.copied)
+  >  (action (write-file %{target} "let value = 42")))
+  > (rule
+  >  (target stamp)
+  >  (deps dialect_consumer.cma)
+  >  (action (write-file %{target} true)))
+  > (rule
+  >  (target report.txt)
+  >  (enabled_if (= %{read:stamp} true))
+  >  (action (write-file %{target} ready)))
+  > EOF
+  $ dune build dialect-producers/dialect_consumer.cma
+  $ dune build dialect-producers/report.txt
+  $ cat _build/default/dialect-producers/report.txt
+  ready
+
+Foreign compilation still discovers generated headers, and tests still discover
+their generated expected output through their targeted filename requests.
+
+  $ mkdir header-producers
+  $ cat >header-producers/dune <<EOF
+  > (library
+  >  (name headers)
+  >  (foreign_stubs (language c) (names stubs)))
+  > (rule
+  >  (target value.h)
+  >  (action (write-file %{target} "#define VALUE 42")))
+  > EOF
+  $ touch header-producers/headers.ml
+  $ cat >header-producers/stubs.c <<EOF
+  > #include "value.h"
+  > int value(void) { return VALUE; }
+  > EOF
+  $ dune build header-producers/libheaders_stubs.a
+
+  $ mkdir expected-producers
+  $ cat >expected-producers/dune <<EOF
+  > (test (name check))
+  > (rule
+  >  (target check.expected)
+  >  (action (write-file %{target} ready)))
+  > EOF
+  $ cat >expected-producers/check.ml <<EOF
+  > let () = print_string "ready"
+  > EOF
+  $ dune build @expected-producers/runtest
+
+Warm builds must preserve inferred flag files and wrapped interfaces when only
+a sibling producer is requested, including after an implementation changes.
+
+  $ mkdir -p warm-preservation/flags
+  $ cat >warm-preservation/dune <<EOF
+  > (library
+  >  (name preserved)
+  >  (modes byte)
+  >  (flags (:standard (:include flags/flags.sexp))))
+  > EOF
+  $ cat >warm-preservation/flags/dune <<EOF
+  > (rule
+  >  (with-stdout-to flags.sexp (echo "()")))
+  > (rule
+  >  (with-stdout-to c_flags.sexp (echo "()")))
+  > EOF
+  $ cat >warm-preservation/a.ml <<EOF
+  > let value = 1
+  > EOF
+  $ cat >warm-preservation/b.ml <<EOF
+  > let value = A.value
+  > EOF
+  $ dune build warm-preservation/preserved.cma warm-preservation/flags/c_flags.sexp
+
+Requesting one module leaves the other module and its inputs intact.
+
+  $ dune build warm-preservation/.preserved.objs/byte/preserved__A.cmo
+  $ test -f _build/default/warm-preservation/flags/flags.sexp
+  $ test -f _build/default/warm-preservation/flags/c_flags.sexp
+  $ test -f _build/default/warm-preservation/.preserved.objs/byte/preserved.cmi
+  $ test -f _build/default/warm-preservation/.preserved.objs/byte/preserved__A.cmi
+  $ test -f _build/default/warm-preservation/.preserved.objs/byte/preserved__B.cmi
+
+Requesting one inferred flag file leaves its sibling and the library intact.
+
+  $ dune build warm-preservation/flags/c_flags.sexp
+  $ test -f _build/default/warm-preservation/flags/flags.sexp
+  $ test -f _build/default/warm-preservation/flags/c_flags.sexp
+  $ test -f _build/default/warm-preservation/.preserved.objs/byte/preserved.cmi
+  $ test -f _build/default/warm-preservation/.preserved.objs/byte/preserved__A.cmi
+  $ test -f _build/default/warm-preservation/.preserved.objs/byte/preserved__B.cmi
+
+Switching to an alias request must preserve the same artifacts.
+
+  $ dune build @warm-preservation/check
+  $ test -f _build/default/warm-preservation/flags/flags.sexp
+  $ test -f _build/default/warm-preservation/flags/c_flags.sexp
+  $ test -f _build/default/warm-preservation/.preserved.objs/byte/preserved.cmi
+  $ test -f _build/default/warm-preservation/.preserved.objs/byte/preserved__A.cmi
+  $ test -f _build/default/warm-preservation/.preserved.objs/byte/preserved__B.cmi
+
+Rebuilding one implementation must also leave the sibling interface available.
+
+  $ cat >warm-preservation/a.ml <<EOF
+  > let value = 2
+  > EOF
+  $ dune build warm-preservation/.preserved.objs/byte/preserved__A.cmo
+  $ test -f _build/default/warm-preservation/flags/flags.sexp
+  $ test -f _build/default/warm-preservation/flags/c_flags.sexp
+  $ test -f _build/default/warm-preservation/.preserved.objs/byte/preserved.cmi
+  $ test -f _build/default/warm-preservation/.preserved.objs/byte/preserved__A.cmi
+  $ test -f _build/default/warm-preservation/.preserved.objs/byte/preserved__B.cmi
+  $ dune build warm-preservation/preserved.cma @warm-preservation/check

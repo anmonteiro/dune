@@ -4,4 +4,5 @@ Test that implementing vlibs that aren't present is impossible
   3 |  (implements foobar12312414))
                    ^^^^^^^^^^^^^^
   Error: Library "foobar12312414" not found.
+  -> required by alias default in dune:5
   [1]

@@ -16,7 +16,18 @@ We also check that .cmo.js rules are not generated if not specified.
 JS compilation of libraries is always available to avoid having to annotate
 every dependency of an executable.
 
-  $ dune build _build/default/.foo.objs/jsoo/effects=disabled/foo.cma.js
+Only the requested JS archive producer is forced, not its Wasm counterpart.
+
+  $ DUNE_TRACE=debug dune build _build/default/.foo.objs/jsoo/effects=disabled/foo.cma.js
+  $ dune trace cat | jq -sr '[.[] | select(.name == "rule_generated") | .args.target_files[]? | select(contains("/.foo.objs/jsoo/effects=disabled/"))] | unique[]'
+  _build/default/.foo.objs/jsoo/effects=disabled/foo.cma.js
+
+Installed archives also have independent producers. Requesting std_exit does
+not generate compilation rules for the stdlib archive or for Wasm outputs.
+
+  $ DUNE_TRACE=debug dune build .js/effects=disabled/stdlib/std_exit.cmo.js
+  $ dune trace cat | jq -sr '[.[] | select(.name == "rule_generated") | .args.target_files[]? | select(contains("/.js/effects=disabled/stdlib/"))] | unique[]'
+  _build/default/.js/effects=disabled/stdlib/std_exit.cmo.js
 
 Check that js targets are attached to @all, but not for tests that do not
 specify js mode (#1940).

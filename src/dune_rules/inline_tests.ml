@@ -179,13 +179,30 @@ include Sub_system.Register_end_point (struct
     module Backend = Backend
     module Info = Inline_tests_info.Tests
 
-    let rule_targets ~dir ~(stanza : Library.t) ~info:_ =
+    let runtest_alias ~dir = function
+      | Mode_conf.Native | Best | Byte -> Memo.return Alias0.runtest
+      | Jsoo mode -> Jsoo_rules.js_of_ocaml_runtest_alias ~dir ~mode
+    ;;
+
+    let test_alias ~dir runtest_alias lib_name =
+      Alias.Name.of_string
+        (Alias.Name.to_string runtest_alias ^ "-" ^ Lib_name.Local.to_string lib_name)
+      |> Alias.make ~dir
+    ;;
+
+    let rule_targets ~dir ~(stanza : Library.t) ~(info : Info.t) =
+      let lib_name = snd stanza.name in
+      let+ aliases =
+        Mode_conf.Set.to_list info.modes
+        |> Memo.parallel_map ~f:(fun mode ->
+          let+ alias = runtest_alias ~dir mode in
+          [ Alias.make alias ~dir; test_alias ~dir alias lib_name ])
+        >>| List.concat
+      in
       Target_mask.union
         (Target_mask.subtree
-           (Path.Build.relative
-              dir
-              (Inline_tests_info.inline_test_dirname (snd stanza.name))))
-        (Target_mask.aliases_in_directory dir)
+           (Path.Build.relative dir (Inline_tests_info.inline_test_dirname lib_name)))
+        (Target_mask.aliases (Alias.make Alias0.runtest ~dir :: aliases))
     ;;
 
     let gen_rules
@@ -418,17 +435,8 @@ include Sub_system.Register_end_point (struct
         partitions
       in
       Memo.parallel_iter modes ~f:(fun (mode : Mode_conf.t) ->
-        let* runtest_alias =
-          match mode with
-          | Native | Best | Byte -> Memo.return Alias0.runtest
-          | Jsoo mode -> Jsoo_rules.js_of_ocaml_runtest_alias ~dir ~mode
-        in
-        let alias =
-          [ Alias.Name.to_string runtest_alias; Lib_name.Local.to_string lib_name ]
-          |> String.concat ~sep:"-"
-          |> Alias.Name.of_string
-          |> Alias.make ~dir
-        in
+        let* runtest_alias = runtest_alias ~dir mode in
+        let alias = test_alias ~dir runtest_alias lib_name in
         let* () =
           let runtest_alias = Alias.make ~dir runtest_alias in
           Dep.alias alias

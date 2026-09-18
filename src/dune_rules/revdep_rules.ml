@@ -112,6 +112,18 @@ let libs_in_dir ~scope ~dir =
       | _ -> Memo.return None)
 ;;
 
+let aliases =
+  [ Alias0.revdep, Alias0.default
+  ; Alias0.revdep_check, Alias0.check
+  ; Alias0.revdep_runtest, Alias0.runtest
+  ; Alias0.revdep_install, Alias0.install
+  ]
+;;
+
+let rule_targets ~dir =
+  Target_mask.aliases (List.map aliases ~f:(fun (alias, _) -> Alias.make alias ~dir))
+;;
+
 let add ~sctx ~dir =
   let* libs_here =
     let* scope = Scope.DB.find_by_dir dir in
@@ -141,8 +153,5 @@ let add ~sctx ~dir =
        Action_builder.all_unit (lib_targets @ dir_targets))
     |> Rules.Produce.Alias.add_deps alias
   in
-  let* () = build_revdep_alias Alias0.revdep Alias0.default in
-  let* () = build_revdep_alias Alias0.revdep_check Alias0.check in
-  let* () = build_revdep_alias Alias0.revdep_runtest Alias0.runtest in
-  build_revdep_alias Alias0.revdep_install Alias0.install
+  Memo.parallel_iter aliases ~f:(fun (alias, target) -> build_revdep_alias alias target)
 ;;

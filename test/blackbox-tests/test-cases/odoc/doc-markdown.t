@@ -60,3 +60,25 @@ Check the top-level index contains markdown:
   # OCaml Package Documentation
   
   - [mylib](mylib/index.md)
+
+A package's Markdown producer must not discover modules in other packages.
+
+  $ cat >dune-project <<EOF
+  > (lang dune 3.25)
+  > (package (name mylib))
+  > (package (name other))
+  > EOF
+  $ mkdir other
+  $ cat >other/dune <<EOF
+  > (library
+  >  (public_name other)
+  >  (modules (:include missing.list)))
+  > EOF
+  $ DUNE_TRACE=debug dune build _doc/_markdown/mylib
+  $ dune trace cat | jq -sr '[.[] | select(.name == "rule_generated") | .args.target_dirs[]? | select(contains("/_doc/_markdown/"))] | unique[]'
+  _build/default/_doc/_markdown/mylib
+  $ dune build _doc/_markdown/other
+  Error: No rule found for other/missing.list
+  -> required by (:include _build/default/other/missing.list) at other/dune:3
+  -> required by (modules) field at other/dune:1
+  [1]
