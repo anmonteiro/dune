@@ -145,13 +145,23 @@ module Per_stanza = struct
       match
         String.Map.of_list_map emits ~f:(fun part ->
           let origin : Origin.t = Melange part.stanza in
-          part.stanza.target, (origin, part.modules, part.obj_dir))
+          let name =
+            Melange_stanzas.Emit.exe_target part.stanza |> Exe_target.first_name
+          in
+          name, (origin, part.modules, part.obj_dir))
       with
       | Ok x -> x
       | Error (name, _, part) ->
-        User_error.raise
-          ~loc:part.stanza.loc
-          [ Pp.textf "Target %S appears for the second time in this directory" name ]
+        let message =
+          match part.stanza.target with
+          | Some _ ->
+            Pp.textf "Target %S appears for the second time in this directory" name
+          | None ->
+            Pp.text
+              "A melange.emit stanza without a target appears for the second time in \
+               this directory"
+        in
+        User_error.raise ~loc:part.stanza.loc [ message ]
     in
     let ocamllexes =
       Loc.Map.of_list_map_exn ocamllexes ~f:(fun { stanza; dep_info } ->
@@ -1588,7 +1598,11 @@ let make
       let melange_emits =
         List.map modules_of_stanzas.melange_emits ~f:(fun { Per_stanza.stanza; dir; _ } ->
           let target_dir = Melange_stanzas.Emit.target_dir stanza ~dir in
-          let output_dir = Melange.output_path ~target_dir dir in
+          let output_dir =
+            match stanza.target with
+            | None -> dir
+            | Some _ -> Melange.output_path ~target_dir dir
+          in
           let { Melange_stanzas.Emit.alias; loc; _ } = stanza in
           let alias = Option.value alias ~default:Melange_stanzas.Emit.implicit_alias in
           target_dir, ({ Melange.Emit.output_dir; stanza_dir = dir; alias }, loc))

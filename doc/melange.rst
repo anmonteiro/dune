@@ -112,17 +112,19 @@ linking step.
 .. code:: dune
 
     (melange.emit
-     (target <target>)
      <optional-fields>)
 
 .. _target:
 
-- ``<target>`` is the name of the folder inside the build directory where Dune
-  will compile the resulting JavaScript. In particular, the folder will be
-  placed under ``_build/default/$path-to-directory-of-melange-emit-stanza``.
+- ``(target <target>)`` specifies the name of the folder inside the build
+  directory where Dune will compile the resulting JavaScript. In particular,
+  the folder will be placed under
+  ``_build/default/$path-to-directory-of-melange-emit-stanza``. Starting with
+  Dune 3.25, this field can be omitted to use `Colocated Output`_. It is required
+  in earlier versions.
 
     **Note:** when using `promotion`_, Dune will additionally copy the
-    resulting JavaScript back to the source tree, next to the original source 
+    resulting JavaScript back to the source tree, next to the original source
     files.
 
 ``$path-to-directory-of-melange-emit-stanza`` matches the file structure of the
@@ -146,6 +148,42 @@ The resulting layout in ``_build/default/output`` will be as follows:
         ├── lib.js
         └── helper.js
 
+Colocated Output
+----------------
+
+.. versionadded:: 3.25
+
+Omitting ``target`` emits JavaScript beside the build-tree copies of the source
+files, without a separate output directory:
+
+.. code:: dune
+
+    (melange.emit
+     (libraries lib))
+
+For the source tree above, this produces ``_build/default/app.js`` and the
+private library's JavaScript files under ``_build/default/lib``. Entry-point
+modules and private workspace libraries without a package retain their
+source-tree locations. Public libraries, package-associated private libraries,
+and installed dependencies are emitted under ``_build/default/node_modules``
+instead, using the same library names as explicit targets.
+
+Only one enabled ``melange.emit`` stanza per directory may omit ``target``.
+Targetless stanzas in different directories share output locations for their
+dependencies. If they try to generate the same file, Dune reports conflicting
+rules. Use a single stanza or explicit, distinct ``target`` directories to
+avoid overlapping outputs.
+
+Stanzas loaded through ``dynamic_include`` must still specify ``target``.
+Colocated emits must be declared statically.
+
+Unlike an explicit ``target``, this layout does not provide a separate,
+self-contained directory to export for deployment. Explicit targets retain
+their existing layout and can still be used for isolated bundles.
+
+Colocated output stays in the build tree. It does not write JavaScript into the
+source checkout unless `Promotion`_ is enabled.
+
 .. _melange-emit-artifact-variable:
 
 Artifact Variable
@@ -163,6 +201,11 @@ For example, suppose ``lib/dune`` contains a stanza with ``(target output)``.
 In that file, ``%{melange.emit:output}`` expands to ``output/lib``. In a
 ``dune`` file at the workspace root, ``%{melange.emit:lib/output}`` expands to
 ``lib/output/lib``.
+
+When ``lib/dune`` contains a stanza without ``target``, use
+``%{melange.emit:.}`` in that file, or ``%{melange.emit:lib}`` from the workspace
+root. These expand to ``.`` and ``lib``, respectively, and depend on the
+stanza's outputs in the same way as named targets.
 
 ``<optional-fields>`` are:
 
@@ -287,9 +330,9 @@ Keep Bundles Small by Reducing the Number of ``melange.emit`` Stanzas
 ---------------------------------------------------------------------
 
 It is recommended to minimize the number of ``melange.emit`` stanzas
-that a project defines: using multiple ``melange.emit`` stanzas will cause
-multiple copies of the JavaScript files to be generated if the same libraries
-are used across them. As an example:
+that a project defines: using multiple ``melange.emit`` stanzas with different
+targets will cause multiple copies of the JavaScript files to be generated if
+the same libraries are used across them. As an example:
 
 .. code:: dune
 
@@ -336,37 +379,35 @@ well if you need to override the build rules in one of the packages.
 Promotion
 =====================
 
-Compiling and promoting Melange output in Dune is slightly different than
-compiling OCaml:
+By default, Melange output remains in the build tree. Tools that can consume
+this layout do not require promotion. For example, without ``target``, a source
+file ``src/main.ml`` produces ``_build/default/src/main.js``.
 
-- Limitations in Dune `rule production
-  <https://github.com/ocaml/dune/blob/main/doc/dev/rule-streaming.md>`_ require
-  a :ref:`target directory <target>` in :ref:`melange-emit`.
+Some JavaScript tools and frameworks expect generated files next to the
+original sources in the checkout. Enable :ref:`promotion <melange_promote>`
+when those tools need ``src/main.js`` instead. Both explicit and omitted
+targets support promotion; with an explicit target, Melange 1.0 promotion
+places the output beside the original source rather than preserving the
+target-directory prefix.
 
-  - The target directory is :ref:`total <total>`: it can be exported as is from
-    the Dune build directory
-- Many popular tools and frameworks in the JavaScript ecosystem today rely on
-  convention over configuration, especially as it relates to folder structure.
-  When using :ref:`promotion <melange_promote>`
-
-
-
-Design choices
+Design Choices
 =====================
 
 Melange support in Dune follows the following design choices:
 
 .. _total:
 
-- :ref:`melange-emit` produces a "total" directory: the artifacts in the
-  ``target`` directory contain all the JavaScript and ``runtime_deps`` assets
-  necessary to run the application either through a JS framework, a bundler, or
-  otherwise a deployment (excluding external dependencies installed via a JS
-  package manager). The structure is designed such that relative paths and
-  dependencies work out of the box relative to their paths in the source tree,
-  before compilation.
-- public libraries are compiled to ``%{target}/node_modules/%{lib_name}`` such
-  that the `resolution algorithm
+- With an explicit ``target``, :ref:`melange-emit` produces a "total"
+  directory: the artifacts in that directory contain all the JavaScript and
+  ``runtime_deps`` assets necessary to run the application either through a JS
+  framework, a bundler, or otherwise a deployment (excluding external
+  dependencies installed via a JS package manager). The structure is designed
+  such that relative paths and dependencies work out of the box relative to
+  their paths in the source tree, before compilation.
+- Public libraries are compiled to ``%{target}/node_modules/%{lib_name}``
+  with an explicit target, or to ``node_modules`` at the build-context root
+  when the target is omitted, so that the `resolution algorithm
   <https://nodejs.org/api/modules.html#all-together>`_ works to resolve Melange
   libraries from compiled JS code.
-- JavaScript output is promoted to the source tree 
+- JavaScript output is only promoted to the source tree when requested with
+  ``promote``.
