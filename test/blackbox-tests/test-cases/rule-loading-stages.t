@@ -650,3 +650,199 @@ after its initial cleanup. A later build still removes those stale files.
   temporary
   $ dune build cleanup-inventory/lst
   $ test ! -e _build/default/cleanup-inventory/compiler.tmp
+
+Literal inferred targets must be as precise as explicit target declarations.
+Loading seed must not expand the condition of an independent inferred rule.
+
+  $ mkdir inferred-producers
+  $ cat >inferred-producers/dune <<EOF
+  > (rule
+  >  (action (write-file seed true)))
+  > (rule
+  >  (enabled_if (= %{read:seed} true))
+  >  (action (write-file result ready)))
+  > EOF
+  $ dune build inferred-producers/seed
+  Error: Dependency cycle between:
+     %{read:seed} at inferred-producers/dune:4
+  [1]
+  $ dune build inferred-producers/result
+  Error: Dependency cycle between:
+     %{read:seed} at inferred-producers/dune:4
+  [1]
+  $ cat _build/default/inferred-producers/result
+  cat: _build/default/inferred-producers/result: No such file or directory
+  [1]
+
+An alias used to generate a module list must not prepare the library that
+consumes that list. Both the independent alias and the library should build.
+
+  $ mkdir alias-producers
+  $ cat >alias-producers/dune <<EOF
+  > (alias (name ready))
+  > (rule
+  >  (target modules.list)
+  >  (deps (alias ready))
+  >  (action (write-file %{target} value)))
+  > (library
+  >  (name alias_consumer)
+  >  (modes byte)
+  >  (modules (:include modules.list)))
+  > EOF
+  $ touch alias-producers/value.ml
+  $ dune build @alias-producers/ready
+  Error: Dependency cycle between:
+     (modules) field at alias-producers/dune:6
+  -> _build/default/alias-producers/modules.list
+  -> (:include _build/default/alias-producers/modules.list) at
+     alias-producers/dune:9
+  -> (modules) field at alias-producers/dune:6
+  [1]
+  $ dune build alias-producers/alias_consumer.cma
+  Error: Dependency cycle between:
+     (modules) field at alias-producers/dune:6
+  -> _build/default/alias-producers/modules.list
+  -> (:include _build/default/alias-producers/modules.list) at
+     alias-producers/dune:9
+  -> (modules) field at alias-producers/dune:6
+  [1]
+
+Discovering OCaml sources must not prepare unrelated data producers. The data
+rule's condition can depend on the library whose sources are being discovered.
+
+  $ mkdir source-producers
+  $ cat >source-producers/dune <<EOF
+  > (library
+  >  (name source_consumer)
+  >  (modes byte))
+  > (rule
+  >  (target stamp)
+  >  (deps source_consumer.cma)
+  >  (action (write-file %{target} true)))
+  > (rule
+  >  (target report.txt)
+  >  (enabled_if (= %{read:stamp} true))
+  >  (action (write-file %{target} ready)))
+  > EOF
+  $ touch source-producers/value.ml
+  $ dune build source-producers/source_consumer.cma
+  Error: Dependency cycle between:
+     Computing directory contents of _build/default/source-producers
+  -> _build/default/source-producers/stamp
+  -> %{read:stamp} at source-producers/dune:10
+  -> Computing directory contents of _build/default/source-producers
+  [1]
+  $ dune build source-producers/report.txt
+  Error: Dependency cycle between:
+     %{read:stamp} at source-producers/dune:10
+  -> Computing directory contents of _build/default/source-producers
+  -> _build/default/source-producers/stamp
+  -> %{read:stamp} at source-producers/dune:10
+  [1]
+  $ cat _build/default/source-producers/report.txt
+  cat: _build/default/source-producers/report.txt: No such file or directory
+  [1]
+
+The same separation applies to sources discovered in a qualified directory
+group. A data producer in a child must not block the group's compilation.
+
+  $ mkdir -p grouped-producers/child
+  $ cat >grouped-producers/dune <<EOF
+  > (include_subdirs qualified)
+  > (library
+  >  (name grouped_consumer)
+  >  (modes byte))
+  > (rule
+  >  (target stamp)
+  >  (deps grouped_consumer.cma)
+  >  (action (write-file %{target} true)))
+  > EOF
+  $ cat >grouped-producers/child/dune <<EOF
+  > (rule
+  >  (target report.txt)
+  >  (enabled_if (= %{read:../stamp} true))
+  >  (action (write-file %{target} ready)))
+  > EOF
+  $ touch grouped-producers/child/value.ml
+  $ dune build grouped-producers/grouped_consumer.cma
+  Error: Dependency cycle between:
+     Computing directory contents of _build/default/grouped-producers
+  -> _build/default/grouped-producers/stamp
+  -> %{read:../stamp} at grouped-producers/child/dune:3
+  -> Computing directory contents of _build/default/grouped-producers
+  [1]
+  $ dune build grouped-producers/child/report.txt
+  Error: Dependency cycle between:
+     %{read:../stamp} at grouped-producers/child/dune:3
+  -> Computing directory contents of _build/default/grouped-producers
+  -> _build/default/grouped-producers/stamp
+  -> %{read:../stamp} at grouped-producers/child/dune:3
+  [1]
+  $ cat _build/default/grouped-producers/child/report.txt
+  cat: _build/default/grouped-producers/child/report.txt: No such file or directory
+  [1]
+
+An independent alias must not prepare an unrelated library. The invalid module
+list is still diagnosed when the library itself is requested.
+
+  $ mkdir independent-alias
+  $ cat >independent-alias/dune <<EOF
+  > (alias (name ready))
+  > (library
+  >  (name broken)
+  >  (modes byte)
+  >  (modules (:include missing.list)))
+  > EOF
+  $ dune build @independent-alias/ready
+  Error: No rule found for independent-alias/missing.list
+  -> required by (:include _build/default/independent-alias/missing.list) at
+     independent-alias/dune:5
+  -> required by (modules) field at independent-alias/dune:2
+  [1]
+  $ dune build independent-alias/broken.cma
+  Error: No rule found for independent-alias/missing.list
+  -> required by (:include _build/default/independent-alias/missing.list) at
+     independent-alias/dune:5
+  -> required by (modules) field at independent-alias/dune:2
+  [1]
+
+Merlin configurations must only prepare their own library. The other library's
+missing foreign source remains an error when its configuration is requested.
+
+  $ mkdir merlin-producers
+  $ cat >merlin-producers/dune <<EOF
+  > (library (name good) (modules good))
+  > (library
+  >  (name bad)
+  >  (modules bad)
+  >  (foreign_stubs (language c) (names missing)))
+  > EOF
+  $ touch merlin-producers/good.ml merlin-producers/bad.ml
+  $ dune build merlin-producers/.merlin-conf/lib-good
+  File "merlin-producers/dune", line 5, characters 36-43:
+  5 |  (foreign_stubs (language c) (names missing)))
+                                          ^^^^^^^
+  Error: Object "missing" has no source; "missing.c" must be present.
+  [1]
+  $ dune build merlin-producers/.merlin-conf/lib-bad
+  File "merlin-producers/dune", line 5, characters 36-43:
+  5 |  (foreign_stubs (language c) (names missing)))
+                                          ^^^^^^^
+  Error: Object "missing" has no source; "missing.c" must be present.
+  [1]
+
+Requesting one module should not generate compilation rules for another. The
+trace records rule generation, not just which compilation actions execute.
+
+  $ mkdir module-producers
+  $ cat >module-producers/dune <<EOF
+  > (library
+  >  (name modules)
+  >  (wrapped false)
+  >  (modes byte))
+  > EOF
+  $ touch module-producers/a.ml module-producers/b.ml
+  $ DUNE_TRACE=debug dune build module-producers/.modules.objs/byte/a.cmo
+  $ dune trace cat | jq -sr '[.[] | select(.name == "rule_generated") | .args.target_files[]? | select(endswith(".cmo"))] | unique[]'
+  _build/default/module-producers/.modules.objs/byte/a.cmo
+  _build/default/module-producers/.modules.objs/byte/b.cmo
