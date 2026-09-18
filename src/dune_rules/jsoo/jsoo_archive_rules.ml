@@ -29,19 +29,31 @@ let find_library ~expander ~dir ~lib_name =
       | _ -> Memo.return None)
 ;;
 
-let library_cctx_memo =
+let library_memo =
   Memo.create
-    "jsoo-library-cctx"
+    "jsoo-library"
     ~input:(module Library_key)
     (fun (lib_dir, lib_name) ->
        let* sctx =
          Context.DB.by_dir lib_dir >>| Context.name >>= Super_context.find_exn
        in
        let* expander = Super_context.expander sctx ~dir:lib_dir in
-       find_library ~expander ~dir:lib_dir ~lib_name
+       find_library ~expander ~dir:lib_dir ~lib_name)
+;;
+
+let library_cctx_memo =
+  Memo.create
+    "jsoo-library-cctx"
+    ~input:(module Library_key)
+    (fun (lib_dir, lib_name) ->
+       Memo.exec library_memo (lib_dir, lib_name)
        >>= function
        | None -> Memo.return None
        | Some lib ->
+         let* sctx =
+           Context.DB.by_dir lib_dir >>| Context.name >>= Super_context.find_exn
+         in
+         let* expander = Super_context.expander sctx ~dir:lib_dir in
          let* dir_contents = Dir_contents.get sctx ~dir:lib_dir in
          let* scope = Scope.DB.find_by_dir lib_dir in
          (* [compile_context] may produce rules (via [modules_rules]) as implicit
@@ -115,13 +127,10 @@ let lib_archive_rules_memo =
     "jsoo-lib-archive-rules"
     ~input:(module Lib_archive_rule_key)
     (fun { Lib_archive_rule_key.lib_dir; lib_name; config } ->
-       Memo.exec library_cctx_memo (lib_dir, lib_name)
+       Memo.exec library_memo (lib_dir, lib_name)
        >>= function
        | None -> Memo.return None
-       | Some (lib, cctx) ->
-         let* sctx =
-           Context.DB.by_dir lib_dir >>| Context.name >>= Super_context.find_exn
-         in
+       | Some lib ->
          let obj_dir = Library.obj_dir ~dir:lib_dir lib in
          let obj_dir_dir = Obj_dir.dir obj_dir in
          let src =
@@ -134,17 +143,26 @@ let lib_archive_rules_memo =
          let+ rules =
            Rules.collect_unit (fun () ->
              Memo.parallel_iter Js_of_ocaml.Mode.all ~f:(fun mode ->
-               let in_context = Js_of_ocaml.Mode.Pair.select ~mode in_context in
-               Jsoo_rules.build_cm
-                 cctx
-                 ~dir:obj_dir_dir
-                 ~in_context
-                 ~mode
-                 ~config:(Some config)
-                 ~src:(Path.build src)
-                 ~deps:(Action_builder.return [])
-                 ~obj_dir
-               |> Super_context.add_rule sctx ~dir:obj_dir_dir ~loc:lib.buildable.loc))
+               let src = Path.build src in
+               let config = Some config in
+               let target = Jsoo_rules.cm_target ~mode ~src ~obj_dir ~config in
+               Rules.narrow (Target_mask.files [ target ]) (fun () ->
+                 Memo.exec library_cctx_memo (lib_dir, lib_name)
+                 >>= function
+                 | None -> Memo.return ()
+                 | Some (lib, cctx) ->
+                   let sctx = Compilation_context.super_context cctx in
+                   let in_context = Js_of_ocaml.Mode.Pair.select ~mode in_context in
+                   Jsoo_rules.build_cm
+                     cctx
+                     ~dir:obj_dir_dir
+                     ~in_context
+                     ~mode
+                     ~config
+                     ~src
+                     ~deps:(Action_builder.return [])
+                     ~obj_dir
+                   |> Super_context.add_rule sctx ~dir:obj_dir_dir ~loc:lib.buildable.loc)))
          in
          Some rules)
 ;;
@@ -158,7 +176,7 @@ let lib_archive_rules_for_dir ~dir =
   match parse_lib_archive_dir dir with
   | None -> Memo.return Not_found
   | Some (lib_dir, lib_name, None) ->
-    Memo.exec library_cctx_memo (lib_dir, lib_name)
+    Memo.exec library_memo (lib_dir, lib_name)
     >>| (function
      | None -> Not_found
      | Some _ -> Root)

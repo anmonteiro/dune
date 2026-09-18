@@ -32,15 +32,17 @@ let add_index_db_rule sctx ~dir ~external_odocls odocls =
 ;;
 
 let sherlodoc_dot_js sctx ~dir =
-  let program = resolve_sherlodoc sctx ~dir in
-  Super_context.add_rule
-    ~dir
-    sctx
-    (Command.run_dyn_prog
-       ~dir:(Path.build dir)
-       ~sandbox:Sandbox_config.needs_sandboxing
-       program
-       [ A "js"; Target (Paths.sherlodoc_dot_js ~dir) ])
+  let target = Paths.sherlodoc_dot_js ~dir in
+  Rules.narrow (Target_mask.files [ target ]) (fun () ->
+    let program = resolve_sherlodoc sctx ~dir in
+    Super_context.add_rule
+      ~dir
+      sctx
+      (Command.run_dyn_prog
+         ~dir:(Path.build dir)
+         ~sandbox:Sandbox_config.needs_sandboxing
+         program
+         [ A "js"; Target target ]))
 ;;
 
 let is_installed sctx ~dir =

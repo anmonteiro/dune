@@ -5,19 +5,6 @@ let output_file path =
   Path.Build.extend_basename path ~suffix:(Filename.of_string_exn ".output")
 ;;
 
-let rule_targets ~dir ~source_files ~lib_config ~dialects ~project (tests : Tests.t) =
-  List.fold_left
-    [ Exe_rules.rule_targets ~dir ~source_files ~lib_config ~dialects ~project tests.exes
-    ; Target_mask.files
-        (Exe_rules.output_files ~dir ~lib_config tests.exes |> List.map ~f:output_file)
-    ; (match tests.action with
-       | None -> Target_mask.empty
-       | Some action -> Action_unexpanded.rule_targets ~dir ~targets:Infer action)
-    ]
-    ~init:(Target_mask.aliases_in_directory dir)
-    ~f:Target_mask.union
-;;
-
 let runtest_alias mode ~dir =
   (match mode with
    | `js mode -> Jsoo_rules.js_of_ocaml_runtest_alias ~dir ~mode
@@ -27,9 +14,13 @@ let runtest_alias mode ~dir =
 
 let test_kind ~dir dir_contents name ext =
   (* let dir = Dir_contents.dir dir_contents in *)
-  let files = Dir_contents.text_files dir_contents in
   let expected_basename = name ^ ".expected" in
   let expected_basename_fn = Filename.of_string_exn expected_basename in
+  let+ files =
+    Dir_contents.text_files
+      dir_contents
+      ~mask:(Target_mask.files [ Path.Build.relative dir expected_basename ])
+  in
   if Filename.Array.Set.mem files expected_basename_fn
   then
     `Expect
@@ -72,6 +63,33 @@ let runtest_modes modes jsoo_enabled_modes project =
       | Jsoo mode ->
         Option.some_if (Js_of_ocaml.Mode.Pair.select ~mode jsoo_enabled_modes) (`js mode))
     |> List.sort_uniq ~compare:Poly.compare
+;;
+
+let test_alias ~dir runtest_alias name =
+  Alias.Name.of_string (Alias.Name.to_string (Alias.name runtest_alias) ^ "-" ^ name)
+  |> Alias.make ~dir
+;;
+
+let rule_targets ~dir ~source_files ~lib_config ~dialects ~project (tests : Tests.t) =
+  let+ aliases =
+    runtest_modes tests.exes.modes (Js_of_ocaml.Mode.Pair.make true) project
+    |> Memo.parallel_map ~f:(fun mode ->
+      let+ alias = runtest_alias mode ~dir in
+      alias
+      :: Nonempty_list.to_list_map tests.exes.names ~f:(fun (_, name) ->
+        test_alias ~dir alias name))
+    >>| List.concat
+  in
+  List.fold_left
+    [ Exe_rules.rule_targets ~dir ~source_files ~lib_config ~dialects ~project tests.exes
+    ; Target_mask.files
+        (Exe_rules.output_files ~dir ~lib_config tests.exes |> List.map ~f:output_file)
+    ; (match tests.action with
+       | None -> Target_mask.empty
+       | Some action -> Action_unexpanded.rule_targets ~dir ~targets:Infer action)
+    ]
+    ~init:(Target_mask.aliases aliases)
+    ~f:Target_mask.union
 ;;
 
 let rules (t : Tests.t) ~sctx ~dir ~scope ~expander ~dir_contents =
@@ -140,12 +158,7 @@ let rules (t : Tests.t) ~sctx ~dir ~scope ~expander ~dir_contents =
                  :: t.deps
                | `js JS | `exe | `bc -> t.deps)
           in
-          let alias =
-            [ Alias.Name.to_string (Alias.name runtest_alias); s ]
-            |> String.concat ~sep:"-"
-            |> Alias.Name.of_string
-            |> Alias.make ~dir
-          in
+          let alias = test_alias ~dir runtest_alias s in
           let expander = Expander.add_bindings expander ~bindings:extra_bindings in
           let sandbox =
             if Dune_project.dune_version project >= (3, 22)
@@ -153,7 +166,8 @@ let rules (t : Tests.t) ~sctx ~dir ~scope ~expander ~dir_contents =
             else Sandbox_config.no_special_requirements
           in
           let* action =
-            match test_kind ~dir:(Expander.dir expander) dir_contents s ext with
+            let* kind = test_kind ~dir:(Expander.dir expander) dir_contents s ext in
+            match kind with
             | `Regular ->
               let action =
                 let chdir = Expander.dir expander in

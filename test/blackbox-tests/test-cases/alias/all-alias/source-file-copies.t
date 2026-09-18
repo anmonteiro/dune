@@ -9,7 +9,7 @@ Add two files
 An empty project, should not copy any file.
 
   $ dune build
-  $ [ -d _build/default ] && find _build/default -name '*.ml'
+  $ if [ -d _build/default ]; then find _build/default -name '*.ml'; fi
 
 A project that only uses a.ml, should not copy b.ml
 

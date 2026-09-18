@@ -183,13 +183,13 @@ module Register_end_point (M : End_point) = struct
 end
 
 let rule_targets ~dir (stanza : Library.t) =
-  Sub_system_name.Map.foldi
-    stanza.sub_systems
-    ~init:Target_mask.empty
-    ~f:(fun name info acc ->
-      match Table.find rule_target_generators name with
-      | None -> acc
-      | Some targets -> Target_mask.union acc (targets ~dir ~stanza info))
+  Sub_system_name.Map.to_list stanza.sub_systems
+  |> Memo.List.fold_left ~init:Target_mask.empty ~f:(fun acc (name, info) ->
+    match Table.find rule_target_generators name with
+    | None -> Memo.return acc
+    | Some targets ->
+      let+ targets = targets ~dir ~stanza info in
+      Target_mask.union acc targets)
 ;;
 
 let gen_rules (c : Library_compilation_context.t) =
