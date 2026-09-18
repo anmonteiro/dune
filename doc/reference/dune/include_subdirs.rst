@@ -114,16 +114,18 @@ Renaming Directories
 
 .. versionadded:: 3.25
 
-The structured form of ``include_subdirs`` requires ``(lang dune 3.25)`` or later,
-including when ``dirs`` is omitted. In ``qualified`` mode, it accepts a ``dirs``
-field to allow renaming the module group interface names, independently of
-source directory naming:
+The structured form of ``include_subdirs`` uses a ``mode`` field and, in
+``qualified`` mode, accepts a ``dirs`` field to rename module group interfaces
+independently of source directory names:
 
 .. code:: dune
 
    (include_subdirs
     (mode qualified)
     (dirs (internal as public)))
+
+The structured form requires ``(lang dune 3.25)`` or later, including when
+``dirs`` is omitted.
 
 In this example, ``internal/leaf.ml`` becomes ``Public.Leaf`` rather than
 ``Internal.Leaf``. In a wrapped library named ``example``, clients refer to it as
