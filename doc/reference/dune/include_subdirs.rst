@@ -172,10 +172,7 @@ Directory mappings have the following restrictions:
 - Source and destination paths must have the same number of components. A
   mapping cannot flatten the hierarchy or introduce an extra level.
 - Destination components must form valid OCaml module names after capitalization.
-- A source directory can have only one destination. Repeating the same mapping
-  is allowed: ``(internal as public)`` and ``(./internal as ./public)`` are
-  equivalent. If a mapping uses variables, this rule applies to their expanded
-  values.
+- A source directory can have only one destination.
 - Mappings cannot overwrite another module or module group, or give a module
   two implementations or two interfaces, whether handwritten or generated.
   Pairing a generated implementation with a handwritten interface (or vice
