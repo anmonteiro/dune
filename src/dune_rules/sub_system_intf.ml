@@ -111,4 +111,10 @@ module type End_point = sig
     -> info:Info.t
     -> backends:Backend.t list
     -> unit Memo.t
+
+  val rule_targets
+    :  dir:Path.Build.t
+    -> stanza:Library.t
+    -> info:Info.t
+    -> Target_mask.t Memo.t
 end

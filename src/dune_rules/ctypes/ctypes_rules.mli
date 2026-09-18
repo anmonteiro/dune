@@ -1,5 +1,7 @@
 open Import
 
+val rule_targets : dir:Path.Build.t -> Ctypes_field.t -> Target_mask.t
+
 val gen_rules
   :  cctx:Compilation_context.t
   -> buildable:Buildable.t

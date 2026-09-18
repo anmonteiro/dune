@@ -20,6 +20,64 @@ let gen_select_rules sctx ~dir compile_info ~for_ =
           Action.Full.make (Copy_line_directive.action context ~src ~dst))))
 ;;
 
+let generated_sources ~dir (buildable : Buildable.t) =
+  let selects =
+    buildable.libraries @ Option.value buildable.melange_libraries ~default:[]
+    |> List.filter_map ~f:(function
+      | Lib_dep.Select select -> Some (Path.Build.append_local dir select.result_fn)
+      | Direct _ | Re_export _ | Instantiate _ -> None)
+  in
+  let ctypes =
+    Option.to_list buildable.ctypes
+    |> List.concat_map ~f:Ctypes_field.generated_ml_and_c_files
+    |> List.map ~f:(Path.Build.relative dir)
+  in
+  selects @ ctypes
+;;
+
+let rule_targets ~dir ~source_files ~lib_config ~dialects (buildable : Buildable.t) =
+  let generated = generated_sources ~dir buildable in
+  let sources =
+    generated
+    @ List.concat_map source_files ~f:(fun (dir, files) ->
+      Filename.Array.Set.to_list_map files ~f:(Path.Build.relative_fname dir))
+  in
+  let source_files =
+    (dir, List.map generated ~f:Path.Build.basename |> Filename.Array.Set.of_list)
+    :: source_files
+  in
+  let foreign_kinds =
+    List.map buildable.foreign_stubs ~f:(fun stubs -> Foreign.Source.Stubs stubs)
+    @ List.map (Option.to_list buildable.ctypes) ~f:(fun ctypes ->
+      Foreign.Source.Ctypes ctypes)
+  in
+  let preprocessing =
+    List.fold_left source_files ~init:Target_mask.empty ~f:(fun mask (dir, _) ->
+      Target_mask.union
+        mask
+        (Pp_spec_rules.rule_target_families
+           ~dir
+           ~dialects
+           ~preprocess:buildable.preprocess.config
+           ~empty_intf:buildable.empty_module_interface_if_absent))
+  in
+  List.fold_left
+    [ Target_mask.files generated
+    ; preprocessing
+    ; Pp_spec_rules.rule_targets ~dialects ~preprocess:buildable.preprocess.config sources
+    ; Target_mask.subtree (Path.Build.relative dir Melange.Source.dir)
+    ; Foreign_rules.rule_targets
+        ~dir
+        ~ext_obj:lib_config.Lib_config.ext_obj
+        ~kinds:foreign_kinds
+    ; (match buildable.ctypes with
+       | None -> Target_mask.empty
+       | Some ctypes -> Ctypes_rules.rule_targets ~dir ctypes)
+    ]
+    ~init:(Pp_spec_rules.lint_rule_targets ~dir buildable.lint)
+    ~f:Target_mask.union
+;;
+
 let with_lib_deps (t : Context.t) merlin_ident ~dir ~f =
   match Context.merlin t with
   | false -> f ()

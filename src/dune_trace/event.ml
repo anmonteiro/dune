@@ -525,6 +525,10 @@ let args_of_targets =
     paths root "target_files" files @ paths root "target_dirs" dirs
 ;;
 
+let rule_generated targets =
+  Event.instant ~name:"rule_generated" ~args:(args_of_targets targets) (Time.now ()) Debug
+;;
+
 let make_exit exit =
   match exit with
   | Ok n -> [ "exit", Arg.int n ]

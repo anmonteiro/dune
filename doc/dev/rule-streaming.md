@@ -80,3 +80,70 @@ Interpreting a `library` stanza requires knowing the set of `.ml`
 files in the current directory. Knowing this requires interpreting
 `copy_files` in the current directory. So the interpretation of
 `library` stanzas will need to go under a `narrow` as well.
+
+## Pull-based recursive rule loading
+
+The implementation represents `Rules.t` as a tree of direct rules and memoized
+suspended producers. Each suspension carries a `Target_mask.t` describing the
+file targets, directory targets, and aliases it may produce. Masks combine
+exact paths, subtrees, directory-local regions, filename predicates, and
+extension families. Output declarations live beside their rule generators;
+the engine does not impose a fixed source/compilation split.
+
+`Rules.narrow mask (fun () -> ...)` registers a suspension. Forcing it may
+produce both rules and further suspensions. Every enclosing mask applies to
+the resulting outputs, and emitting a rule or alias outside their
+intersection is an internal error. `Rules.defer` additionally exposes the
+producer's memoized result, allowing compilation contexts to be shared without
+generating their rules twice.
+
+Each directory inherits its parent's rule tree and adds its own producers.
+Rules for descendants are therefore available without redirecting directory
+loading back to their generating ancestor. Generators remain restricted to
+their own directory and its descendants.
+
+Target, alias, and file-selection requests have separate masks. `Rules.load`
+recursively forces only suspensions whose masks intersect the request.
+Selecting a multi-target rule extends the request to its other outputs, then
+repeats this process until all overlapping producers are loaded. This keeps
+duplicate-rule checks and file/directory collisions independent of which
+output was requested first. Source copies, promotion, and fallback retain the
+same validation as complete loading.
+
+Globs inside a directory target first materialize that target with a
+directory-only request. File producers that depend on its contents, such as
+`copy_files`, need not be evaluated before the directory exists. Ordinary
+target requests still check file/directory conflicts after discovery; file
+outputs of mixed file/directory rules retain the full multi-target closure.
+
+Physical source discovery is separate from module selection and directory
+mapping expansion. Module lists and directory mappings can therefore read
+source files or generated inputs from their own directory or
+`include_subdirs` group. File-selection requests also let `copy_files`
+inspect matching outputs without loading unrelated compilation rules.
+Generators such as Menhir and library subsystems participate through their
+own declarations and suspensions. Dependencies on the compilation that
+consumes these inputs remain genuine cycles.
+
+Source inventories retain each producer's mask and discover filenames only for
+the requested source family. OCaml, foreign, documentation, and Rocq discovery
+therefore need not force unrelated data rules. Header and test-expectation
+queries select their own filenames. Compilation rules are suspended per module,
+with generated alias/root sources suspended separately. Merlin configurations
+are per stanza, and alias producers declare their actual alias names. JS/Wasm
+archives and legacy documentation outputs also have separate producers.
+
+Validation associated with a producer runs when it is forced. Formatting can
+therefore proceed without evaluating unrelated buildable stanzas or installing
+their locked dependencies.
+
+Module selection and ownership validation still share a directory-group
+namespace. Selecting sources by extension does not make an explicit modules
+field independent of other producers of OCaml sources in that group.
+
+Cleanup only considers entries present when a directory is first loaded. It
+conservatively retains possible outputs of unforced suspensions and refines
+that set as rules are revealed, without deleting fresh temporary files from
+running actions. Full compatibility with unsandboxed actions is intentionally
+deferred: a scratch path left by an earlier build can still be recreated before
+a later query removes it. There is no language-version gate.

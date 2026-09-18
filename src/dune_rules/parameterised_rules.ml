@@ -454,7 +454,5 @@ let gen_rules ~sctx ~dir rest =
     @@ fun () ->
     let* lib = resolve_instantiation scope instance_name in
     instantiate_jsoo ~sctx lib s_config
-  | _ ->
-    Memo.return
-      (Build_config.Gen_rules.redirect_to_parent Build_config.Gen_rules.Rules.empty)
+  | _ -> Memo.return Build_config.Gen_rules.no_rules
 ;;

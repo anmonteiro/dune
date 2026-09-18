@@ -380,7 +380,16 @@ module Internal = struct
   and build_file path = Memo.exec (Lazy.force build_file_memo) path >>| fst
 
   and build_dir path =
-    let+ (_ : Digest.t), kind = Memo.exec (Lazy.force build_file_memo) path in
+    let* directory_rule =
+      match Path.as_in_build_dir path with
+      | None -> Memo.return None
+      | Some path -> Load_rules.get_directory_rule path
+    in
+    let+ (_ : Digest.t), kind =
+      match directory_rule with
+      | None -> Memo.exec (Lazy.force build_file_memo) path
+      | Some rule -> build_rule_target (Path.as_in_build_dir_exn path) rule
+    in
     match kind with
     | Dir_target { targets } -> targets
     | File_target ->
@@ -878,6 +887,12 @@ module Internal = struct
   (* A rule can have multiple targets but calls to [execute_rule] are memoized,
      so the rule will be executed only once. *)
   and build_file_impl path =
+    Load_rules.get_rule_or_source path
+    >>= function
+    | Source digest -> Memo.return (digest, File_target)
+    | Rule (path, rule) -> build_rule_target path rule
+
+  and build_rule_target path rule =
     let directory_digest contents =
       Digest.Feed.compute_digest
         (fun hasher contents ->
@@ -889,55 +904,51 @@ module Internal = struct
                Digest.Feed.string hasher (Path.Local.to_string path)))
         contents
     in
-    Load_rules.get_rule_or_source path
-    >>= function
-    | Source digest -> Memo.return (digest, File_target)
-    | Rule (path, rule) ->
-      let* { facts = _; targets } =
-        Memo.push_stack_frame
-          (fun () -> execute_rule rule)
-          ~human_readable_description:(fun () ->
-            Pp.text (Path.to_string_maybe_quoted (Path.build path)))
-      in
-      (match Targets.Produced.find_any targets path with
-       | Some (Left digest) -> Memo.return (digest, File_target)
-       | Some (Right contents) ->
-         let digest = directory_digest contents in
-         Memo.return (digest, Dir_target { targets })
-       | None ->
-         (* CR-someday amokhov: The most important reason we end up here is
+    let* { facts = _; targets } =
+      Memo.push_stack_frame
+        (fun () -> execute_rule rule)
+        ~human_readable_description:(fun () ->
+          Pp.text (Path.to_string_maybe_quoted (Path.build path)))
+    in
+    match Targets.Produced.find_any targets path with
+    | Some (Left digest) -> Memo.return (digest, File_target)
+    | Some (Right contents) ->
+      let digest = directory_digest contents in
+      Memo.return (digest, Dir_target { targets })
+    | None ->
+      (* CR-someday amokhov: The most important reason we end up here is
           [No_such_file]. I think some of the outcomes above are impossible
           but some others will benefit from a better error. To be refined. *)
-         let target =
-           Path.Build.drop_build_context_exn path |> Path.Source.to_string_maybe_quoted
-         in
-         let matching_dirs =
-           Filename.Set.to_list_map rule.targets.dirs ~f:(fun dir ->
-             (* CR-someday rleshchinskiy: This test can probably be simplified. *)
-             let dir = Path.Build.relative_fname rule.targets.root dir in
-             match Path.Build.is_descendant path ~of_:dir with
-             | true -> [ dir ]
-             | false -> [])
-           |> List.concat
-         in
-         let matching_target =
-           match matching_dirs with
-           | [ dir ] ->
-             Path.Build.drop_build_context_exn dir |> Path.Source.to_string_maybe_quoted
-           | [] | _ :: _ ->
-             Code_error.raise
-               "Multiple matching directory targets"
-               [ "targets", Targets.Validated.to_dyn rule.targets ]
-         in
-         User_error.raise
-           ~loc:(Rule.loc rule)
-           ~needs_stack_trace:true
-           [ Pp.textf
-               "This rule defines a directory target %S that matches the requested path \
-                %S but the rule's action didn't produce it"
-               matching_target
-               target
-           ])
+      let target =
+        Path.Build.drop_build_context_exn path |> Path.Source.to_string_maybe_quoted
+      in
+      let matching_dirs =
+        Filename.Set.to_list_map rule.targets.dirs ~f:(fun dir ->
+          (* CR-someday rleshchinskiy: This test can probably be simplified. *)
+          let dir = Path.Build.relative_fname rule.targets.root dir in
+          match Path.Build.is_descendant path ~of_:dir with
+          | true -> [ dir ]
+          | false -> [])
+        |> List.concat
+      in
+      let matching_target =
+        match matching_dirs with
+        | [ dir ] ->
+          Path.Build.drop_build_context_exn dir |> Path.Source.to_string_maybe_quoted
+        | [] | _ :: _ ->
+          Code_error.raise
+            "Multiple matching directory targets"
+            [ "targets", Targets.Validated.to_dyn rule.targets ]
+      in
+      User_error.raise
+        ~loc:(Rule.loc rule)
+        ~needs_stack_trace:true
+        [ Pp.textf
+            "This rule defines a directory target %S that matches the requested path %S \
+             but the rule's action didn't produce it"
+            matching_target
+            target
+        ]
 
   and execute_anonymous_action (anon : Rule.Anonymous_action.t) =
     let* action, facts = Action_builder.evaluate_and_collect_facts anon.action in
@@ -969,7 +980,7 @@ module Internal = struct
     let dir = File_selector.dir g in
     (* CR-soon amokhov: Change [Load_rules.load_dir] to return [Filename_set.t]s to save
        a bunch of set/list operations and reduce code duplication. *)
-    Load_rules.load_dir ~dir
+    Load_rules.load_file_selector g
     >>= function
     | Source { filenames } | External { filenames } ->
       Filename_set.create ~dir ~filter:(File_selector.test_basename g) filenames
@@ -1097,21 +1108,39 @@ include Internal
    the results of both [Action_builder.static_deps] and [Action_builder.exec]
    are cached. *)
 let file_exists fn =
-  Load_rules.load_dir ~dir:(Path.parent_exn fn)
-  >>= function
-  | Source { filenames } | External { filenames } ->
-    Filename.Array.Set.mem filenames (Path.basename fn) |> Memo.return
-  | Build { rules_here; _ } ->
-    Memo.return
-      (Path.Build.Map.mem rules_here.by_file_targets (Path.as_in_build_dir_exn fn))
-  | Build_under_directory_target { directory_target_ancestor } ->
-    let+ path_map = build_dir (Path.build directory_target_ancestor) in
-    (* Note that in the case of directory targets, we also check if directories exist. *)
-    Targets.Produced.mem_any path_map (Path.as_in_build_dir_exn fn)
+  match Path.as_in_build_dir fn with
+  | None ->
+    Load_rules.load_dir ~dir:(Path.parent_exn fn)
+    >>| (function
+     | Source { filenames } | External { filenames } ->
+       Filename.Array.Set.mem filenames (Path.basename fn)
+     | Build _ | Build_under_directory_target _ ->
+       Code_error.raise "Build directory for a source path" [ "path", Path.to_dyn fn ])
+  | Some path when Path.Build.equal path Path.Build.root -> Memo.return false
+  | Some path ->
+    Load_rules.get_rule fn
+    >>= (function
+     | None -> Memo.return false
+     | Some { Rule.targets; _ } ->
+       if Path.Build.equal targets.root (Path.Build.parent_exn path)
+       then Memo.return (Filename.Set.mem targets.files (Path.Build.basename path))
+       else (
+         let directory_target_ancestor =
+           Filename.Set.find targets.dirs ~f:(fun name ->
+             Path.Build.is_descendant
+               path
+               ~of_:(Path.Build.relative_fname targets.root name))
+           |> Option.value_exn
+           |> Path.Build.relative_fname targets.root
+         in
+         let+ path_map = build_dir (Path.build directory_target_ancestor) in
+         (* Inside a directory target, directory names count as existing files too. *)
+         Targets.Produced.mem_any path_map path))
 ;;
 
 let files_of ~dir =
-  Load_rules.load_dir ~dir
+  Load_rules.load_file_selector
+    (File_selector.of_predicate_lang ~dir Predicate_lang.true_)
   >>= function
   | Source { filenames } | External { filenames } ->
     Memo.return (Filename_set.create ~dir filenames)

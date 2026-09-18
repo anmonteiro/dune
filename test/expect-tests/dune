@@ -14,6 +14,8 @@
   stdune
   dune_util
   dune_engine
+  targets
+  predicate_lang
   dune_scheduler
   dune_threaded_console
   dune_rules

@@ -827,11 +827,13 @@ let build_cm'
     ~sourcemap
 ;;
 
+let cm_target ~mode ~src ~obj_dir ~config =
+  let name = with_js_ext ~mode (Path.basename src |> Filename.to_string) in
+  in_obj_dir ~obj_dir ~config [ name ]
+;;
+
 let build_from_cm sctx ~dir ~in_context ~mode ~src ~obj_dir ~shapes ~config ~sourcemap =
-  let target =
-    let name = with_js_ext ~mode (Path.basename src |> Filename.to_string) in
-    in_obj_dir ~obj_dir ~config [ name ]
-  in
+  let target = cm_target ~mode ~src ~obj_dir ~config in
   build_cm'
     sctx
     ~dir
@@ -993,17 +995,18 @@ let setup_separate_compilation_rules sctx components =
                     [ "stdlib"; with_js_ext ~mode "stdlib.cma" ])
                :: l
            in
-           build_cm'
-             sctx
-             ~dir
-             ~in_context:Js_of_ocaml.In_context.default
-             ~mode
-             ~src
-             ~target
-             ~config:(Some (Action_builder.return config))
-             ~sourcemap:Js_of_ocaml.Sourcemap.Inline
-             ~shapes
-           |> Super_context.add_rule sctx ~dir)))
+           Rules.narrow (Target_mask.files [ target ]) (fun () ->
+             build_cm'
+               sctx
+               ~dir
+               ~in_context:Js_of_ocaml.In_context.default
+               ~mode
+               ~src
+               ~target
+               ~config:(Some (Action_builder.return config))
+               ~sourcemap:Js_of_ocaml.Sourcemap.Inline
+               ~shapes
+             |> Super_context.add_rule sctx ~dir))))
   | _ -> Memo.return ()
 ;;
 
@@ -1236,8 +1239,13 @@ let build_exe
 let runner = "node"
 
 let js_of_ocaml_runtest_alias ~dir ~mode =
-  let+ js_of_ocaml = jsoo_env ~dir ~mode in
-  match js_of_ocaml.runtest_alias with
-  | Some a -> a
-  | None -> Alias0.runtest
+  let+ alias =
+    Env_stanza_db.value_opt ~dir ~f:(fun (env : Dune_env.config) ->
+      let config =
+        Js_of_ocaml.Mode.select ~mode ~js:env.js_of_ocaml ~wasm:env.wasm_of_ocaml
+      in
+      Memo.return config.runtest_alias)
+  in
+  Option.iter alias ~f:Alias0.register_as_standard;
+  Option.value alias ~default:Alias0.runtest
 ;;
