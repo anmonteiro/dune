@@ -35,7 +35,6 @@ let implicit_intf_targets ~source_files ~project =
 let rule_targets ~dir ~source_files ~lib_config ~dialects ~project (exes : Executables.t) =
   let outputs = output_files ~dir ~lib_config exes in
   let obj_dir = Executables.obj_dir exes ~dir in
-  let merlin = Merlin_ident.for_exe_target (Executables.exe_target exes) in
   let modules =
     List.fold_left source_files ~init:Target_mask.empty ~f:(fun acc (dir, _) ->
       Target_mask.union acc (Module_compilation.rule_targets ~dir ~obj_dir))
@@ -54,14 +53,22 @@ let rule_targets ~dir ~source_files ~lib_config ~dialects ~project (exes : Execu
     [ modules
     ; wasm
     ; Target_mask.files
-        (Merlin_ident.merlin_file_path dir merlin
-         :: (outputs
-             @ List.map outputs ~f:(fun path ->
-               Path.Build.set_extension path ~ext:Filename.Extension.map)))
+        (outputs
+         @ List.map outputs ~f:(fun path ->
+           Path.Build.set_extension path ~ext:Filename.Extension.map))
     ; Target_mask.files
         (Option.to_list exes.bootstrap_info |> List.map ~f:(Path.Build.relative dir))
     ; Buildable_rules.rule_targets ~dir ~source_files ~lib_config ~dialects exes.buildable
     ; implicit_intf_targets ~source_files ~project
+    ; Target_mask.aliases
+        (List.map
+           (Alias0.check
+            :: Alias0.unused_libs
+            ::
+            (match exes.install_conf with
+             | None -> []
+             | Some _ -> [ Alias0.all ]))
+           ~f:(Alias.make ~dir))
     ]
     ~init:Target_mask.empty
     ~f:Target_mask.union

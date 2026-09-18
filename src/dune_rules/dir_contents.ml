@@ -17,11 +17,37 @@ let loc_of_dune_file st_dir =
   |> Loc.in_file
 ;;
 
+module Source_files = struct
+  type generated =
+    { targets : Target_mask.t
+    ; files : Filename.t list Memo.Lazy.t
+    }
+
+  type t =
+    { dir : Path.Build.t
+    ; known : Filename.Array.Set.t
+    ; generated : generated list
+    }
+
+  let empty ~dir = { dir; known = Filename.Array.Set.empty; generated = [] }
+
+  let get { dir; known; generated } ~mask =
+    let+ generated =
+      List.filter_map generated ~f:(fun { targets; files } ->
+        Option.some_if (Target_mask.intersects targets mask) files)
+      |> Memo.parallel_map ~f:Memo.Lazy.force
+    in
+    Filename.Array.Set.union known (Filename.Array.Set.of_list (List.concat generated))
+    |> Filename.Array.Set.filter ~f:(fun file ->
+      Target_mask.mem_file mask (Path.Build.relative_fname dir file))
+  ;;
+end
+
 type t =
   { kind : kind
   ; dir : Path.Build.t
   ; dir_renames : (Filename.t list * Filename.t list) list
-  ; text_files : Filename.Array.Set.t
+  ; text_files : Source_files.t
   ; foreign_sources : Foreign_sources.t Memo.Lazy.t
   ; mlds : (Documentation.t * Doc_sources.mld list) list Memo.Lazy.t
   ; rocq : Rocq_sources.t Memo.Lazy.t
@@ -40,7 +66,7 @@ let empty kind ~dir ~source_dir =
   ; dir
   ; dir_renames = []
   ; source_dir
-  ; text_files = Filename.Array.Set.empty
+  ; text_files = Source_files.empty ~dir
   ; ocaml = Memo.Lazy.of_val Ml_sources.empty
   ; melange = Memo.Lazy.of_val Ml_sources.empty
   ; mlds = Memo.Lazy.of_val []
@@ -56,7 +82,7 @@ module Standalone_or_root = struct
     }
 
   type physical =
-    { dirs : Source_file_dir.t Nonempty_list.t
+    { dirs : (Source_file_dir.t * Source_files.t) Nonempty_list.t
     ; rules : Rules.t
     }
 
@@ -81,9 +107,13 @@ module Standalone_or_root = struct
           }
         ]
     in
+    let physical_dirs =
+      Nonempty_list.map dirs ~f:(fun source ->
+        source, { Source_files.dir; known = source.files; generated = [] })
+    in
     { source_dirs = Memo.Lazy.of_val dirs
     ; rules = Memo.Lazy.of_val Rules.empty
-    ; physical = Memo.Lazy.of_val { dirs; rules = Rules.empty }
+    ; physical = Memo.Lazy.of_val { dirs = physical_dirs; rules = Rules.empty }
     ; contents =
         Memo.Lazy.create ~name:"empty-dir-contents" (fun () ->
           Memo.return
@@ -105,9 +135,12 @@ module Standalone_or_root = struct
   let source_directories t = Memo.Lazy.force t.source_dirs
 
   let source_files t =
-    let+ physical = Memo.Lazy.force t.physical in
-    Nonempty_list.to_list_map physical.dirs ~f:(fun { Source_file_dir.dir; files; _ } ->
-      dir, files)
+    let* physical = Memo.Lazy.force t.physical in
+    Memo.parallel_map
+      (Nonempty_list.to_list physical.dirs)
+      ~f:(fun ({ Source_file_dir.dir; _ }, files) ->
+        let+ files = Source_files.get files ~mask:(Target_mask.files_in_directory dir) in
+        dir, files)
   ;;
 end
 
@@ -137,7 +170,7 @@ let dirs t =
       [ "dir", Path.Build.to_dyn t.dir ]
 ;;
 
-let text_files t = t.text_files
+let text_files t ~mask = Source_files.get t.text_files ~mask
 let foreign_sources t = Memo.Lazy.force t.foreign_sources
 
 let mlds t ~(stanza : Documentation.t) =
@@ -180,67 +213,78 @@ end = struct
   let prepare_text_files sctx st_dir stanzas ~dir ~src_dir =
     Rules.collect (fun () ->
       let from_source = Source_tree.Dir.filenames st_dir in
-      match stanzas with
-      | [] -> Memo.return (Memo.Lazy.of_val from_source)
-      | _ :: _ ->
-        (* Interpret a few stanzas in order to determine the list of files generated
-         by the user. *)
-        let+ generated_files =
+      let* known =
+        Memo.List.concat_map stanzas ~f:(fun stanza ->
+          match Stanza.repr stanza with
+          | Rocq_stanza.Rocqpp.T { modules; _ } ->
+            Rocq_sources.mlg_files ~sctx ~dir ~modules
+            >>| List.rev_map ~f:(fun mlg_file ->
+              Path.Build.set_extension mlg_file ~ext:Filename.Extension.ml
+              |> Path.Build.basename)
+          | Rocq_stanza.Extraction.T s ->
+            Memo.return
+              (Rocq_stanza.Extraction.target_fnames s
+               |> List.map ~f:Filename.of_string_exn)
+          | Library.T { buildable; _ }
+          | Executables.T { buildable; _ }
+          | Tests.T { exes = { buildable; _ }; _ } ->
+            let dialects = Source_tree.Dir.project st_dir |> Dune_project.dialects in
+            let select_deps_files = select_deps_files ~dialects buildable.libraries in
+            let ctypes_files =
+              Option.map buildable.ctypes ~f:Ctypes_field.generated_ml_and_c_files
+              |> Option.value ~default:[]
+            in
+            Memo.return
+              (List.map (select_deps_files @ ctypes_files) ~f:Filename.of_string_exn)
+          | _ -> Memo.return [])
+      in
+      let+ generated =
+        match stanzas with
+        | [] -> Memo.return []
+        | _ :: _ ->
           let* expander = Super_context.expander sctx ~dir in
           Memo.parallel_map stanzas ~f:(fun stanza ->
-            let mask =
+            let producer =
               match Stanza.repr stanza with
-              | Rule_conf.T rule -> Simple_rules.rule_targets ~dir rule
-              | Copy_files.T def -> Simple_rules.copy_files_targets ~dir def
-              | Generate_sites_module_stanza.T def ->
-                Target_mask.files
-                  [ Path.Build.relative dir (Module_name.to_string def.module_ ^ ".ml") ]
-              | _ -> Target_mask.empty
-            in
-            Rules.defer mask (fun () ->
-              let* () = Memo.Lazy.force Configurator_rules.force_files in
-              match Stanza.repr stanza with
-              | Rocq_stanza.Rocqpp.T { modules; _ } ->
-                Rocq_sources.mlg_files ~sctx ~dir ~modules
-                >>| List.rev_map ~f:(fun mlg_file ->
-                  Path.Build.set_extension mlg_file ~ext:Filename.Extension.ml
-                  |> Path.Build.basename)
-              | Rocq_stanza.Extraction.T s ->
-                Memo.return
-                  (Rocq_stanza.Extraction.target_fnames s
-                   |> List.map ~f:Filename.of_string_exn)
-              | Rule_conf.T rule ->
-                Simple_rules.user_rule sctx rule ~dir ~expander
-                >>| (function
-                 | None -> []
-                 | Some targets ->
-                   (* CR-someday amokhov: Do not ignore directory targets. *)
-                   Filename.Set.to_list targets.files)
+              | Rule_conf.T rule -> Some (Simple_rules.rule_targets ~dir rule, `Rule rule)
               | Copy_files.T def ->
-                Simple_rules.copy_files sctx def ~src_dir ~dir ~expander
-                >>| Path.Set.to_list_map ~f:Path.basename
+                Some (Simple_rules.copy_files_targets ~dir def, `Copy_files def)
               | Generate_sites_module_stanza.T def ->
-                Generate_sites_module_rules.setup_rules sctx ~dir def
-                >>| fun fn -> [ Filename.of_string_exn fn ]
-              | Library.T { buildable; _ }
-              | Executables.T { buildable; _ }
-              | Tests.T { exes = { buildable; _ }; _ } ->
-                let dialects = Source_tree.Dir.project st_dir |> Dune_project.dialects in
-                let select_deps_files = select_deps_files ~dialects buildable.libraries in
-                let ctypes_files =
-                  (* Also manually add files generated by ctypes rules. *)
-                  Option.map buildable.ctypes ~f:Ctypes_field.generated_ml_and_c_files
-                  |> Option.value ~default:[]
-                in
-                Memo.return
-                  (List.map (select_deps_files @ ctypes_files) ~f:Filename.of_string_exn)
-              | _ -> Memo.return []))
-        in
-        Memo.lazy_ ~name:"source-filenames" (fun () ->
-          let+ generated_files = Memo.parallel_map generated_files ~f:Memo.Lazy.force in
-          Filename.Array.Set.union
-            (List.concat generated_files |> Filename.Array.Set.of_list)
-            from_source))
+                Some
+                  ( Target_mask.files
+                      [ Path.Build.relative dir (Module_name.to_string def.module_ ^ ".ml")
+                      ]
+                  , `Generate_sites_module def )
+              | _ -> None
+            in
+            match producer with
+            | None -> Memo.return None
+            | Some (targets, producer) ->
+              let+ files =
+                Rules.defer targets (fun () ->
+                  let* () = Memo.Lazy.force Configurator_rules.force_files in
+                  match producer with
+                  | `Rule rule ->
+                    Simple_rules.user_rule sctx rule ~dir ~expander
+                    >>| (function
+                     | None -> []
+                     | Some targets ->
+                       (* CR-someday amokhov: Do not ignore directory targets. *)
+                       Filename.Set.to_list targets.files)
+                  | `Copy_files def ->
+                    Simple_rules.copy_files sctx def ~src_dir ~dir ~expander
+                    >>| Path.Set.to_list_map ~f:Path.basename
+                  | `Generate_sites_module def ->
+                    Generate_sites_module_rules.setup_rules sctx ~dir def
+                    >>| fun fn -> [ Filename.of_string_exn fn ])
+              in
+              Some { Source_files.targets; files })
+          >>| List.filter_opt
+      in
+      { Source_files.dir
+      ; known = Filename.Array.Set.union from_source (Filename.Array.Set.of_list known)
+      ; generated
+      })
   ;;
 
   let prepare_sources sctx source_dirs =
@@ -268,15 +312,46 @@ end = struct
     in
     let physical =
       Memo.lazy_ ~name:"physical-contents" (fun () ->
-        let* prepared = Memo.Lazy.force prepared in
-        let+ dirs =
-          Memo.parallel_map prepared ~f:(fun (source, files, _) ->
-            let+ files = Memo.Lazy.force files in
-            { source with Source_file_dir.files })
+        let+ prepared = Memo.Lazy.force prepared
         and+ rules = Memo.Lazy.force rules in
-        { Standalone_or_root.dirs = Nonempty_list.of_list_exn dirs; rules })
+        let dirs =
+          List.map prepared ~f:(fun (source, files, _) -> source, files)
+          |> Nonempty_list.of_list_exn
+        in
+        { Standalone_or_root.dirs; rules })
     in
     physical, rules
+  ;;
+
+  let source_dirs_with_files dirs ~extensions =
+    let+ dirs =
+      Memo.parallel_map
+        (Nonempty_list.to_list dirs)
+        ~f:(fun (({ Source_file_dir.dir; _ } as source), files) ->
+          let+ files =
+            Source_files.get files ~mask:(Target_mask.file_extensions ~dir extensions)
+          in
+          { source with Source_file_dir.files })
+    in
+    Nonempty_list.of_list_exn dirs
+  ;;
+
+  let ml_source_extensions project =
+    let extensions =
+      Dialect.DB.fold (Dune_project.dialects project) ~init:[] ~f:(fun dialect acc ->
+        List.filter_map Ml_kind.all ~f:(Dialect.extension dialect) @ acc)
+    in
+    Filename.Extension.Set.of_list extensions
+  ;;
+
+  let foreign_source_extensions ~dune_version =
+    Foreign_language.source_extensions
+    |> String.Map.to_list
+    |> List.filter_map ~f:(fun (extension, (_, since)) ->
+      Option.some_if
+        (dune_version >= since)
+        (Filename.Extension.of_string_exn ("." ^ extension)))
+    |> Filename.Extension.Set.of_list
   ;;
 
   module Key = struct
@@ -312,7 +387,16 @@ end = struct
 
   let mlds ~sctx ~dir ~dune_file ~files =
     Memo.lazy_ ~name:"documentation-sources" (fun () ->
-      let* expander = Super_context.expander sctx ~dir in
+      let* expander = Super_context.expander sctx ~dir
+      and* files =
+        Source_files.get
+          files
+          ~mask:
+            (Target_mask.file_extensions
+               ~dir
+               (Filename.Extension.Set.singleton
+                  (Filename.Extension.of_string_exn ".mld")))
+      in
       Doc_sources.build_mlds_map dune_file ~dir ~files expander)
   ;;
 
@@ -321,7 +405,9 @@ end = struct
       let lookup_vlib = lookup_vlib sctx ~current_dir:dir ~for_ in
       let libs = Scope.DB.find_by_dir dir >>| Scope.libs in
       let* expander = Super_context.expander sctx ~dir
-      and* dirs = Memo.Lazy.force dirs in
+      and* dirs =
+        source_dirs_with_files dirs ~extensions:(ml_source_extensions project)
+      in
       Ml_sources.make
         ~expander
         ~libs
@@ -369,8 +455,7 @@ end = struct
           in
           let project = Dune_file.project d in
           let+ { Standalone_or_root.dirs; rules = _ } = Memo.Lazy.force physical in
-          let files = (Nonempty_list.hd dirs).files in
-          let dirs = Memo.Lazy.of_val dirs in
+          let _, files = Nonempty_list.hd dirs in
           let loc = loc_of_dune_file st_dir in
           let ml, melange =
             language_sources sctx ~dir ~project ~lib_config ~loc ~include_subdirs ~dirs
@@ -389,12 +474,22 @@ end = struct
                   Memo.lazy_ ~name:"standalone-foreign-sources" (fun () ->
                     let dune_version = Dune_project.dune_version project in
                     let* stanzas = stanzas
-                    and* dirs = Memo.Lazy.force dirs in
+                    and* dirs =
+                      source_dirs_with_files
+                        dirs
+                        ~extensions:(foreign_source_extensions ~dune_version)
+                    in
                     Foreign_sources.make stanzas ~dir ~dune_version ~dirs)
               ; rocq =
                   Memo.lazy_ ~name:"standalone-rocq-sources" (fun () ->
                     let+ stanzas = stanzas
-                    and+ dirs = Memo.Lazy.force dirs in
+                    and+ dirs =
+                      source_dirs_with_files
+                        dirs
+                        ~extensions:
+                          (Filename.Extension.Set.of_list
+                             [ Filename.Extension.v; Filename.Extension.expected ])
+                    in
                     Rocq_sources.of_dir stanzas ~dir ~include_subdirs ~dirs)
               }
           ; subdirs = Path.Build.Map.empty
@@ -583,7 +678,7 @@ end = struct
         (fun () ->
            let ctx = Super_context.context sctx in
            let project = Dune_file.project dune_file in
-           let* { Standalone_or_root.dirs = root :: subdirs; rules = _ } =
+           let* { Standalone_or_root.dirs = (root, files) :: subdirs; rules = _ } =
              Memo.Lazy.force physical
            in
            let+ dir_renames =
@@ -591,14 +686,14 @@ end = struct
              | Unqualified | Qualified { dirs = [] } -> Memo.return Dir_renames.empty
              | Qualified { dirs } -> Dir_renames.expand sctx ~dir dirs
            in
-           let files = root.files in
            let subdirs =
-             List.map subdirs ~f:(fun (source : Source_file_dir.t) ->
-               { source with
-                 path_to_root = Dir_renames.translate dir_renames source.path_to_root
-               })
+             List.map subdirs ~f:(fun ((source : Source_file_dir.t), files) ->
+               ( { source with
+                   path_to_root = Dir_renames.translate dir_renames source.path_to_root
+                 }
+               , files ))
            in
-           let dirs = Memo.Lazy.of_val Nonempty_list.(root :: subdirs) in
+           let dirs = Nonempty_list.((root, files) :: subdirs) in
            let lib_config =
              let+ ocaml = Context.ocaml ctx in
              ocaml.lib_config
@@ -610,13 +705,23 @@ end = struct
              Memo.lazy_ ~name:"group-foreign-sources" (fun () ->
                let dune_version = Dune_project.dune_version project in
                let* stanzas = stanzas
-               and* dirs = Memo.Lazy.force dirs in
+               and* dirs =
+                 source_dirs_with_files
+                   dirs
+                   ~extensions:(foreign_source_extensions ~dune_version)
+               in
                Foreign_sources.make stanzas ~dir ~dune_version ~dirs)
            in
            let rocq =
              Memo.lazy_ ~name:"group-rocq-sources" (fun () ->
                let+ stanzas = stanzas
-               and+ dirs = Memo.Lazy.force dirs in
+               and+ dirs =
+                 source_dirs_with_files
+                   dirs
+                   ~extensions:
+                     (Filename.Extension.Set.of_list
+                        [ Filename.Extension.v; Filename.Extension.expected ])
+               in
                Rocq_sources.of_dir stanzas ~dir ~dirs ~include_subdirs)
            in
            let mlds = mlds ~sctx ~dir ~dune_file ~files in
@@ -626,12 +731,13 @@ end = struct
                subdirs
                ~f:
                  (fun
-                   { Source_file_dir.dir
-                   ; path_to_root = _
-                   ; files
-                   ; source_dir
-                   ; stanzas = _
-                   }
+                   ( { Source_file_dir.dir
+                     ; path_to_root = _
+                     ; files = _
+                     ; source_dir
+                     ; stanzas = _
+                     }
+                   , files )
                  ->
                  { kind = Group_part
                  ; source_dir

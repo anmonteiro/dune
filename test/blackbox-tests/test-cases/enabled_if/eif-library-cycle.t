@@ -30,4 +30,5 @@ Reading a file whose rule depends on the library still creates a dependency cycl
   -> _build/default/foo
   -> %{read:foo} at dune:3
   -> library "foo" in _build/default
+  -> required by alias default
   [1]

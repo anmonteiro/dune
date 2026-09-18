@@ -248,7 +248,7 @@ let foreign_rule_targets ~dir ~lib_config (lib : Foreign_library.t) =
           ~dir
           ~ext_obj:lib_config.Lib_config.ext_obj
           ~kinds:[ Stubs lib.stubs ])
-       (Target_mask.aliases_in_directory dir))
+       (Target_mask.aliases [ Alias.make Alias0.check ~dir ]))
 ;;
 
 (* Build a static and a dynamic archive for a foreign library. Note that the
@@ -668,7 +668,8 @@ let library_rules
     let source_modules =
       Modules.fold_user_written source_modules ~init:[] ~f:(fun m acc -> m :: acc)
     in
-    Rules.narrow (Sub_system.rule_targets ~dir lib) (fun () ->
+    let* targets = Sub_system.rule_targets ~dir lib in
+    Rules.narrow targets (fun () ->
       Sub_system.gen_rules
         { super_context = sctx
         ; dir
@@ -751,8 +752,8 @@ let compile_context (lib : Library.t) ~sctx ~dir_contents ~expander ~scope ~for_
 ;;
 
 let rule_targets ~dir ~source_files ~lib_config ~dialects (lib : Library.t) =
+  let+ sub_systems = Sub_system.rule_targets ~dir lib in
   let obj_dir = Library.obj_dir lib ~dir in
-  let merlin = Merlin_ident.for_lib (Library.best_name lib) in
   let module_targets =
     List.fold_left source_files ~init:Target_mask.empty ~f:(fun acc (dir, _) ->
       Target_mask.union acc (Module_compilation.rule_targets ~dir ~obj_dir))
@@ -760,9 +761,17 @@ let rule_targets ~dir ~source_files ~lib_config ~dialects (lib : Library.t) =
   List.fold_left
     [ module_targets
     ; archive_targets ~dir ~lib_config lib
-    ; Target_mask.files [ Merlin_ident.merlin_file_path dir merlin ]
     ; Buildable_rules.rule_targets ~dir ~source_files ~lib_config ~dialects lib.buildable
-    ; Sub_system.rule_targets ~dir lib
+    ; sub_systems
+    ; Target_mask.aliases
+        (List.map
+           (Alias0.check
+            :: Alias0.unused_libs
+            ::
+            (match lib.visibility with
+             | Public _ -> []
+             | Private _ -> [ Alias0.private_doc ]))
+           ~f:(Alias.make ~dir))
     ; (match Library.stubs_archive lib, lib.implements with
        | None, None -> Target_mask.empty
        | None, Some _ ->
