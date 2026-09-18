@@ -1,5 +1,4 @@
-Exercise differences between the behavior of `dune fmt` when a lockdir is
-present and a lockdir is absent.
+Formatting does not build the project, whether or not a lockdir is present.
 
   $ mkrepo
   $ make_project_with_dev_tool_lockdir
@@ -61,12 +60,15 @@ Create a lockdir and define the package "bar". Note its install command is
   > (install (run false))
   > EOF
 
-Now run `dune fmt` again. It attempts to build the project and its
-dependencies, and fails to install the dependency "bar".
+With a lockdir, formatting still does not build the executable or install its
+dependency "bar".
   $ DUNE_CONFIG__LOCK_DEV_TOOL=enabled dune fmt
-  File "dune.lock/bar.pkg", line 2, characters 14-19:
-  2 | (install (run false))
-                    ^^^^^
-  Error: Logs for package bar
-  
+  File "foo.ml", line 1, characters 0-0:
+  --- foo.ml
+  +++ foo.ml.corrected
+  @@ -1,2 +1,3 @@
+   let () = print_endline "Hello, world"
+   (* formatted with fake ocamlformat *)
+  +(* formatted with fake ocamlformat *)
+  Promoting _build/default/foo.ml.corrected to foo.ml.
   [1]

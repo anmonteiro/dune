@@ -582,6 +582,72 @@ let%expect_test "child masks are restricted by their parent" =
     |}]
 ;;
 
+let%expect_test "repeated restrictions preserve matching and selective loading" =
+  let dir = path "default/repeated-restrictions" in
+  let x = Path.Build.relative dir "x.ml" in
+  let y = Path.Build.relative dir "y.ml" in
+  let subtree = Target_mask.subtree dir in
+  let duplicated = Target_mask.union subtree subtree in
+  let matching pattern =
+    Dune_lang.Glob.of_string_exn Loc.none pattern
+    |> Predicate_lang.Glob.of_glob
+    |> Target_mask.files_matching ~dir
+  in
+  let ml = matching "*.ml" in
+  let starts_with_x = matching "x*" in
+  let restrictions = [ duplicated; ml; starts_with_x; starts_with_x; ml; duplicated ] in
+  let once = Target_mask.inter ml starts_with_x in
+  let repeated = List.fold_left restrictions ~init:duplicated ~f:Target_mask.inter in
+  List.iter [ "x.ml"; "y.ml"; "x.mli"; "child/x.ml" ] ~f:(fun name ->
+    let file = Path.Build.relative dir name in
+    printfn
+      "%s: %b / %b"
+      name
+      (Target_mask.mem_file once file)
+      (Target_mask.mem_file repeated file));
+  printfn "directory: %b" (Target_mask.mem_directory repeated x);
+  printfn
+    "alias: %b"
+    (Target_mask.mem_alias repeated (Alias.make (Alias.Name.of_string "x.ml") ~dir));
+  run
+    (let open Memo.O in
+     let* tree =
+       Rules.collect_unit (fun () ->
+         Rules.narrow duplicated (fun () ->
+           Rules.narrow duplicated (fun () ->
+             let* () =
+               Rules.narrow (Target_mask.files [ x ]) (fun () ->
+                 printfn "force x";
+                 Rules.Produce.rule (file_rule [ x ]))
+             in
+             Rules.narrow (Target_mask.files [ y ]) (fun () ->
+               printfn "force y";
+               Rules.Produce.rule (file_rule [ y ])))))
+     in
+     let tree = List.fold_left restrictions ~init:tree ~f:Rules.restrict in
+     let* first = Rules.load tree (Target_mask.files [ x ]) in
+     print_files "first" ~dir first;
+     let* second = Rules.load tree (Target_mask.files [ x ]) in
+     printfn
+       "same rules: %b"
+       (List.equal Rule.equal (rules_in ~dir first) (rules_in ~dir second));
+     let+ excluded = Rules.load tree (Target_mask.files [ y ]) in
+     printfn "excluded rules: %d" (List.length (rules_in ~dir excluded)));
+  [%expect
+    {|
+    x.ml: true / true
+    y.ml: false / false
+    x.mli: false / false
+    child/x.ml: false / false
+    directory: false
+    alias: false
+    force x
+    first: x.ml
+    same rules: true
+    excluded rules: 0
+    |}]
+;;
+
 let%expect_test "rules and aliases cannot escape a narrowed mask" =
   let dir = path "default/validated" in
   let inside = Path.Build.relative dir "x" in

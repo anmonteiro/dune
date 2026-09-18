@@ -1,5 +1,5 @@
 Implementations cannot introduce new modules to the library's interface
-  $ dune build
+  $ dune build impl/foo_impl.cma
   File "impl/dune", lines 1-3, characters 0-44:
   1 | (library
   2 |  (name foo_impl)

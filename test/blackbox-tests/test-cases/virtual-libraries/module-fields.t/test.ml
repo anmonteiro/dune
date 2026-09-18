@@ -52,7 +52,7 @@ let gen_test ~impl ~modules_without_implementation ~virtual_modules
     write_file ~file:"dune" ~contents:(
       lib_stanza ~modules_without_implementation ~virtual_modules
         ~private_modules);
-    ignore (Sys.command "dune build");
+    ignore (Sys.command "dune build @check");
     print_endline "-------------------------"
   )
 

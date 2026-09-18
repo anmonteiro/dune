@@ -2,6 +2,8 @@
 
 open Import
 
+val lint_rule_targets : dir:Path.Build.t -> _ Preprocess.Per_module.t -> Target_mask.t
+
 val rule_targets
   :  dialects:Dialect.DB.t
   -> preprocess:_ Preprocess.Per_module.t
