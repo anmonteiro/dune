@@ -164,7 +164,12 @@ let produce rules =
 ;;
 
 module Produce = struct
-  let rule rule = produce (singleton_rule rule)
+  let rule (rule : Rule.t) =
+    Dune_trace.emit Debug (fun () ->
+      let { Targets.Validated.root; files; dirs } = rule.targets in
+      Dune_trace.Event.rule_generated { root; files; dirs });
+    produce (singleton_rule rule)
+  ;;
 
   module Alias = struct
     type t = Alias.t
