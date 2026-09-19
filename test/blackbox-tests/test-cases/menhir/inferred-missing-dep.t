@@ -96,37 +96,24 @@ However, in this setup, it instead produces a reference to the hidden
   $ grep Mylib _build/default/parser.mli
   val main: (Lexing.lexbuf -> token) -> Lexing.lexbuf -> (Mylib__Ast.Int_list.t)
 
-While `ocamldep` detects the dependency on `Mylib__Ast`, dune ignores it as
-references to hidden module names can normally not be used in hand-written
-code. The dependency is missing:
+The dependency on `Mylib__Ast` must be tracked even though the inferred type
+uses the physical module name:
 
   $ dune describe rules --format=json %{cmi:parser} \
   > | jq_dune '[ .[] | ruleDepFilePathsOfKind("In_build_dir") ]'
   [
     "_build/default/.mylib.objs/byte/mylib.cmi",
+    "_build/default/.mylib.objs/byte/mylib__Ast.cmi",
     "_build/default/parser.mli",
     "_build/default/parser.mly"
   ]
 
-The missing dependency tracking introduces a race, which happens to generally
-succeed due to happy scheduling. To make it reproducible in CI, we first force
-the build of `ast.cmi` such that the compilation of `parser.cmi` can secretly
-access it (without a race):
+Build the parser after its dependency is available:
 
   $ dune build %{cmi:ast}
   $ dune build
 
-But if we later update the untracked dependency, then `parser.cmi` will not
-be rebuilt and the linker will fail:
+Updating that dependency must rebuild `parser.cmi` as well:
 
   $ echo 'let dummy = 42' >> ast.ml
   $ dune build
-  File "_none_", line 1:
-  Error: Files .mylib.objs/byte/mylib__Parser.cmo
-         and .mylib.objs/byte/mylib__Util.cmo
-         make inconsistent assumptions over interface Mylib__Util
-  File "_none_", line 1:
-  Error: Files .mylib.objs/native/mylib__Parser.cmx
-         and .mylib.objs/native/mylib__Util.cmx
-         make inconsistent assumptions over interface Mylib__Util
-  [1]

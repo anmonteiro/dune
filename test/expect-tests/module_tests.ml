@@ -176,12 +176,13 @@ let%expect_test "physical dependency names" =
   let current = generated ~obj_name:"Lib__Current" [ "Current" ] in
   let sibling = generated ~obj_name:"Lib__Sibling" [ "Sibling" ] in
   let nested = generated ~obj_name:"Lib__Group__Nested" [ "Group"; "Nested" ] in
+  let private_ = private_module ~obj_name:"Lib__Private" [ "Private" ] in
   let modules =
     make_lib
       ~wrapped:(Dune_lang.Wrapped.Simple true)
       ~main_module_name:(module_name "Lib")
       ~lib_name:"lib"
-      [ current; sibling; nested ]
+      [ current; sibling; nested; private_ ]
     |> Modules.With_vlib.modules
   in
   check_deps
@@ -189,12 +190,24 @@ let%expect_test "physical dependency names" =
     modules
     ~of_:current
     [ module_name "Lib__Sibling" ]
-    ~expected:[];
+    ~expected:[ "lib__Sibling:Sibling:impl" ];
   check_deps
     "qualified object name"
     modules
     ~of_:current
     [ module_name "Lib__Group__Nested" ]
+    ~expected:[ "lib__Group__Nested:Nested:impl" ];
+  check_deps
+    "private object name"
+    modules
+    ~of_:current
+    [ module_name "Lib__Private" ]
+    ~expected:[ "lib__Private:Private:impl" ];
+  check_deps
+    "alias object name"
+    modules
+    ~of_:current
+    [ module_name "Lib__Group" ]
     ~expected:[];
   check_deps
     "physical self"
@@ -208,12 +221,17 @@ let%expect_test "physical dependency names" =
     ~of_:current
     [ module_name "Sibling" ]
     ~expected:[ "lib__Sibling:Sibling:impl" ];
+  let alias = generated ~kind:(Alias []) ~obj_name:"Lib" [ "Lib" ] in
+  check_deps "alias source" modules ~of_:alias [ module_name "Lib__Sibling" ] ~expected:[];
   [%expect
     {|
-    wrapped object name: []
-    qualified object name: []
+    wrapped object name: [ "lib__Sibling:Sibling:impl" ]
+    qualified object name: [ "lib__Group__Nested:Nested:impl" ]
+    private object name: [ "lib__Private:Private:impl" ]
+    alias object name: []
     physical self: []
     logical sibling: [ "lib__Sibling:Sibling:impl" ]
+    alias source: []
     |}];
   (match Modules.With_vlib.find_deps modules ~of_:current [ module_name "Lib" ] with
    | Error (`Parent_cycle name) ->
@@ -258,9 +276,11 @@ let%expect_test "logical dependency names take precedence over object names" =
 let%expect_test "virtual-library logical and physical dependency names" =
   let current = generated ~obj_name:"Impl__Current" [ "Current" ] in
   let physical = generated ~obj_name:"Impl__Shared" [ "Physical" ] in
-  let impl = make_lib ~lib_name:"impl" ~implements:true [ current; physical ] in
+  let hidden = generated ~obj_name:"Private_vlib" [ "Hidden" ] in
+  let impl = make_lib ~lib_name:"impl" ~implements:true [ current; physical; hidden ] in
   let logical = generated ~obj_name:"Vlib__Logical" [ "Impl__Shared" ] in
-  let vlib = make_lib ~lib_name:"vlib" [ logical ] in
+  let private_ = private_module ~obj_name:"Vlib__Private" [ "Private_vlib" ] in
+  let vlib = make_lib ~lib_name:"vlib" [ logical; private_ ] in
   let modules = Modules.With_vlib.impl impl ~vlib in
   check_deps
     "virtual-library logical binding"
@@ -268,7 +288,24 @@ let%expect_test "virtual-library logical and physical dependency names" =
     ~of_:current
     [ module_name "Impl__Shared" ]
     ~expected:[ "vlib__Logical:Impl__Shared:impl" ];
-  [%expect {| virtual-library logical binding: [ "vlib__Logical:Impl__Shared:impl" ] |}]
+  check_deps
+    "virtual-library object name"
+    modules
+    ~of_:current
+    [ module_name "Vlib__Logical" ]
+    ~expected:[ "vlib__Logical:Impl__Shared:impl" ];
+  check_deps
+    "private virtual-library logical binding"
+    modules
+    ~of_:current
+    [ module_name "Private_vlib" ]
+    ~expected:[];
+  [%expect
+    {|
+    virtual-library logical binding: [ "vlib__Logical:Impl__Shared:impl" ]
+    virtual-library object name: [ "vlib__Logical:Impl__Shared:impl" ]
+    private virtual-library logical binding: []
+    |}]
 ;;
 
 let%expect_test "virtual-library dependency lookup" =
@@ -458,9 +495,16 @@ let%expect_test "wrapped compatibility self dependency" =
     ~of_:compat
     [ module_name "Main" ]
     ~expected:[ "main:Main:impl" ];
+  check_deps
+    "wrapped compatibility physical name"
+    modules
+    ~of_:compat
+    [ module_name "Main__Child" ]
+    ~expected:[];
   [%expect
     {|
     wrapped compatibility self: []
     wrapped compatibility interface: [ "main:Main:impl" ]
+    wrapped compatibility physical name: []
     |}]
 ;;
