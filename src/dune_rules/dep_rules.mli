@@ -15,6 +15,7 @@ val for_module
   -> dir:Path.Build.t
   -> sctx:Super_context.t
   -> for_:Compilation_mode.t
+  -> source_opens:Module_name.t list
   -> Module.t
   -> Module.t list Action_builder.t Ml_kind.Dict.t Memo.t
 

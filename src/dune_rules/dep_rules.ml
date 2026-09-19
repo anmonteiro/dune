@@ -315,6 +315,13 @@ type transitive_deps =
   ; memo : (Dep_key.t, memoized_transitive_deps) Action_builder.memo Lazy.t
   }
 
+let transitive_deps_outputs t immediate_deps =
+  List.filter_map immediate_deps ~f:transitive_dep
+  |> List.map ~f:(fun dep ->
+    Action_builder.exec_memo (Lazy.force t.memo) dep
+    |> Action_builder.map ~f:(fun memoized -> memoized.output))
+;;
+
 let rec create_transitive_deps
           ~sandbox
           ~modules
@@ -379,12 +386,7 @@ and transitive_deps_output_uncached t unit ~ml_kind =
       unit
   in
   let* transitive =
-    let transitive =
-      List.filter_map immediate_deps ~f:transitive_dep
-      |> List.map ~f:(fun dep ->
-        Action_builder.exec_memo (Lazy.force t.memo) dep
-        |> Action_builder.map ~f:(fun memoized -> memoized.output))
-    in
+    let transitive = transitive_deps_outputs t immediate_deps in
     match t.menhir_inference_deps, Module.source unit ~ml_kind with
     | None, _ | _, None -> Action_builder.return transitive
     | Some files, Some source ->
@@ -456,6 +458,18 @@ and transitive_deps_output_of_imported_vlib t m ~ml_kind =
        Transitive_deps_output.merge ~dir:t.dir ~transitive ~immediate)
 ;;
 
+let stage_imported_vlib_deps t ~(ml_kind : Ml_kind.t) deps =
+  match ml_kind, t.imported_vlib_deps with
+  | Impl, Some { stage_copied_objects_if_dep_info_missing = Some stage; _ } ->
+    let open Action_builder.O in
+    let+ deps = deps
+    and+ () = Lazy.force stage in
+    deps
+  | Intf, _
+  | Impl, None
+  | Impl, Some { stage_copied_objects_if_dep_info_missing = None; _ } -> deps
+;;
+
 let transitive_deps_of t ~ml_kind unit =
   let obj_name = Module.obj_name unit in
   let deps =
@@ -472,15 +486,7 @@ let transitive_deps_of t ~ml_kind unit =
               (Module_name.Unique.to_string obj_name)
               (Ml_kind.to_string ml_kind))
   in
-  match ml_kind, t.imported_vlib_deps with
-  | Impl, Some { stage_copied_objects_if_dep_info_missing = Some stage; _ } ->
-    let open Action_builder.O in
-    let+ deps = deps
-    and+ () = Lazy.force stage in
-    deps
-  | Intf, _
-  | Impl, None
-  | Impl, Some { stage_copied_objects_if_dep_info_missing = None; _ } -> deps
+  stage_imported_vlib_deps t ~ml_kind deps
 ;;
 
 let make_imported_vlib_deps ~obj_dir ~vimpl ~dir ~sctx ~sandbox ~for_ : imported_vlib_deps
@@ -774,12 +780,38 @@ let dict_of_func_concurrently f =
   Ml_kind.Dict.make ~impl ~intf
 ;;
 
-let for_module ~obj_dir ~modules ~sandbox ~impl ~dir ~sctx ~for_ module_ =
+let for_module ~obj_dir ~modules ~sandbox ~impl ~dir ~sctx ~for_ ~source_opens module_ =
   let transitive_deps, imported_vlib_deps =
     make_transitive_deps ~obj_dir ~modules ~sandbox ~impl ~dir ~sctx ~for_
   in
-  dict_of_func_concurrently
-    (deps_of ~modules ~transitive_deps ~imported_vlib_deps (Normal module_))
+  match source_opens with
+  | [] ->
+    dict_of_func_concurrently
+      (deps_of ~modules ~transitive_deps ~imported_vlib_deps (Normal module_))
+  | _ :: _ ->
+    let source_opens = Module_name.Set.of_list source_opens in
+    dict_of_func_concurrently (fun ~ml_kind ->
+      let deps =
+        if not (Module.has module_ ~ml_kind)
+        then Action_builder.return []
+        else
+          let open Action_builder.O in
+          let* names =
+            Ocamldep.read_immediate_deps_raw_of ~sandbox ~sctx ~obj_dir ~ml_kind module_
+          in
+          let immediate_deps =
+            Module_name.Set.diff names source_opens
+            |> Module_name.Set.to_list
+            |> Ocamldep.resolve_module_names ~dir ~unit:module_ ~modules
+            |> List.append (Modules.With_vlib.implicit_deps modules ~of_:module_)
+          in
+          let transitive = transitive_deps_outputs transitive_deps immediate_deps in
+          let immediate = List.map immediate_deps ~f:Module.obj_name in
+          let+ output = Transitive_deps_output.merge ~dir ~transitive ~immediate in
+          Modules.With_vlib.alias_for modules module_
+          @ Transitive_deps_output.parse ~modules output
+      in
+      stage_imported_vlib_deps transitive_deps ~ml_kind deps |> Memo.return)
 ;;
 
 let rules ~obj_dir ~modules ~sandbox ~impl ~sctx ~dir ~for_ =

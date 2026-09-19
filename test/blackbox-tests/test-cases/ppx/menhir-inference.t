@@ -1,4 +1,4 @@
-Menhir inference with ordinary and staged PPX exposes shadowed aliases (#8989).
+Menhir inference with ordinary and staged PPX must avoid shadowed aliases (#8989).
 
   $ make_menhir_project 3.25 3.0
   $ mkdir -p ppx lib/group
@@ -47,22 +47,4 @@ Menhir inference with ordinary and staged PPX exposes shadowed aliases (#8989).
   >   dune build lib/foo.cma
   > }
   $ build pps
-  File "lib/group/group__mock.ml.pp.mock", line 1:
-  Error (warning 63 [erroneous-printed-signature]): The printed interface
-    differs from the inferred interface. The inferred interface contained items
-    which could not be printed properly due to name collisions between
-    identifiers. File "_none_", line 1:
-    Definition of module Group__/2 Beware
-    that this warning is purely informational and will not catch all instances
-    of erroneous printed interface.
-  [1]
   $ build staged_pps
-  File "lib/group/group__mock.ml.mock", line 1:
-  Error (warning 63 [erroneous-printed-signature]): The printed interface
-    differs from the inferred interface. The inferred interface contained items
-    which could not be printed properly due to name collisions between
-    identifiers. File "_none_", line 1:
-    Definition of module Group__/2 Beware
-    that this warning is purely informational and will not catch all instances
-    of erroneous printed interface.
-  [1]

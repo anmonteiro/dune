@@ -2,6 +2,13 @@
 
 open Import
 
+val resolve_module_names
+  :  dir:Path.Build.t
+  -> unit:Module.t
+  -> modules:Modules.With_vlib.t
+  -> Module_name.t list
+  -> Module.t list
+
 (** [read_immediate_deps_of ~obj_dir ~modules ~ml_kind unit] returns the
     immediate dependencies found in the modules of [modules] for the file with
     kind [ml_kind] of the module [unit]. If there is no such file with kind
