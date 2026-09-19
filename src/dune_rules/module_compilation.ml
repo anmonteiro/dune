@@ -451,7 +451,7 @@ let build_module ?(force_write_cmi = false) ?(precompiled_cmi = false) cctx m =
     Rules.Produce.Alias.add_deps (Alias.make Alias0.all ~dir) deps
 ;;
 
-let ocamlc_i_action ~deps cctx (m : Module.t) =
+let ocamlc_i_action ~deps ~opens cctx (m : Module.t) =
   let obj_dir = Compilation_context.obj_dir cctx in
   let ctx = Compilation_context.super_context cctx |> Super_context.context in
   let src = Option.value_exn (Module.file m ~ml_kind:Impl) in
@@ -475,7 +475,6 @@ let ocamlc_i_action ~deps cctx (m : Module.t) =
          [ Path.build (Obj_dir.Module.cm_file_exn obj_dir m ~kind:(Ocaml Cmi)) ]))
   in
   let ocaml_flags = Ocaml_flags.get (Compilation_context.flags cctx) (Ocaml Byte) in
-  let modules = Compilation_context.modules cctx in
   let ocaml = Compilation_context.ocaml cctx in
   let open Action_builder.O in
   cm_deps
@@ -492,7 +491,7 @@ let ocamlc_i_action ~deps cctx (m : Module.t) =
         ; as_parameter_arg m
         ; as_argument_for cctx m
         ; parameters cctx
-        ; opens modules m
+        ; As (Ocaml_flags.open_flags opens)
         ; A "-short-paths"
         ; A "-i"
         ; Command.Ml_kind.flag Impl
@@ -501,10 +500,10 @@ let ocamlc_i_action ~deps cctx (m : Module.t) =
         ]
 ;;
 
-let ocamlc_i ~deps cctx m ~output =
+let ocamlc_i ~deps ~opens cctx m ~output =
   let sctx = Compilation_context.super_context cctx in
   let dir = Compilation_context.dir cctx in
-  ocamlc_i_action ~deps cctx m
+  ocamlc_i_action ~deps ~opens cctx m
   |> Action_builder.with_stdout_to output
   |> Super_context.add_rule sctx ~dir
 ;;
@@ -512,6 +511,7 @@ let ocamlc_i ~deps cctx m ~output =
 let infer_interface cctx m =
   let sctx = Compilation_context.super_context cctx in
   let dir = Compilation_context.dir cctx in
+  let opens = Modules.With_vlib.local_open (Compilation_context.modules cctx) m in
   let action =
     let source_file =
       match Module.source_without_pp m ~ml_kind:Intf with
@@ -530,7 +530,7 @@ let infer_interface cctx m =
         Ml_kind.Dict.of_func (fun ~ml_kind ->
           Dep_graph.deps_of (Ml_kind.Dict.get dep_graphs ml_kind) m)
       in
-      ocamlc_i_action ~deps cctx m
+      ocamlc_i_action ~deps ~opens cctx m
     and+ () = Action_builder.paths_existing [ source_path ] in
     Action.Full.map action ~f:(fun action ->
       let correction_file =

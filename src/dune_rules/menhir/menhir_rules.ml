@@ -262,20 +262,7 @@ module Run (P : PARAMS) = struct
   let process3 base ~cmly ((stanza, deps) : stanza * Path.Set.t) : unit Memo.t =
     let open Memo.O in
     let* expanded_flags = expand_flags stanza.flags in
-    (* 1. A first invocation of Menhir creates a mock [.ml] file. *)
     let source_deps = Path.Set.to_list deps in
-    let* () =
-      menhir
-        [ Command.Args.dyn expanded_flags
-        ; Deps source_deps
-        ; A "--base"
-        ; Path (Path.relative (Path.build dir) base)
-        ; A "--infer-write-query"
-        ; Target (mock_ml base)
-        ]
-      |> rule ~mode:Standard
-    in
-    (* 2. The OCaml compiler performs type inference. *)
     let name =
       Module_name.of_string_allow_invalid (stanza.loc, mock base)
       |> Module_name.Unchecked.allow_invalid
@@ -290,6 +277,60 @@ module Run (P : PARAMS) = struct
       in
       Module.of_source ~visibility:Public ~kind:Impl source
     in
+    let source_opens, compiler_opens =
+      let opens =
+        Modules.With_vlib.local_open (Compilation_context.modules cctx) mock_module
+      in
+      let ocaml = Compilation_context.ocaml cctx in
+      if Ocaml.Version.supports_generalized_open ocaml.version
+      then opens, []
+      else [], opens
+    in
+    (* 1. A first invocation of Menhir creates a mock [.ml] file. *)
+    let* () =
+      let query =
+        match source_opens with
+        | [] -> mock_ml base
+        | _ :: _ -> Path.Build.relative dir (mock base ^ ".ml.mock.raw")
+      in
+      let action =
+        menhir
+          [ Command.Args.dyn expanded_flags
+          ; Deps source_deps
+          ; A "--base"
+          ; Path (Path.relative (Path.build dir) base)
+          ; A "--infer-write-query"
+          ; Target query
+          ]
+      in
+      let action =
+        match source_opens with
+        | [] -> action
+        | _ :: _ ->
+          (* Anonymous opens preserve the aliases and their shadowing guards,
+             but keep local aliases out of inferred types. Add them before
+             preprocessing, which may produce a binary AST. *)
+          let prelude =
+            List.map source_opens ~f:(fun name ->
+              sprintf "open! struct include %s end\n" (Module_name.to_string name))
+            |> String.concat ~sep:""
+          in
+          Action_builder.With_targets.map
+            action
+            ~f:
+              (Action.Full.map ~f:(fun action ->
+                 Action.progn
+                   [ action
+                   ; Action.with_stdout_to
+                       (mock_ml base)
+                       (Action.progn
+                          [ Action.echo [ prelude ]; Action.cat [ Path.build query ] ])
+                   ]))
+          |> Action_builder.With_targets.add ~file_targets:[ mock_ml base ]
+      in
+      rule ~mode:Standard action
+    in
+    (* 2. The OCaml compiler performs type inference. *)
     let* mock_module =
       Pp_spec.pp_module (Compilation_context.preprocessing cctx) mock_module ~lint:false
     in
@@ -302,11 +343,21 @@ module Run (P : PARAMS) = struct
       let modules = Compilation_context.modules inference_cctx in
       let impl = Compilation_context.implements inference_cctx in
       let dir = Obj_dir.dir obj_dir in
-      Dep_rules.for_module ~obj_dir ~modules ~sandbox ~impl ~dir ~sctx mock_module ~for_
+      Dep_rules.for_module
+        ~obj_dir
+        ~modules
+        ~sandbox
+        ~impl
+        ~dir
+        ~sctx
+        ~source_opens
+        mock_module
+        ~for_
     in
     let* () =
       Module_compilation.ocamlc_i
         ~deps
+        ~opens:compiler_opens
         inference_cctx
         mock_module
         ~output:(inferred_mli base)

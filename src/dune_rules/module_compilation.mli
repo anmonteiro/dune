@@ -12,6 +12,7 @@ val build_module
 
 val ocamlc_i
   :  deps:Module.t list Action_builder.t Ml_kind.Dict.t
+  -> opens:Module_name.t list
   -> Compilation_context.t
   -> Module.t
   -> output:Path.Build.t

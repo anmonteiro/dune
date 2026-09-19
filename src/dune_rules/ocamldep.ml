@@ -1,7 +1,6 @@
 open Import
 
-let parse_module_names ~dir ~(unit : Module.t) ~modules words =
-  let names = List.map words ~f:Module_name.of_checked_string in
+let resolve_module_names ~dir ~(unit : Module.t) ~modules names =
   match Modules.With_vlib.find_deps modules ~of_:unit names with
   | Ok modules -> modules
   | Error (`Parent_cycle m) ->
@@ -135,12 +134,13 @@ let read_immediate_deps_of ~sandbox ~sctx ~obj_dir ~modules ~ml_kind unit =
   | None -> []
   | Some words ->
     let dir = Obj_dir.dir obj_dir in
-    parse_module_names ~dir ~unit ~modules words
+    List.map words ~f:Module_name.of_checked_string
+    |> resolve_module_names ~dir ~unit ~modules
     |> List.append (Modules.With_vlib.implicit_deps modules ~of_:unit)
 ;;
 
 (* Returns raw module names without resolving against the stanza's module set.
-   Preserves references to external libraries, which [parse_module_names] would
+   Preserves references to external libraries, which [resolve_module_names] would
    discard. Used for per-module inter-library dependency filtering (#4572). *)
 let read_immediate_deps_raw_of ~sandbox ~sctx ~obj_dir ~ml_kind unit =
   let open Action_builder.O in

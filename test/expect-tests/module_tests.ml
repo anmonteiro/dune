@@ -172,6 +172,105 @@ let check_deps label modules ~of_ names ~expected =
   Format.printf "%s: %s@." label (Dyn.to_string (Dyn.list Dyn.string batch))
 ;;
 
+let%expect_test "physical dependency names" =
+  let current = generated ~obj_name:"Lib__Current" [ "Current" ] in
+  let sibling = generated ~obj_name:"Lib__Sibling" [ "Sibling" ] in
+  let nested = generated ~obj_name:"Lib__Group__Nested" [ "Group"; "Nested" ] in
+  let modules =
+    make_lib
+      ~wrapped:(Dune_lang.Wrapped.Simple true)
+      ~main_module_name:(module_name "Lib")
+      ~lib_name:"lib"
+      [ current; sibling; nested ]
+    |> Modules.With_vlib.modules
+  in
+  check_deps
+    "wrapped object name"
+    modules
+    ~of_:current
+    [ module_name "Lib__Sibling" ]
+    ~expected:[];
+  check_deps
+    "qualified object name"
+    modules
+    ~of_:current
+    [ module_name "Lib__Group__Nested" ]
+    ~expected:[];
+  check_deps
+    "physical self"
+    modules
+    ~of_:current
+    [ module_name "Lib__Current" ]
+    ~expected:[];
+  check_deps
+    "logical sibling"
+    modules
+    ~of_:current
+    [ module_name "Sibling" ]
+    ~expected:[ "lib__Sibling:Sibling:impl" ];
+  [%expect
+    {|
+    wrapped object name: []
+    qualified object name: []
+    physical self: []
+    logical sibling: [ "lib__Sibling:Sibling:impl" ]
+    |}];
+  (match Modules.With_vlib.find_deps modules ~of_:current [ module_name "Lib" ] with
+   | Error (`Parent_cycle name) ->
+     Format.printf "parent cycle: %s@." (Module_name.to_string name)
+   | Ok deps ->
+     List.map deps ~f:module_summary |> Dyn.list Dyn.string |> Dune_tests_common.print_dyn);
+  [%expect {| parent cycle: Lib |}]
+;;
+
+let%expect_test "logical dependency names take precedence over object names" =
+  let current = generated ~obj_name:"Lib__Current" [ "Current" ] in
+  let sibling = generated ~obj_name:"Lib__Sibling" [ "Sibling" ] in
+  let logical = generated ~obj_name:"Lib__Lib__Sibling" [ "Lib__Sibling" ] in
+  let logical_self = generated ~obj_name:"Lib__Lib__Current" [ "Lib__Current" ] in
+  let modules =
+    make_lib
+      ~wrapped:(Dune_lang.Wrapped.Simple true)
+      ~main_module_name:(module_name "Lib")
+      ~lib_name:"lib"
+      [ current; sibling; logical; logical_self ]
+    |> Modules.With_vlib.modules
+  in
+  check_deps
+    "logical binding"
+    modules
+    ~of_:current
+    [ module_name "Lib__Sibling" ]
+    ~expected:[ "lib__Lib__Sibling:Lib__Sibling:impl" ];
+  check_deps
+    "logical binding matching self"
+    modules
+    ~of_:current
+    [ module_name "Lib__Current" ]
+    ~expected:[ "lib__Lib__Current:Lib__Current:impl" ];
+  [%expect
+    {|
+    logical binding: [ "lib__Lib__Sibling:Lib__Sibling:impl" ]
+    logical binding matching self: [ "lib__Lib__Current:Lib__Current:impl" ]
+    |}]
+;;
+
+let%expect_test "virtual-library logical and physical dependency names" =
+  let current = generated ~obj_name:"Impl__Current" [ "Current" ] in
+  let physical = generated ~obj_name:"Impl__Shared" [ "Physical" ] in
+  let impl = make_lib ~lib_name:"impl" ~implements:true [ current; physical ] in
+  let logical = generated ~obj_name:"Vlib__Logical" [ "Impl__Shared" ] in
+  let vlib = make_lib ~lib_name:"vlib" [ logical ] in
+  let modules = Modules.With_vlib.impl impl ~vlib in
+  check_deps
+    "virtual-library logical binding"
+    modules
+    ~of_:current
+    [ module_name "Impl__Shared" ]
+    ~expected:[ "vlib__Logical:Impl__Shared:impl" ];
+  [%expect {| virtual-library logical binding: [ "vlib__Logical:Impl__Shared:impl" ] |}]
+;;
+
 let%expect_test "virtual-library dependency lookup" =
   let impl_shared = generated ~obj_name:"Impl__Shared" [ "Shared" ] in
   let impl_only = generated ~obj_name:"Impl__Only" [ "Only_impl" ] in

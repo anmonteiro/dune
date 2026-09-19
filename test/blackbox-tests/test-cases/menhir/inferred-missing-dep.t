@@ -121,8 +121,12 @@ be rebuilt and the linker will fail:
 
   $ echo 'let dummy = 42' >> ast.ml
   $ dune build
-  File "parser.ml", line 1:
-  Error: The files .mylib.objs/byte/mylib__Ast.cmi
-         and .mylib.objs/byte/mylib__Parser.cmi make inconsistent assumptions
-         over interface Mylib__Ast
+  File "_none_", line 1:
+  Error: Files .mylib.objs/byte/mylib__Parser.cmo
+         and .mylib.objs/byte/mylib__Util.cmo
+         make inconsistent assumptions over interface Mylib__Util
+  File "_none_", line 1:
+  Error: Files .mylib.objs/native/mylib__Parser.cmx
+         and .mylib.objs/native/mylib__Util.cmx
+         make inconsistent assumptions over interface Mylib__Util
   [1]
