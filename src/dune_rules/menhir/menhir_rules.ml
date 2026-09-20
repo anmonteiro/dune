@@ -277,14 +277,8 @@ module Run (P : PARAMS) = struct
       in
       Module.of_source ~visibility:Public ~kind:Impl source
     in
-    let source_opens, compiler_opens =
-      let opens =
-        Modules.With_vlib.local_open (Compilation_context.modules cctx) mock_module
-      in
-      let ocaml = Compilation_context.ocaml cctx in
-      if Ocaml.Version.supports_generalized_open ocaml.version
-      then opens, []
-      else [], opens
+    let source_opens =
+      Modules.With_vlib.local_open (Compilation_context.modules cctx) mock_module
     in
     (* 1. A first invocation of Menhir creates a mock [.ml] file. *)
     let* () =
@@ -307,13 +301,41 @@ module Run (P : PARAMS) = struct
         match source_opens with
         | [] -> action
         | _ :: _ ->
-          (* Anonymous opens preserve the aliases and their shadowing guards,
-             but keep local aliases out of inferred types. Add them before
+          (* Preserve the aliases and their shadowing guards, but keep local
+             alias paths out of inferred types. Wrap the query before
              preprocessing, which may produce a binary AST. *)
-          let prelude =
-            List.map source_opens ~f:(fun name ->
-              sprintf "open! struct include %s end\n" (Module_name.to_string name))
-            |> String.concat ~sep:""
+          let prelude, postlude =
+            let ocaml = Compilation_context.ocaml cctx in
+            if Ocaml.Version.supports_generalized_open ocaml.version
+            then
+              ( List.map source_opens ~f:(fun name ->
+                  sprintf "open! struct include %s end\n" (Module_name.to_string name))
+                |> String.concat ~sep:""
+              , "" )
+            else (
+              (* Anonymous functor arguments eliminate the alias paths on older
+                 compilers. The unit functor permits unpacking and generative
+                 functor applications in the query. *)
+              let aliases =
+                List.mapi source_opens ~f:(fun i name ->
+                  ( sprintf "Dune__menhir_aliases_%d" i
+                  , sprintf "struct include %s end" (Module_name.to_string name) ))
+              in
+              let parameters =
+                List.map aliases ~f:(fun (name, alias) ->
+                  sprintf "functor (%s : module type of %s) ->\n" name alias)
+                |> String.concat ~sep:""
+              in
+              let opens =
+                List.map aliases ~f:(fun (name, _) -> sprintf "open! %s\n" name)
+                |> String.concat ~sep:""
+              in
+              let arguments =
+                List.map aliases ~f:(fun (_, alias) -> sprintf "(%s)" alias)
+                |> String.concat ~sep:" "
+              in
+              ( "include (" ^ parameters ^ "functor () -> struct\n" ^ opens
+              , "\nend) " ^ arguments ^ " ()\n" ))
           in
           Action_builder.With_targets.map
             action
@@ -324,7 +346,10 @@ module Run (P : PARAMS) = struct
                    ; Action.with_stdout_to
                        (mock_ml base)
                        (Action.progn
-                          [ Action.echo [ prelude ]; Action.cat [ Path.build query ] ])
+                          [ Action.echo [ prelude ]
+                          ; Action.cat [ Path.build query ]
+                          ; Action.echo [ postlude ]
+                          ])
                    ]))
           |> Action_builder.With_targets.add ~file_targets:[ mock_ml base ]
       in
@@ -357,7 +382,7 @@ module Run (P : PARAMS) = struct
     let* () =
       Module_compilation.ocamlc_i
         ~deps
-        ~opens:compiler_opens
+        ~opens:[]
         inference_cctx
         mock_module
         ~output:(inferred_mli base)

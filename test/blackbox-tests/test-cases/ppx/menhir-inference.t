@@ -48,3 +48,21 @@ Menhir inference with ordinary and staged PPX must avoid shadowed aliases (#8989
   > }
   $ build pps
   $ build staged_pps
+
+Both preprocessing modes must also work without generalized opens.
+
+  $ real_ocamlc=$(command -v ocamlc)
+  $ mkdir compiler
+  $ cat >compiler/ocamlc <<EOF
+  > #!/bin/sh
+  > case "\$1" in
+  >   -config) "$real_ocamlc" "\$@" | sed 's/^version: .*/version: 4.07.1/' ;;
+  >   *) exec "$real_ocamlc" "\$@" ;;
+  > esac
+  > EOF
+  $ chmod +x compiler/ocamlc
+  $ ln -s "$(command -v ocamldep)" compiler/ocamldep
+  $ ln -s "$(command -v ocamlopt)" compiler/ocamlopt
+  $ export PATH="$PWD/compiler:$PATH"
+  $ build pps
+  $ build staged_pps
