@@ -231,7 +231,7 @@ let%expect_test "physical virtual-library dependency lookup" =
     | _ -> Code_error.raise "expected one group alias" []
   in
   let modules = Modules.With_vlib.impl impl ~vlib in
-  let check label module_ =
+  let check modules label module_ =
     let deps =
       match
         Modules.With_vlib.find_dep_by_obj_name
@@ -251,16 +251,69 @@ let%expect_test "physical virtual-library dependency lookup" =
       label
       (Dyn.to_string (Dyn.list Dyn.string (List.map deps ~f:module_summary)))
   in
-  check "public imported module" vlib_public;
-  check "private imported module" vlib_private;
-  check "private local module" impl_private;
-  check "public imported group" group_alias;
+  check modules "public imported module" vlib_public;
+  check modules "private imported module" vlib_private;
+  check modules "private local module" impl_private;
+  check modules "public imported group" group_alias;
   [%expect
     {|
     public imported module: [ "vlib__Public:Public_vlib:impl" ]
     private imported module: []
     private local module: [ "impl__Private:Private_impl:impl" ]
     public imported group: [ "group:Group:alias"; "group__Public:Public:impl" ]
+    |}];
+  let group_local = generated ~obj_name:"Impl__Group__Local" [ "Group"; "Local" ] in
+  let impl =
+    make_lib ~lib_name:"impl" ~implements:true [ current; impl_private; group_local ]
+  in
+  check (Modules.With_vlib.impl impl ~vlib) "merged group" group_alias;
+  [%expect
+    {|
+    merged group: [ "group:Group:alias"
+    ; "group__Local:Local:impl"
+    ; "group__Public:Public:impl"
+    ]
+    |}]
+;;
+
+let%expect_test "physical root and repeated-group dependency lookup" =
+  let current = generated ~obj_name:"Lib__Current" [ "Current" ] in
+  let modules =
+    make_lib
+      ~wrapped:(Dune_lang.Wrapped.Simple true)
+      ~main_module_name:(module_name "Lib")
+      ~lib_name:"lib"
+      [ current
+      ; generated ~obj_name:"Lib" [ "Lib" ]
+      ; generated ~obj_name:"M" [ "Foo"; "Foo"; "M" ]
+      ]
+    |> Modules.With_vlib.modules
+  in
+  let check label obj_name =
+    let result =
+      match
+        Modules.With_vlib.find_dep_by_obj_name
+          modules
+          ~of_:current
+          (Module_name.Unique.of_string obj_name)
+      with
+      | Ok (Some deps) ->
+        Dyn.to_string (Dyn.list Dyn.string (List.map deps ~f:module_summary))
+      | Ok None -> "not found"
+      | Error (`Parent_cycle name) -> "parent cycle " ^ Module_name.to_string name
+    in
+    Format.printf "%s: %s@." label result
+  in
+  check "root alias" "Lib__";
+  check "root interface" "Lib";
+  check "repeated group" "Lib__Foo__Foo";
+  check "leaf" "Lib__Foo__Foo__M";
+  [%expect
+    {|
+    root alias: parent cycle Lib
+    root interface: parent cycle Lib
+    repeated group: [ "lib__Foo__Foo:Foo:alias"; "lib__Foo__Foo__M:M:impl" ]
+    leaf: [ "lib__Foo__Foo__M:M:impl" ]
     |}]
 ;;
 
