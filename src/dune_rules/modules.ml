@@ -451,23 +451,21 @@ module Group = struct
            Dune_lang.atom "module" :: Module.encode ~src_dir ~is_nested_group_interface m))
   ;;
 
-  let parents_modules =
-    let rec loop acc modules = function
-      | [] -> acc
-      | p :: ps ->
-        (match Module_name.Map.find modules p with
-         | None ->
-           (* TODO this happens with "side" modules like menhir mock modules *)
-           acc
-         | Some (Module _) -> acc
-         | Some (Group g) -> loop (g :: acc) g.modules ps)
-    in
-    fun acc modules m -> loop acc modules (Nonempty_list.to_list (Module.path m))
+  let rec parents_modules acc modules = function
+    | [] -> acc
+    | p :: ps ->
+      (match Module_name.Map.find modules p with
+       | None ->
+         (* TODO this happens with "side" modules like menhir mock modules *)
+         acc
+       | Some (Module _) -> acc
+       | Some (Group g) -> parents_modules (g :: acc) g.modules ps)
   ;;
 
-  (* [parents acc modules m] returns [acc] followed by all parent groups of 
-     module [m], ordered from innermost to outermost parent. *)
-  let parents (t : t) m = parents_modules [ t ] t.modules m |> List.rev
+  (* Parent groups of [m], ordered from outermost to innermost. *)
+  let parents (t : t) m =
+    parents_modules [ t ] t.modules (Nonempty_list.to_list (Module.path m)) |> List.rev
+  ;;
 
   module Memo_traversals = struct
     let rec parallel_map ({ alias; modules; name = _ } as t) ~f =
@@ -609,7 +607,7 @@ module Unwrapped = struct
     | Some (Group _) | None -> None
   ;;
 
-  let parents t m = Group.parents_modules [] t m
+  let parents t m = Group.parents_modules [] t (Nonempty_list.to_list (Module.path m))
   let fold t ~init ~f = Group.fold_modules t ~init ~f
   let exists t ~f = Group.exists_modules t ~f
   let alias_for : t -> _ -> Module.t list = Group.make_alias_for ~parents
@@ -1137,7 +1135,10 @@ module With_vlib = struct
       | Wrapped_compat -> Single (Group.lib_interface group)
       | _ ->
         let parents =
-          Group.parents_modules [ group ] modules of_
+          Group.parents_modules
+            [ group ]
+            modules
+            (Nonempty_list.to_list (Module.path of_))
           |> List.map ~f:(fun ({ modules; name; _ } : Group.t) -> modules, Some name)
         in
         Parents parents
@@ -1152,7 +1153,7 @@ module With_vlib = struct
           [ "module", Module.to_dyn of_ ]
       | _ ->
         let parents =
-          Group.parents_modules [] modules of_
+          Group.parents_modules [] modules (Nonempty_list.to_list (Module.path of_))
           |> List.map ~f:(fun ({ modules; name; _ } : Group.t) -> modules, Some name)
         in
         Parents ((modules, None) :: parents)
@@ -1308,14 +1309,14 @@ module With_vlib = struct
     | Impl { vlib = _; impl; _ } -> impl
   ;;
 
-  let fold_no_vlib_with_aliases =
+  let group_of_alias =
     let group_of_alias t m =
       match t.modules with
       | Wrapped w -> Some (Wrapped.group_of_alias w m)
       | Unwrapped w -> Some (Unwrapped.group_of_alias w m)
       | _ -> None
     in
-    let group_of_alias t m =
+    fun t m ->
       match t with
       | Modules t -> group_of_alias t m
       | Impl { vlib; impl; _ } ->
@@ -1341,20 +1342,21 @@ module With_vlib = struct
                  |> Option.map ~f:(fun m -> Group.Module m))
            in
            Some { impl with Group.modules })
-    in
-    fun t ~init ~normal ~alias ->
-      t
-      |> drop_vlib
-      |> fold ~init ~f:(fun m acc ->
-        match Module.kind m with
-        | Alias _ ->
-          (match group_of_alias t m with
-           | None ->
-             Code_error.raise
-               "alias module for group without alias"
-               [ "t", to_dyn t; "m", Module.to_dyn m ]
-           | Some group -> alias group acc)
-        | _ -> normal m acc)
+  ;;
+
+  let fold_no_vlib_with_aliases t ~init ~normal ~alias =
+    t
+    |> drop_vlib
+    |> fold ~init ~f:(fun m acc ->
+      match Module.kind m with
+      | Alias _ ->
+        (match group_of_alias t m with
+         | None ->
+           Code_error.raise
+             "alias module for group without alias"
+             [ "t", to_dyn t; "m", Module.to_dyn m ]
+         | Some group -> alias group acc)
+      | _ -> normal m acc)
   ;;
 
   let map t ~f =
@@ -1430,6 +1432,74 @@ module With_vlib = struct
         (match t with
          | Modules t -> alias_for t m
          | Impl { impl; vlib = _; _ } -> alias_for impl m)
+  ;;
+
+  let group_dependency t m =
+    let path =
+      match Module.kind m with
+      | Alias path -> path
+      | _ -> Nonempty_list.to_list (Module.path m)
+    in
+    let obj_name = Module.obj_name m in
+    let find t =
+      let groups =
+        match (drop_vlib t).modules with
+        | Wrapped { group; _ } -> Group.parents_modules [ group ] group.modules path
+        | Unwrapped modules -> Group.parents_modules [] modules path
+        | Singleton _ | Stdlib _ -> []
+      in
+      match groups with
+      | [] -> None
+      | group :: _ ->
+        (* The merged group can supply an imported interface, so check the
+           physical name after merging virtual-library modules. *)
+        let group = group_of_alias t (Group.alias group) |> Option.value_exn in
+        let alias = Group.alias group in
+        let lib_interface = Group.lib_interface group in
+        if
+          Module_name.Unique.equal obj_name (Module.obj_name alias)
+          || Module_name.Unique.equal obj_name (Module.obj_name lib_interface)
+        then Some group
+        else None
+    in
+    match find t, t with
+    | (Some _ as group), _ -> group
+    | None, Modules _ -> None
+    | None, Impl { vlib; _ } -> find (Modules vlib)
+  ;;
+
+  let find_dep_by_obj_name t ~of_ obj_name =
+    if Module_name.Unique.equal obj_name (Module.obj_name of_)
+    then Ok (Some [])
+    else (
+      let obj_map = obj_map t in
+      match Module_name.Unique.Map.find obj_map obj_name with
+      | None -> Ok None
+      | Some sourced_module ->
+        let m = Sourced_module.to_module sourced_module in
+        let deps =
+          match group_dependency t m with
+          | None -> Ok [ m ]
+          | Some group ->
+            let group_alias = Group.alias group in
+            let is_parent =
+              alias_for t of_
+              |> List.exists ~f:(fun parent ->
+                match Module.kind group_alias, Module.kind parent with
+                | Alias group_path, Alias parent_path ->
+                  List.equal Module_name.equal group_path parent_path
+                | _ -> false)
+            in
+            if is_parent
+            then Error (`Parent_cycle group.name)
+            else Ok (Group.Find_dep.closure_node (Group group))
+        in
+        Result.map deps ~f:(fun deps ->
+          List.filter deps ~f:(fun m ->
+            match Module_name.Unique.Map.find obj_map (Module.obj_name m) with
+            | Some (Imported_from_vlib m) -> Module.visibility m = Public
+            | Some (Normal _ | Impl_of_virtual_module _) | None -> true)
+          |> Option.some))
   ;;
 
   let local_open t m =

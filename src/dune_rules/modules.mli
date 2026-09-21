@@ -85,6 +85,15 @@ module With_vlib : sig
     -> Module_name.t list
     -> (Module.t list, [ `Parent_cycle of Module_name.t ]) result
 
+  (** Resolve a physical object name. Group aliases and interfaces expand to the
+      same dependency closure as their logical names. [None] means the name isn't
+      local. *)
+  val find_dep_by_obj_name
+    :  t
+    -> of_:Module.t
+    -> Module_name.Unique.t
+    -> (Module.t list option, [ `Parent_cycle of Module_name.t ]) result
+
   (** Additional dependencies that aren't always reported by [ocamldep], such
       as `(modules_before_stdlib ..)` in `(stdlib ..)` libraries. *)
   val implicit_deps : t -> of_:Module.t -> Module.t list

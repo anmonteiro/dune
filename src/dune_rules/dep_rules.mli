@@ -15,8 +15,9 @@ val for_module
   -> dir:Path.Build.t
   -> sctx:Super_context.t
   -> for_:Compilation_mode.t
+  -> mode:Ocamldep.Mode.t
   -> Module.t
-  -> Module.t list Action_builder.t Ml_kind.Dict.t Memo.t
+  -> Module.t list Action_builder.t Memo.t
 
 val rules
   :  obj_dir:Path.Build.t Obj_dir.t

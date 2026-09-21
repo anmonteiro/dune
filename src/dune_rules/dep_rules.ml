@@ -366,7 +366,7 @@ let rec create_transitive_deps
   in
   t
 
-and transitive_deps_output_uncached t unit ~ml_kind =
+and transitive_deps_output_uncached t unit ~ml_kind ~mode =
   let open Action_builder.O in
   let* immediate_deps =
     Ocamldep.read_immediate_deps_of
@@ -375,6 +375,7 @@ and transitive_deps_output_uncached t unit ~ml_kind =
       ~obj_dir:t.obj_dir
       ~modules:t.modules
       ~ml_kind
+      ~mode
       unit
   in
   let* transitive =
@@ -410,12 +411,12 @@ and transitive_deps_output_of_sourced_module
       ~ml_kind
   =
   match sourced_module with
-  | Normal m -> transitive_deps_output_uncached t m ~ml_kind
+  | Normal m -> transitive_deps_output_uncached t m ~ml_kind ~mode:Standard
   | Imported_from_vlib m -> transitive_deps_output_of_imported_vlib t m ~ml_kind
   | Impl_of_virtual_module impl_or_vlib ->
     let m = Ml_kind.Dict.get impl_or_vlib ml_kind in
     (match ml_kind with
-     | Impl -> transitive_deps_output_uncached t m ~ml_kind
+     | Impl -> transitive_deps_output_uncached t m ~ml_kind ~mode:Standard
      | Intf -> transitive_deps_output_of_imported_vlib t m ~ml_kind)
 
 and transitive_deps_output_of_imported_vlib t m ~ml_kind =
@@ -455,15 +456,15 @@ and transitive_deps_output_of_imported_vlib t m ~ml_kind =
        Transitive_deps_output.merge ~dir:t.dir ~transitive ~immediate)
 ;;
 
-let transitive_deps_of t ~ml_kind unit =
+let transitive_deps_of t ~ml_kind ~mode unit =
   let obj_name = Module.obj_name unit in
   let deps =
-    match Module_name.Unique.Map.find t.obj_map obj_name with
-    | Some _ ->
+    match mode, Module_name.Unique.Map.find t.obj_map obj_name with
+    | Ocamldep.Mode.Standard, Some _ ->
       Action_builder.exec_memo (Lazy.force t.memo) (obj_name, ml_kind)
       |> Action_builder.map ~f:(fun output -> output.parsed)
-    | None ->
-      transitive_deps_output_uncached t unit ~ml_kind
+    | Standard, None | Transparent_aliases, _ ->
+      transitive_deps_output_uncached t unit ~ml_kind ~mode
       |> Action_builder.map ~f:(Transitive_deps_output.parse ~modules:t.modules)
       |> Action_builder.memoize
            (sprintf
@@ -472,7 +473,7 @@ let transitive_deps_of t ~ml_kind unit =
               (Ml_kind.to_string ml_kind))
   in
   match ml_kind, t.imported_vlib_deps with
-  | Impl, Some { stage_copied_objects_if_dep_info_missing = Some stage; _ } ->
+  | Ml_kind.Impl, Some { stage_copied_objects_if_dep_info_missing = Some stage; _ } ->
     let open Action_builder.O in
     let+ deps = deps
     and+ () = Lazy.force stage in
@@ -619,7 +620,7 @@ let make_imported_vlib_deps ~obj_dir ~vimpl ~dir ~sctx ~sandbox ~for_ : imported
     let deps_of sourced_module ~ml_kind =
       let* transitive_deps = Memo.Lazy.force transitive_deps in
       let m = Modules.Sourced_module.to_module sourced_module in
-      transitive_deps_of transitive_deps ~ml_kind m
+      transitive_deps_of transitive_deps ~ml_kind ~mode:Standard m
       |> Action_builder.map ~f:(fun deps -> Transitive deps)
       |> Memo.return
     in
@@ -649,7 +650,7 @@ let deps_of_module ~modules ~transitive_deps ~ml_kind m =
   | Wrapped_compat ->
     wrapped_compat_deps modules m |> Action_builder.return |> Memo.return
   | _ ->
-    let deps = transitive_deps_of transitive_deps ~ml_kind m in
+    let deps = transitive_deps_of transitive_deps ~ml_kind ~mode:Standard m in
     Memo.return
       (match Modules.With_vlib.alias_for modules m with
        | [] -> deps
@@ -735,7 +736,7 @@ let read_transitive_deps_of_module
       let transitive_deps, _imported_vlib_deps =
         make_transitive_deps ~obj_dir ~modules ~sandbox ~impl ~dir ~sctx ~for_
       in
-      let+ deps = transitive_deps_of transitive_deps ~ml_kind unit in
+      let+ deps = transitive_deps_of transitive_deps ~ml_kind ~mode:Standard unit in
       (match Modules.With_vlib.alias_for modules unit with
        | [] -> deps
        | aliases -> aliases @ deps)
@@ -748,7 +749,15 @@ let read_immediate_deps_of ~sandbox ~sctx ~obj_dir ~modules ~ml_kind m =
   | _ ->
     if has_single_file modules
     then Action_builder.return []
-    else Ocamldep.read_immediate_deps_of ~sandbox ~sctx ~obj_dir ~modules ~ml_kind m
+    else
+      Ocamldep.read_immediate_deps_of
+        ~sandbox
+        ~sctx
+        ~obj_dir
+        ~modules
+        ~ml_kind
+        ~mode:Ocamldep.Mode.Standard
+        m
 ;;
 
 let read_deps_of ~sandbox ~sctx ~obj_dir ~modules ~impl ~dir ~for_ ~ml_kind m =
@@ -767,18 +776,15 @@ let read_deps_of ~sandbox ~sctx ~obj_dir ~modules ~impl ~dir ~for_ ~ml_kind m =
   else Action_builder.return []
 ;;
 
-let dict_of_func_concurrently f =
-  let+ impl = f ~ml_kind:Ml_kind.Impl
-  and+ intf = f ~ml_kind:Ml_kind.Intf in
-  Ml_kind.Dict.make ~impl ~intf
-;;
-
-let for_module ~obj_dir ~modules ~sandbox ~impl ~dir ~sctx ~for_ module_ =
+let for_module ~obj_dir ~modules ~sandbox ~impl ~dir ~sctx ~for_ ~mode module_ =
   let transitive_deps, imported_vlib_deps =
     make_transitive_deps ~obj_dir ~modules ~sandbox ~impl ~dir ~sctx ~for_
   in
-  dict_of_func_concurrently
-    (deps_of ~modules ~transitive_deps ~imported_vlib_deps (Normal module_))
+  match mode with
+  | Ocamldep.Mode.Standard ->
+    deps_of ~modules ~transitive_deps ~imported_vlib_deps ~ml_kind:Impl (Normal module_)
+  | Transparent_aliases ->
+    transitive_deps_of transitive_deps ~ml_kind:Impl ~mode module_ |> Memo.return
 ;;
 
 let rules ~obj_dir ~modules ~sandbox ~impl ~sctx ~dir ~for_ =
@@ -788,12 +794,15 @@ let rules ~obj_dir ~modules ~sandbox ~impl ~sctx ~dir ~for_ =
     let transitive_deps, imported_vlib_deps =
       make_transitive_deps ~obj_dir ~modules ~sandbox ~impl ~dir ~sctx ~for_
     in
-    dict_of_func_concurrently (fun ~ml_kind ->
+    let deps ~ml_kind =
       let+ per_module =
         Modules.With_vlib.obj_map modules
         |> Parallel_map.parallel_map ~f:(fun _obj_name m ->
           deps_of ~modules ~transitive_deps ~imported_vlib_deps ~ml_kind m)
       in
-      Dep_graph.make ~dir ~per_module)
-    |> Memo.map ~f:(Dep_graph.Ml_kind.for_module_compilation ~modules)
+      Dep_graph.make ~dir ~per_module
+    in
+    let+ impl = deps ~ml_kind:Ml_kind.Impl
+    and+ intf = deps ~ml_kind:Ml_kind.Intf in
+    Ml_kind.Dict.make ~impl ~intf |> Dep_graph.Ml_kind.for_module_compilation ~modules
 ;;
