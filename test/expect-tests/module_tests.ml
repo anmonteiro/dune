@@ -212,6 +212,58 @@ let%expect_test "virtual-library dependency lookup" =
     |}]
 ;;
 
+let%expect_test "physical virtual-library dependency lookup" =
+  let current = generated ~obj_name:"Impl__Current" [ "Current" ] in
+  let impl_private = private_module ~obj_name:"Impl__Private" [ "Private_impl" ] in
+  let impl = make_lib ~lib_name:"impl" ~implements:true [ current; impl_private ] in
+  let vlib_public = generated ~obj_name:"Vlib__Public" [ "Public_vlib" ] in
+  let vlib_private = private_module ~obj_name:"Vlib__Private" [ "Private_vlib" ] in
+  let group_public = generated ~obj_name:"Vlib__Group__Public" [ "Group"; "Public" ] in
+  let group_private =
+    private_module ~obj_name:"Vlib__Group__Private" [ "Group"; "Private" ]
+  in
+  let vlib =
+    make_lib ~lib_name:"vlib" [ vlib_public; vlib_private; group_public; group_private ]
+  in
+  let group_alias =
+    match Modules.With_vlib.alias_for (Modules.With_vlib.modules vlib) group_public with
+    | [ group_alias ] -> group_alias
+    | _ -> Code_error.raise "expected one group alias" []
+  in
+  let modules = Modules.With_vlib.impl impl ~vlib in
+  let check label module_ =
+    let deps =
+      match
+        Modules.With_vlib.find_dep_by_obj_name
+          modules
+          ~of_:current
+          (Module.obj_name module_)
+      with
+      | Ok (Some deps) -> deps
+      | Ok None -> Code_error.raise "physical dependency not found" []
+      | Error (`Parent_cycle name) ->
+        Code_error.raise
+          "unexpected parent cycle"
+          [ "dependency", Module_name.to_dyn name ]
+    in
+    Format.printf
+      "%s: %s@."
+      label
+      (Dyn.to_string (Dyn.list Dyn.string (List.map deps ~f:module_summary)))
+  in
+  check "public imported module" vlib_public;
+  check "private imported module" vlib_private;
+  check "private local module" impl_private;
+  check "public imported group" group_alias;
+  [%expect
+    {|
+    public imported module: [ "vlib__Public:Public_vlib:impl" ]
+    private imported module: []
+    private local module: [ "impl__Private:Private_impl:impl" ]
+    public imported group: [ "group:Group:alias"; "group__Public:Public:impl" ]
+    |}]
+;;
+
 let%expect_test "virtual-library object map after mapping" =
   let impl =
     make_lib

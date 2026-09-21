@@ -267,20 +267,7 @@ module Run (P : PARAMS) = struct
   let process3 base ~cmly ~target ((stanza, deps) : stanza * Path.Set.t) : unit Memo.t =
     let open Memo.O in
     let* expanded_flags = expand_flags stanza.flags in
-    (* 1. A first invocation of Menhir creates a mock [.ml] file. *)
     let source_deps = Path.Set.to_list deps in
-    let* () =
-      menhir
-        [ Command.Args.dyn expanded_flags
-        ; Deps source_deps
-        ; A "--base"
-        ; Path (Path.relative (Path.build dir) base)
-        ; A "--infer-write-query"
-        ; Target (mock_ml base)
-        ]
-      |> rule ~mode:Standard
-    in
-    (* 2. The OCaml compiler performs type inference. *)
     let name =
       Module_name.of_string_allow_invalid (stanza.loc, mock base)
       |> Module_name.Unchecked.allow_invalid
@@ -295,6 +282,94 @@ module Run (P : PARAMS) = struct
       in
       Module.of_source ~visibility:Public ~kind:Impl source
     in
+    let ocaml = Compilation_context.ocaml cctx in
+    let source_opens =
+      let project = Compilation_context.scope cctx |> Scope.project in
+      if
+        (not (Ocaml.Version.supports_generalized_open ocaml.version))
+        || Dune_project.dune_version project < (3, 5)
+      then []
+      else (
+        let modules = Compilation_context.modules cctx in
+        let aliases = Modules.With_vlib.alias_for modules mock_module in
+        let has_guarded_alias =
+          Modules.With_vlib.fold_no_vlib_with_aliases
+            modules
+            ~init:false
+            ~normal:(fun _ found -> found)
+            ~alias:(fun group found ->
+              found
+              ||
+              match Module.kind (Modules.Group.lib_interface group) with
+              | Alias _ -> false
+              | _ ->
+                List.exists aliases ~f:(fun alias ->
+                  Module_name.Unique.equal
+                    (Module.obj_name alias)
+                    (Module.obj_name (Modules.Group.alias group))))
+        in
+        if has_guarded_alias then aliases else [])
+    in
+    let mode =
+      match source_opens with
+      | [] -> Ocamldep.Mode.Standard
+      | _ :: _ -> Transparent_aliases
+    in
+    (* 1. A first invocation of Menhir creates a mock [.ml] file. *)
+    let* () =
+      let query =
+        match source_opens with
+        | [] -> mock_ml base
+        | _ :: _ ->
+          Path.Build.extend_basename
+            (mock_ml base)
+            ~suffix:(Filename.of_string_exn ".raw")
+      in
+      let action =
+        menhir
+          [ Command.Args.dyn expanded_flags
+          ; Deps source_deps
+          ; A "--base"
+          ; Path (Path.relative (Path.build dir) base)
+          ; A "--infer-write-query"
+          ; Target query
+          ]
+      in
+      let action =
+        match source_opens with
+        | [] -> action
+        | _ :: _ ->
+          (* Inline the existing alias sources so [ocamldep -as-map] can follow
+             uses to physical modules without depending on unused aliases.
+             Both dependency discovery and inference preprocess this query. *)
+          let sources =
+            List.map source_opens ~f:(fun m ->
+              Module.file m ~ml_kind:Impl |> Option.value_exn)
+          in
+          let warnings =
+            if Ocaml_config.parameterised_modules ocaml.ocaml_config
+            then "-49-53"
+            else "-49"
+          in
+          let prelude =
+            List.concat_map sources ~f:(fun source ->
+              [ Action.echo [ sprintf "open! struct\n[@@@ocaml.warning %S]\n" warnings ]
+              ; Action.cat [ source ]
+              ; Action.echo [ "end\n" ]
+              ])
+          in
+          let prefix =
+            let open Action_builder.O in
+            let+ () = Action_builder.paths sources in
+            Action.progn (prelude @ [ Action.cat [ Path.build query ] ])
+            |> Action.Full.make
+          in
+          Action_builder.progn
+            [ action; Action_builder.with_stdout_to (mock_ml base) prefix ]
+      in
+      rule ~mode:Standard action
+    in
+    (* 2. The OCaml compiler performs type inference. *)
     let* mock_module =
       Pp_spec.pp_module (Compilation_context.preprocessing cctx) mock_module ~lint:false
     in
@@ -307,11 +382,21 @@ module Run (P : PARAMS) = struct
       let modules = Compilation_context.modules inference_cctx in
       let impl = Compilation_context.implements inference_cctx in
       let dir = Obj_dir.dir obj_dir in
-      Dep_rules.for_module ~obj_dir ~modules ~sandbox ~impl ~dir ~sctx mock_module ~for_
+      Dep_rules.for_module
+        ~obj_dir
+        ~modules
+        ~sandbox
+        ~impl
+        ~dir
+        ~sctx
+        ~mode
+        mock_module
+        ~for_
     in
     let* () =
       Module_compilation.ocamlc_i
         ~deps
+        ~mode
         inference_cctx
         mock_module
         ~output:(inferred_mli base)
@@ -319,8 +404,7 @@ module Run (P : PARAMS) = struct
     let* () =
       let* deps =
         match stanza.mode with
-        | Standard | Promote _ | Ignore_source_files ->
-          Memo.return (Ml_kind.Dict.get deps Impl)
+        | Standard | Promote _ | Ignore_source_files -> Memo.return deps
         | Fallback ->
           let { Ml_kind.Dict.impl; intf = _ } = Module.Source.files_by_ml_kind target in
           let source =
@@ -328,9 +412,7 @@ module Run (P : PARAMS) = struct
             |> Path.drop_optional_build_context_src_exn
           in
           let+ files = Source_tree.files_of (Path.Source.parent_exn source) in
-          if Path.Source.Set.mem files source
-          then Action_builder.return []
-          else Ml_kind.Dict.get deps Impl
+          if Path.Source.Set.mem files source then Action_builder.return [] else deps
       in
       let path = Module.Source.path target in
       let obj_dir = Compilation_context.obj_dir cctx in

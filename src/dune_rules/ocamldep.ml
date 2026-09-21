@@ -1,24 +1,45 @@
 open Import
 
+module Mode = struct
+  type t =
+    | Standard
+    | Transparent_aliases
+end
+
+let raise_parent_cycle ~dir (unit : Module.t) m =
+  User_error.raise
+    [ Pp.textf
+        "Module %s in directory %s depends on %s."
+        (Module_name.to_string (Module.name unit))
+        (Path.to_string_maybe_quoted (Path.build dir))
+        (Module_name.to_string m)
+    ; Pp.textf "This doesn't make sense to me."
+    ; Pp.nop
+    ; Pp.textf
+        "%s is the main module of the library and is the only module exposed outside of \
+         the library. Consequently, it should be the one depending on all the other \
+         modules in the library."
+        (Module_name.to_string m)
+    ]
+;;
+
 let parse_module_names ~dir ~(unit : Module.t) ~modules words =
   let names = List.map words ~f:Module_name.of_checked_string in
   match Modules.With_vlib.find_deps modules ~of_:unit names with
   | Ok modules -> modules
-  | Error (`Parent_cycle m) ->
-    User_error.raise
-      [ Pp.textf
-          "Module %s in directory %s depends on %s."
-          (Module_name.to_string (Module.name unit))
-          (Path.to_string_maybe_quoted (Path.build dir))
-          (Module_name.to_string m)
-      ; Pp.textf "This doesn't make sense to me."
-      ; Pp.nop
-      ; Pp.textf
-          "%s is the main module of the library and is the only module exposed outside \
-           of the library. Consequently, it should be the one depending on all the other \
-           modules in the library."
-          (Module_name.to_string m)
-      ]
+  | Error (`Parent_cycle m) -> raise_parent_cycle ~dir unit m
+;;
+
+let parse_module_names_with_obj_names ~dir ~(unit : Module.t) ~modules words =
+  let physical, logical =
+    List.partition_map words ~f:(fun word ->
+      let obj_name = Module_name.Unique.of_string word in
+      match Modules.With_vlib.find_dep_by_obj_name modules ~of_:unit obj_name with
+      | Error (`Parent_cycle m) -> raise_parent_cycle ~dir unit m
+      | Ok None -> Right word
+      | Ok (Some modules) -> Left modules)
+  in
+  List.concat physical @ parse_module_names ~dir ~unit ~modules logical
 ;;
 
 let invalid_ocamldep_output file lines =
@@ -45,7 +66,7 @@ let parse_deps_exn ~file lines =
        String.extract_blank_separated_words deps)
 ;;
 
-let ocamldep_action ~sandbox ~sctx ~dir ~ml_kind unit =
+let ocamldep_action ~sandbox ~sctx ~dir ~ml_kind ~mode unit =
   let context = Super_context.context sctx in
   let flags, sandbox, forbid_action_runner =
     match Module.pp_flags unit with
@@ -72,6 +93,9 @@ let ocamldep_action ~sandbox ~sctx ~dir ~ml_kind unit =
       ~forbid_action_runner
       ocamldep
       [ A "-modules"
+      ; (match mode with
+         | Mode.Standard -> Command.Args.empty
+         | Mode.Transparent_aliases -> A "-as-map")
       ; Command.Args.dyn flags
       ; Command.Ml_kind.flag ml_kind
       ; Dep (Module.File.path source)
@@ -80,7 +104,7 @@ let ocamldep_action ~sandbox ~sctx ~dir ~ml_kind unit =
   Rule.Anonymous_action.make ~loc:Loc.none ~dir action
 ;;
 
-(* Top-level cache per (source path, ml_kind). Without it, each caller's
+(* Top-level cache per (source path, ml_kind, mode). Without it, each caller's
    [Action_builder.memoize] cell has a different digest (pp-flags closure
    identity varies), causing ocamldep to run multiply per source.
 
@@ -94,30 +118,40 @@ module Cache_key = struct
   type t =
     { source : Path.t
     ; ml_kind : Ml_kind.t
+    ; mode : Mode.t
     }
 
   let equal = Poly.equal
   let hash = Poly.hash
 
-  let to_dyn { source; ml_kind } =
-    Dyn.record [ "source", Path.to_dyn source; "ml_kind", Ml_kind.to_dyn ml_kind ]
+  let to_dyn { source; ml_kind; mode } =
+    let mode =
+      match mode with
+      | Mode.Standard -> "standard"
+      | Mode.Transparent_aliases -> "transparent_aliases"
+    in
+    Dyn.record
+      [ "source", Path.to_dyn source
+      ; "ml_kind", Ml_kind.to_dyn ml_kind
+      ; "mode", Dyn.string mode
+      ]
   ;;
 end
 
 let read_immediate_deps_words =
   let cache = Table.create (module Cache_key) 64 in
-  fun ~sandbox ~sctx ~obj_dir ~ml_kind unit ->
+  fun ~sandbox ~sctx ~obj_dir ~ml_kind ~mode unit ->
     match Module.source ~ml_kind unit with
     | None -> Action_builder.return None
     | Some source ->
       let source_path = Module.File.path source in
-      let cache_key = { Cache_key.source = source_path; ml_kind } in
+      let cache_key = { Cache_key.source = source_path; ml_kind; mode } in
       (match Table.find cache cache_key with
        | Some builder -> builder
        | None ->
          let dir = Obj_dir.dir obj_dir in
          let builder =
-           ocamldep_action ~sandbox ~sctx ~dir ~ml_kind unit
+           ocamldep_action ~sandbox ~sctx ~dir ~ml_kind ~mode unit
            |> Build_system.execute_action_stdout
            |> Memo.map ~f:(fun output ->
              Some (String.split_lines output |> parse_deps_exn ~file:source_path))
@@ -128,14 +162,17 @@ let read_immediate_deps_words =
          builder)
 ;;
 
-let read_immediate_deps_of ~sandbox ~sctx ~obj_dir ~modules ~ml_kind unit =
+let read_immediate_deps_of ~sandbox ~sctx ~obj_dir ~modules ~ml_kind ~mode unit =
   let open Action_builder.O in
-  let+ words = read_immediate_deps_words ~sandbox ~sctx ~obj_dir ~ml_kind unit in
+  let+ words = read_immediate_deps_words ~sandbox ~sctx ~obj_dir ~ml_kind ~mode unit in
   match words with
   | None -> []
   | Some words ->
     let dir = Obj_dir.dir obj_dir in
-    parse_module_names ~dir ~unit ~modules words
+    (match mode with
+     | Mode.Standard -> parse_module_names ~dir ~unit ~modules words
+     | Mode.Transparent_aliases ->
+       parse_module_names_with_obj_names ~dir ~unit ~modules words)
     |> List.append (Modules.With_vlib.implicit_deps modules ~of_:unit)
 ;;
 
@@ -144,7 +181,9 @@ let read_immediate_deps_of ~sandbox ~sctx ~obj_dir ~modules ~ml_kind unit =
    discard. Used for per-module inter-library dependency filtering (#4572). *)
 let read_immediate_deps_raw_of ~sandbox ~sctx ~obj_dir ~ml_kind unit =
   let open Action_builder.O in
-  let+ words = read_immediate_deps_words ~sandbox ~sctx ~obj_dir ~ml_kind unit in
+  let+ words =
+    read_immediate_deps_words ~sandbox ~sctx ~obj_dir ~ml_kind ~mode:Mode.Standard unit
+  in
   match words with
   | None -> Module_name.Set.empty
   | Some words -> Module_name.Set.of_list_map words ~f:Module_name.of_checked_string

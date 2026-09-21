@@ -1432,6 +1432,64 @@ module With_vlib = struct
          | Impl { impl; vlib = _; _ } -> alias_for impl m)
   ;;
 
+  let group_dependency_by_obj_name t obj_name =
+    let find t =
+      fold_no_vlib_with_aliases
+        t
+        ~init:None
+        ~normal:(fun _ acc -> acc)
+        ~alias:(fun group acc ->
+          match acc with
+          | Some _ -> acc
+          | None ->
+            let alias = Group.alias group in
+            let lib_interface = Group.lib_interface group in
+            if
+              Module_name.Unique.equal obj_name (Module.obj_name alias)
+              || Module_name.Unique.equal obj_name (Module.obj_name lib_interface)
+            then Some group
+            else None)
+    in
+    match find t, t with
+    | (Some _ as group), _ -> group
+    | None, Modules _ -> None
+    | None, Impl { vlib; _ } -> find (Modules vlib)
+  ;;
+
+  let find_dep_by_obj_name t ~of_ obj_name =
+    if Module_name.Unique.equal obj_name (Module.obj_name of_)
+    then Ok (Some [])
+    else (
+      let obj_map = obj_map t in
+      match Module_name.Unique.Map.find obj_map obj_name with
+      | None -> Ok None
+      | Some sourced_module ->
+        let m = Sourced_module.to_module sourced_module in
+        let deps =
+          match group_dependency_by_obj_name t obj_name with
+          | None -> Ok [ m ]
+          | Some group ->
+            let group_alias = Group.alias group in
+            let is_parent =
+              alias_for t of_
+              |> List.exists ~f:(fun parent ->
+                match Module.kind group_alias, Module.kind parent with
+                | Alias group_path, Alias parent_path ->
+                  List.equal Module_name.equal group_path parent_path
+                | _ -> false)
+            in
+            if is_parent
+            then Error (`Parent_cycle group.name)
+            else Ok (Group.Find_dep.closure_node (Group group))
+        in
+        Result.map deps ~f:(fun deps ->
+          List.filter deps ~f:(fun m ->
+            match Module_name.Unique.Map.find obj_map (Module.obj_name m) with
+            | Some (Imported_from_vlib m) -> Module.visibility m = Public
+            | Some (Normal _ | Impl_of_virtual_module _) | None -> true)
+          |> Option.some))
+  ;;
+
   let local_open t m =
     alias_for t m
     |> List.map ~f:(fun m ->
