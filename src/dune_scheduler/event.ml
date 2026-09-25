@@ -170,6 +170,17 @@ module Queue = struct
       loop ()
     in
     let ev = loop () in
+    let job_pending =
+      if Sys.win32 then not (Queue.is_empty q.jobs_completed) else q.job_complete_ready
+    in
+    (* Retain pending shared yields so later readers do not bypass them. *)
+    let got_event =
+      Option.is_some q.yield
+      || (not (Shutdown.Reason.Set.is_empty q.shutdown_reasons))
+      || (not (Queue.is_empty q.worker_tasks_completed))
+      || job_pending
+    in
+    q.got_event <- got_event;
     Mutex.unlock q.mutex;
     ev
   ;;

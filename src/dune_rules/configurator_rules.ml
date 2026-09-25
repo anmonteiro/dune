@@ -49,6 +49,14 @@ let gen_rules (ctx : Build_context.t) (ocaml : Ocaml_toolchain.t Action_builder.
   |> Rules.Produce.rule
 ;;
 
+let inputs =
+  Memo.lazy_ ~name:"configurator-inputs" (fun () ->
+    let* ctxs = Context.DB.all () in
+    Memo.parallel_iter ctxs ~f:(fun ctx ->
+      let+ (_ : Ocaml_toolchain.t) = Context.ocaml ctx in
+      ()))
+;;
+
 let force_files =
   Memo.lazy_ ~name:"force-configuration-files" (fun () ->
     let* ctxs = Context.DB.all () in

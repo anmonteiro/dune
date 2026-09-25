@@ -42,9 +42,11 @@ let rule_targets ~dir ~source_files ~lib_config ~dialects (buildable : Buildable
     @ List.concat_map source_files ~f:(fun (dir, files) ->
       Filename.Array.Set.to_list_map files ~f:(Path.Build.relative_fname dir))
   in
-  let source_files =
-    (dir, List.map generated ~f:Path.Build.basename |> Filename.Array.Set.of_list)
-    :: source_files
+  let source_dirs =
+    List.fold_left
+      source_files
+      ~init:(Path.Build.Set.singleton dir)
+      ~f:(fun dirs (dir, _) -> Path.Build.Set.add dirs dir)
   in
   let foreign_kinds =
     List.map buildable.foreign_stubs ~f:(fun stubs -> Foreign.Source.Stubs stubs)
@@ -52,7 +54,7 @@ let rule_targets ~dir ~source_files ~lib_config ~dialects (buildable : Buildable
       Foreign.Source.Ctypes ctypes)
   in
   let preprocessing =
-    List.fold_left source_files ~init:Target_mask.empty ~f:(fun mask (dir, _) ->
+    Path.Build.Set.fold source_dirs ~init:Target_mask.empty ~f:(fun dir mask ->
       Target_mask.union
         mask
         (Pp_spec_rules.rule_target_families

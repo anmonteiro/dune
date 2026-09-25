@@ -261,24 +261,27 @@ end = struct
             | None -> Memo.return None
             | Some (targets, producer) ->
               let+ files =
-                Rules.defer targets (fun () ->
-                  let* () = Memo.Lazy.force Configurator_rules.force_files in
-                  match producer with
-                  | `Rule rule ->
-                    Simple_rules.user_rule sctx rule ~dir ~expander
-                    >>| (function
-                     | None -> []
-                     | Some targets ->
-                       (* CR-someday amokhov: Do not ignore directory targets. *)
-                       Filename.Set.to_list targets.files)
-                  | `Copy_files def ->
-                    Simple_rules.copy_files sctx def ~src_dir ~dir ~expander
-                    >>| Path.Set.to_list_map ~f:Path.basename
-                  | `Generate_sites_module def ->
-                    Generate_sites_module_rules.setup_rules sctx ~dir def
-                    >>| fun fn -> [ Filename.of_string_exn fn ])
+                Rules.defer_after
+                  targets
+                  ~prepare:(Memo.Lazy.force Configurator_rules.force_files)
+                  (fun () ->
+                     let* () = Memo.Lazy.force Configurator_rules.inputs in
+                     match producer with
+                     | `Rule rule ->
+                       Simple_rules.user_rule sctx rule ~dir ~expander
+                       >>| (function
+                        | None -> []
+                        | Some targets ->
+                          (* CR-someday amokhov: Do not ignore directory targets. *)
+                          Filename.Set.to_list targets.files)
+                     | `Copy_files def ->
+                       Simple_rules.copy_files sctx def ~src_dir ~dir ~expander
+                       >>| Path.Set.to_list_map ~f:Path.basename
+                     | `Generate_sites_module def ->
+                       Generate_sites_module_rules.setup_rules sctx ~dir def
+                       >>| fun fn -> [ Filename.of_string_exn fn ])
               in
-              Some { Source_files.targets; files })
+              Some { Source_files.targets; files = Rules.Deferred.result files })
           >>| List.filter_opt
       in
       { Source_files.dir

@@ -9,6 +9,18 @@ let in_non_incremental_mode ~f =
     Memo.set_incremental true)
 ;;
 
+let%expect_test "incremental mode reflects the selected configuration" =
+  printfn "initial: %b" (Memo.is_incremental ());
+  in_non_incremental_mode ~f:(fun () -> printfn "disabled: %b" (Memo.is_incremental ()));
+  printfn "restored: %b" (Memo.is_incremental ());
+  [%expect
+    {|
+    initial: true
+    disabled: false
+    restored: true
+    |}]
+;;
+
 let%expect_test "non-incremental mode discards dependencies but counts them" =
   in_non_incremental_mode ~f:(fun () ->
     let dependency =
