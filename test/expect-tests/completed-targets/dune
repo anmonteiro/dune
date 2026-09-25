@@ -1,16 +1,13 @@
 (library
- (name cram_tests)
+ (name dune_completed_targets_unit_tests)
  (inline_tests)
  (libraries
+  dune_tests_common
   stdune
   dune_engine
-  dune_rules
-  dune_tests_common
   targets
   fiber
   memo
-  ;; This is because of the (implicit_transitive_deps false)
-  ;; in dune-project
   ppx_expect.config
   ppx_expect.config_types
   base

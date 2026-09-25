@@ -25,7 +25,11 @@ module Args0 = struct
     | Dyn : without_targets t Action_builder.t -> _ t
     | Expand : expand -> _ t
 
-  let dyn args = Dyn (Action_builder.map args ~f:(fun x -> As x))
+  let dyn args =
+    let args = Action_builder.map args ~f:Appendable_list.of_list in
+    Expand (fun ~dir:_ -> args)
+  ;;
+
   let empty = S []
 
   let as_any : without_targets t -> any t = function
@@ -48,94 +52,132 @@ end
 
 open Args0
 
-let rec expand
-  : type a. dir:Path.t -> a t -> string Appendable_list.t Action_builder.With_targets.t
+let rec expand_build
+  : type a.
+    dir:Path.t
+    -> targets:Targets.t ref
+    -> a t
+    -> string Appendable_list.t Action_builder.t
   =
-  fun ~dir t ->
+  fun ~dir ~targets t ->
   match t with
-  | A s -> Appendable_list.singleton s |> Action_builder.With_targets.return
-  | As l -> Appendable_list.of_list l |> Action_builder.With_targets.return
+  | A s -> Appendable_list.singleton s |> Action_builder.return
+  | As l -> Appendable_list.of_list l |> Action_builder.return
   | Dep fn ->
     Action_builder.path fn
     |> Action_builder.map ~f:(fun () ->
       Appendable_list.singleton (Path.reach fn ~from:dir))
-    |> Action_builder.with_no_targets
   | Path fn ->
-    Path.reach fn ~from:dir
-    |> Appendable_list.singleton
-    |> Action_builder.With_targets.return
+    Path.reach fn ~from:dir |> Appendable_list.singleton |> Action_builder.return
   | Deps fns ->
     Action_builder.paths fns
     |> Action_builder.map ~f:(fun () ->
       Appendable_list.of_list @@ List.map fns ~f:(Path.reach ~from:dir))
-    |> Action_builder.with_no_targets
   | Paths fns ->
     List.map fns ~f:(Path.reach ~from:dir)
     |> Appendable_list.of_list
-    |> Action_builder.With_targets.return
-  | S ts -> expand_list ~dir ts
-  | Concat (sep, ts) ->
-    expand ~dir (S ts)
-    |> Action_builder.With_targets.map ~f:(fun x ->
-      Appendable_list.to_list x |> String.concat ~sep |> Appendable_list.singleton)
-  | Target fn ->
-    Path.build fn
-    |> Path.reach ~from:dir
-    |> Appendable_list.singleton
     |> Action_builder.return
-    |> Action_builder.with_file_targets ~file_targets:[ fn ]
+  | S ts -> expand_list_build ~dir ~targets ts
+  | Concat (sep, ts) ->
+    (* Keep grouped target unions instead of copying a growing outer set. *)
+    let nested_targets = ref Targets.empty in
+    let build =
+      expand_list_build ~dir ~targets:nested_targets ts
+      |> Action_builder.map ~f:(fun x ->
+        Appendable_list.to_list x |> String.concat ~sep |> Appendable_list.singleton)
+    in
+    targets := Targets.combine !nested_targets !targets;
+    build
+  | Target fn ->
+    let build =
+      Path.build fn
+      |> Path.reach ~from:dir
+      |> Appendable_list.singleton
+      |> Action_builder.return
+    in
+    targets := Targets.combine (Targets.File.create fn) !targets;
+    build
   | Dyn dyn ->
-    Action_builder.bind dyn ~f:(expand_no_targets ~dir) |> Action_builder.with_no_targets
+    (* Dynamic arguments get their own collector at evaluation time. *)
+    Action_builder.bind dyn ~f:(expand_no_targets ~dir)
   | Hidden_deps deps ->
-    Action_builder.deps deps
-    |> Action_builder.map ~f:(fun () -> Appendable_list.empty)
-    |> Action_builder.with_no_targets
+    Action_builder.deps deps |> Action_builder.map ~f:(fun () -> Appendable_list.empty)
   | Hidden_targets fns ->
-    Action_builder.return Appendable_list.empty
-    |> Action_builder.with_file_targets ~file_targets:fns
-  | Expand f -> f ~dir |> Action_builder.with_no_targets
+    let build = Action_builder.return Appendable_list.empty in
+    targets
+    := Targets.combine (Targets.Files.create (Path.Build.Set.of_list fns)) !targets;
+    build
+  | Expand f -> f ~dir
 
-and expand_list
+and expand_list_build
   : type a.
-    dir:Path.t -> a t list -> string Appendable_list.t Action_builder.With_targets.t
+    dir:Path.t
+    -> targets:Targets.t ref
+    -> a t list
+    -> string Appendable_list.t Action_builder.t
   =
-  fun ~dir ts ->
+  fun ~dir ~targets ts ->
   match ts with
-  | [] -> Appendable_list.empty |> Action_builder.With_targets.return
+  | [] -> Appendable_list.empty |> Action_builder.return
   | ts ->
-    let rec expand_all ts stack builds targets =
+    let flush static builds =
+      match static with
+      | [] -> builds
+      | _ :: _ ->
+        let build = Action_builder.return (Appendable_list.concat (List.rev static)) in
+        build :: builds
+    in
+    let rec expand_all ts stack static builds =
       match ts with
       | [] ->
         (match stack with
-         | ts :: stack -> expand_all ts stack builds targets
-         | [] ->
-           { Action_builder.With_targets.build = Action_builder.all (List.rev builds)
-           ; targets
-           })
-      | S nested :: ts -> expand_all nested (ts :: stack) builds targets
+         | ts :: stack -> expand_all ts stack static builds
+         | [] -> Action_builder.all (List.rev (flush static builds)))
+      | S nested :: ts -> expand_all nested (ts :: stack) static builds
       | A string :: ts ->
-        let build = Action_builder.return (Appendable_list.singleton string) in
-        expand_all ts stack (build :: builds) targets
+        let static = Appendable_list.singleton string :: static in
+        expand_all ts stack static builds
       | As strings :: ts ->
-        let build = Action_builder.return (Appendable_list.of_list strings) in
-        expand_all ts stack (build :: builds) targets
+        let static = Appendable_list.of_list strings :: static in
+        expand_all ts stack static builds
+      | Path fn :: ts ->
+        let string = Path.reach fn ~from:dir in
+        let static = Appendable_list.singleton string :: static in
+        expand_all ts stack static builds
+      | Paths fns :: ts ->
+        let strings = List.map fns ~f:(Path.reach ~from:dir) in
+        let static = Appendable_list.of_list strings :: static in
+        expand_all ts stack static builds
       | t :: ts ->
-        let { Action_builder.With_targets.build; targets = new_targets } =
-          expand ~dir t
-        in
-        expand_all ts stack (build :: builds) (Targets.combine new_targets targets)
+        let builds = flush static builds in
+        let build = expand_build ~dir ~targets t in
+        expand_all ts stack [] (build :: builds)
     in
-    expand_all ts [] [] Targets.empty
-    |> Action_builder.With_targets.map ~f:Appendable_list.concat
+    expand_all ts [] [] [] |> Action_builder.map ~f:Appendable_list.concat
 
 and expand_no_targets ~dir (t : without_targets t) =
-  let { Action_builder.With_targets.build; targets } = expand ~dir t in
-  assert (Targets.is_empty targets);
+  let targets = ref Targets.empty in
+  let build = expand_build ~dir ~targets t in
+  assert (Targets.is_empty !targets);
   build
+;;
 
-and expand_list_no_targets ~dir (ts : without_targets t list) =
-  let { Action_builder.With_targets.build; targets } = expand_list ~dir ts in
-  assert (Targets.is_empty targets);
+let expand ~dir t =
+  let targets = ref Targets.empty in
+  let build = expand_build ~dir ~targets t in
+  Action_builder.with_targets build ~targets:!targets
+;;
+
+let expand_list ~dir ts =
+  let targets = ref Targets.empty in
+  let build = expand_list_build ~dir ~targets ts in
+  Action_builder.with_targets build ~targets:!targets
+;;
+
+let expand_list_no_targets ~dir (ts : without_targets t list) =
+  let targets = ref Targets.empty in
+  let build = expand_list_build ~dir ~targets ts in
+  assert (Targets.is_empty !targets);
   build
 ;;
 
