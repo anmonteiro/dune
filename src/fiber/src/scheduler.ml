@@ -231,14 +231,22 @@ and exec_effect ctx eff jobs =
     exec ctx k () (Jobs.concat jobs (Job (suspended.ctx, suspended.run, x, Empty)))
   | Get_var (key, k) -> exec ctx k (Var_map.get ctx.vars key) jobs
   | Set_var (key, x, f, k) ->
-    let ctx = { ctx with parent = ctx; vars = Var_map.set ctx.vars key x } in
-    exec_fiber_thunk ctx f (Unwind_to k) jobs
+    let vars = Var_map.set ctx.vars key x in
+    if vars == ctx.vars
+    then exec_fiber_thunk ctx f k jobs
+    else (
+      let ctx = { ctx with parent = ctx; vars } in
+      exec_fiber_thunk ctx f (Unwind_to k) jobs)
   | Update_var (key, f, body, k) ->
     let ctx = update_var ctx key f in
     exec_fiber_thunk ctx body (Unwind_to k) jobs
   | Set_var_apply (key, x, f, y, k) ->
-    let ctx = { ctx with parent = ctx; vars = Var_map.set ctx.vars key x } in
-    exec_fiber_apply ctx f y (Unwind_to k) jobs
+    let vars = Var_map.set ctx.vars key x in
+    if vars == ctx.vars
+    then exec_fiber_apply ctx f y k jobs
+    else (
+      let ctx = { ctx with parent = ctx; vars } in
+      exec_fiber_apply ctx f y (Unwind_to k) jobs)
   | Update_var_apply (key, f, body, x, k) ->
     let ctx = update_var ctx key f in
     exec_fiber_apply ctx body x (Unwind_to k) jobs
@@ -315,10 +323,24 @@ and exec_fiber : type a. context -> a t -> a continuation -> Jobs.t -> step' =
   match t with
   | Return_t x -> exec ctx k x jobs
   | Never_t -> loop jobs
+  | Map_t (Ivar_fill_t (ivar, x), f) ->
+    let jobs = Jobs.concat jobs (Jobs.fill_ivar ivar x Empty) in
+    (match f () with
+     | exception exn -> handle_exception ctx exn jobs
+     | y -> exec ctx k y jobs)
   | Map_t (t, f) -> exec_fiber ctx t (Map (f, k)) jobs
   | Map2_t (t, f, g) -> exec_fiber ctx t (Map2 (f, g, k)) jobs
   | Map3_t (t, f, g, h) -> exec_fiber ctx t (Map3 (f, g, h, k)) jobs
+  | Bind_t (Return_t value, f) ->
+    (match f value with
+     | exception exn -> handle_exception ctx exn jobs
+     | Return_t result -> exec ctx k result jobs
+     | t -> exec_fiber ctx t k jobs)
   | Bind_t (t, f) -> exec_fiber ctx t (Bind (f, k)) jobs
+  | Bind_apply_t (Return_t value, f, x) ->
+    (match f value x with
+     | exception exn -> handle_exception ctx exn jobs
+     | t -> exec_fiber ctx t k jobs)
   | Bind_apply_t (t, f, x) -> exec_fiber ctx t (Apply (f, x, k)) jobs
   | Bind_result_t (t, f) -> exec_fiber ctx t (Bind_result (f, k)) jobs
   | Thunk_t f -> exec_fiber_thunk ctx f k jobs
@@ -346,19 +368,33 @@ and exec_fiber : type a. context -> a t -> a continuation -> Jobs.t -> step' =
   | Ivar_fill_t (ivar, x) -> fill_ivar ctx ivar x k jobs
   | Get_var_t key -> exec ctx k (Var_map.get ctx.vars key) jobs
   | Set_var_t (key, x, f) ->
-    let ctx = { ctx with parent = ctx; vars = Var_map.set ctx.vars key x } in
-    exec_fiber_thunk ctx f (Unwind_to k) jobs
+    let vars = Var_map.set ctx.vars key x in
+    if vars == ctx.vars
+    then exec_fiber_thunk ctx f k jobs
+    else (
+      let ctx = { ctx with parent = ctx; vars } in
+      exec_fiber_thunk ctx f (Unwind_to k) jobs)
   | Update_var_t (key, f, body) ->
     let ctx = update_var ctx key f in
     exec_fiber_thunk ctx body (Unwind_to k) jobs
   | Get_apply_t (key, f, x) -> exec ctx (Apply (f, x, k)) (Var_map.get ctx.vars key) jobs
   | Get_apply_map_t (key, f, x) ->
-    exec ctx (Apply_map (f, x, k)) (Var_map.get ctx.vars key) jobs
+    let value = Var_map.get ctx.vars key in
+    (match f value x with
+     | exception exn -> handle_exception ctx exn jobs
+     | result -> exec ctx k result jobs)
   | Get_apply_map2_t (key, f, x, y) ->
-    exec ctx (Apply_map2 (f, x, y, k)) (Var_map.get ctx.vars key) jobs
+    let value = Var_map.get ctx.vars key in
+    (match f value x y with
+     | exception exn -> handle_exception ctx exn jobs
+     | result -> exec ctx k result jobs)
   | Set_apply_t (key, value, f, x) ->
-    let ctx = { ctx with parent = ctx; vars = Var_map.set ctx.vars key value } in
-    exec_fiber_apply ctx f x (Unwind_to k) jobs
+    let vars = Var_map.set ctx.vars key value in
+    if vars == ctx.vars
+    then exec_fiber_apply ctx f x k jobs
+    else (
+      let ctx = { ctx with parent = ctx; vars } in
+      exec_fiber_apply ctx f x (Unwind_to k) jobs)
   | Update_apply_t (key, f, body, x) ->
     let ctx = update_var ctx key f in
     exec_fiber_apply ctx body x (Unwind_to k) jobs

@@ -128,10 +128,12 @@ consumes these inputs remain genuine cycles.
 Source inventories retain each producer's mask and discover filenames only for
 the requested source family. OCaml, foreign, documentation, and Rocq discovery
 therefore need not force unrelated data rules. Header and test-expectation
-queries select their own filenames. Compilation rules are suspended per module,
-with generated alias/root sources suspended separately. Merlin configurations
-are per stanza, and alias producers declare their actual alias names. JS/Wasm
-archives and legacy documentation outputs also have separate producers.
+queries select their own filenames. OCaml compilation is suspended per stanza;
+forcing it emits rule declarations while leaving their actions deferred. Melange
+compilation is suspended per module, and generated alias/root sources have
+separate producers. Merlin configurations are per stanza, and alias producers
+declare their actual alias names. JS/Wasm archives and legacy documentation
+outputs also have separate producers.
 
 Validation associated with a producer runs when it is forced. Formatting can
 therefore proceed without evaluating unrelated buildable stanzas or installing

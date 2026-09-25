@@ -34,6 +34,18 @@ let check_point = ref (Fiber.return ())
    non-reproducible errors (which are never restored from the cache) get recomputed. *)
 let last_saw_non_reproducible_exn_at = ref Run.invalid
 
+let replay (node : (_, _) Dep_node.t) value =
+  try Spec.replay node.spec node.input value with
+  | exn ->
+    let { Exn_with_backtrace.exn; backtrace } = Exn_with_backtrace.capture exn in
+    let exn =
+      match exn with
+      | Non_reproducible _ -> exn
+      | _ -> Non_reproducible exn
+    in
+    Exn_with_backtrace.reraise { exn; backtrace }
+;;
+
 (* The cancelled value of a computation aborted by a dependency cycle. Its deps are
    inaccurate, so it is stored with [Deps.empty] and as a non-reproducible error (so it
    is never restored from the cache). *)
@@ -44,10 +56,53 @@ let cancelled ~dependency_cycle : Collect_errors_monoid.t =
 ;;
 
 (* [Changed] if [dep] is newer than [node] and [Unchanged] otherwise. *)
-let dep_changed_or_not ~(node : _ Dep_node.t) ~(dep : _ Dep_node.t) : _ Changed_or_not.t =
+let dep_changed_or_not ~(node : _ Dep_node.t) ~(dep : _ Dep_node.t)
+  : _ Changed_or_not.t Fiber.t
+  =
   match Run.compare (Dep_node.last_changed_at dep) (Dep_node.last_validated_at node) with
-  | Gt -> Changed
-  | Eq | Lt -> Unchanged
+  | Gt -> Fiber.return Changed_or_not.Changed
+  | Eq | Lt -> Fiber.return Changed_or_not.Unchanged
+;;
+
+let replay_dep_is_ready last_validated_at (Dep_node.T dep) =
+  Run.is_current (Dep_node.last_validated_at dep)
+  &&
+  match Run.compare (Dep_node.last_changed_at dep) last_validated_at with
+  | Gt -> false
+  | Eq | Lt -> true
+;;
+
+let rec replay_seq_is_ready last_validated_at deps index =
+  if index = Array.Immutable.length deps
+  then true
+  else (
+    match Array.Immutable.get deps index with
+    | Deps.Static.Singleton dep ->
+      replay_dep_is_ready last_validated_at dep
+      && replay_seq_is_ready last_validated_at deps (index + 1)
+    | Empty | Seq _ | Par _ -> false)
+;;
+
+let replay_ready_deps (node : (_, _) Dep_node.t) =
+  let last_validated_at = Dep_node.last_validated_at node in
+  match node.deps with
+  | Deps.Static.Empty -> Some 0
+  | Singleton dep -> if replay_dep_is_ready last_validated_at dep then Some 1 else None
+  | Seq deps ->
+    if replay_seq_is_ready last_validated_at deps 0
+    then Some (Array.Immutable.length deps)
+    else None
+  | Par _ -> None
+;;
+
+let restore_replay_error (node : (_, _) Dep_node.t) exn =
+  let+ () = Error_handler.report_error exn in
+  last_saw_non_reproducible_exn_at := Run.current ();
+  let errors : Collect_errors_monoid.t =
+    { exns = Exn_set.singleton exn; reproducible = false }
+  in
+  update_value node (Error errors) ~deps:node.deps;
+  Changed_or_not.Unchanged
 ;;
 
 let rec restore_from_cache
@@ -80,7 +135,7 @@ let rec restore_from_cache
            the current run, so there is no need to restore it (which would allocate a
            fiber). We can compare the timestamps directly. *)
         if Run.is_current (Dep_node.last_validated_at dep)
-        then Fiber.return (dep_changed_or_not ~node ~dep)
+        then dep_changed_or_not ~node ~dep
         else
           consider_and_restore_from_cache_without_adding_dep dep
           >>= function
@@ -88,7 +143,7 @@ let rec restore_from_cache
             (* Here [dep_changed_or_not] can return [Changed] if the [node] was skipped in
                the previous run, i.e., it was unreachable, while the [dep] wasn't skipped
                and changed. *)
-            Fiber.return (dep_changed_or_not ~node ~dep)
+            dep_changed_or_not ~node ~dep
           | Cancelled { dependency_cycle } ->
             Fiber.return (Changed_or_not.Cancelled { dependency_cycle })
           | Changed ->
@@ -110,12 +165,13 @@ let rec restore_from_cache
                   of being deferred to the compute phase where it might run sequentially. We
                   still report [Changed] in this case since there is no cutoff to check. *)
                consider_and_compute_without_adding_dep dep
-               >>| (function
+               >>= (function
                 | Ok () ->
                   (match Spec.has_cutoff dep.spec with
-                   | false -> Changed_or_not.Changed
+                   | false -> Fiber.return Changed_or_not.Changed
                    | true -> dep_changed_or_not ~node ~dep)
-                | Error dependency_cycle -> Cancelled { dependency_cycle })))
+                | Error dependency_cycle ->
+                  Fiber.return (Changed_or_not.Cancelled { dependency_cycle }))))
 
 and compute : 'i 'o. ('i, 'o) Dep_node.t -> unit Fiber.t =
   fun node ->
@@ -126,7 +182,13 @@ and compute : 'i 'o. ('i, 'o) Dep_node.t -> unit Fiber.t =
       let* () = !check_point in
       Deps_collector.run_apply
         deps_collector
-        ~f:(fun (node : (_, _) Dep_node.t) -> node.spec.f node.input)
+        ~f:(fun (node : (_, _) Dep_node.t) ->
+          if not (Spec.has_replay node.spec)
+          then node.spec.f node.input
+          else
+            let+ value = node.spec.f node.input in
+            replay node value;
+            value)
         node)
   in
   (match res with
@@ -147,31 +209,38 @@ and compute : 'i 'o. ('i, 'o) Dep_node.t -> unit Fiber.t =
 and start_restoring : 'i 'o. ('i, 'o) Dep_node.t -> Cycle_error.t Changed_or_not.t Fiber.t
   =
   fun node ->
-  let computation = Computation.create () in
+  let computation = Computation.create ~dep_node:node in
   node.state <- Restoring { restore_from_cache = computation };
-  Computation.force computation ~dep_node:node (fun _stack_frame ->
+  Computation.force computation (fun () ->
     let* restore_result = restore_from_cache node in
-    let+ () =
-      match restore_result with
-      | Unchanged ->
-        validate_value node;
-        Fiber.return ()
-      | Cancelled { dependency_cycle } ->
-        update_value node (Error (cancelled ~dependency_cycle)) ~deps:Deps.empty;
-        Fiber.return ()
-      | Changed ->
-        node.state <- Out_of_date;
-        Fiber.return ()
-    in
-    restore_result)
+    match restore_result with
+    | Unchanged ->
+      (match node.value with
+       | Ok value when Spec.has_replay node.spec ->
+         (match replay node value with
+          | () ->
+            validate_value node;
+            Fiber.return Changed_or_not.Unchanged
+          | exception exn ->
+            let exn, _ = classify (Exn_with_backtrace.capture exn) in
+            restore_replay_error node exn)
+       | Uninitialized | Ok _ | Error _ ->
+         validate_value node;
+         Fiber.return Changed_or_not.Unchanged)
+    | Cancelled { dependency_cycle } ->
+      update_value node (Error (cancelled ~dependency_cycle)) ~deps:Deps.empty;
+      Fiber.return restore_result
+    | Changed ->
+      node.state <- Out_of_date;
+      Fiber.return Changed_or_not.Changed)
 
 (* Recompute a node. The node has a [Computing] state during the computation. Once
    finished, the node's state is [Cached] with an up to date [last_validated_at]. *)
 and start_computing : 'i 'o. ('i, 'o) Dep_node.t -> unit Fiber.t =
   fun node ->
-  let computation = Computation.create () in
+  let computation = Computation.create ~dep_node:node in
   node.state <- Computing { compute = computation };
-  Computation.force computation ~dep_node:node (fun _stack_frame -> compute node)
+  Computation.force computation (fun () -> compute node)
 
 (* Try to validate a [Cached] node without recomputing it. Once done, the node's state is
    either [Cached] with an up to date [last_validated_at] or [Out_of_date]. *)
@@ -182,12 +251,54 @@ and consider_and_restore_from_cache_without_adding_dep
   match node.state with
   | Cached ->
     Spec.notify node.spec node.input Live;
-    start_restoring node
+    (match node.value with
+     | Ok value when Spec.has_replay node.spec ->
+       (* Replay is synchronous and cannot call Memo, so ready dependencies need
+          no restoration frame. A failure still installs that frame before error
+          reporting, which can suspend and expose the computation to readers. *)
+       (match replay_ready_deps node with
+        | None -> start_restoring node
+        | Some edges ->
+          Counter.incr Metrics.Restore.nodes;
+          Counter.add Metrics.Restore.edges edges;
+          (match replay node value with
+           | () ->
+             validate_value node;
+             Fiber.return Changed_or_not.Unchanged
+           | exception exn ->
+             let exn, _ = classify (Exn_with_backtrace.capture exn) in
+             let computation = Computation.create ~dep_node:node in
+             node.state <- Restoring { restore_from_cache = computation };
+             Computation.force computation (fun () -> restore_replay_error node exn)))
+     | (Ok _ | Error { reproducible = true; _ }) when Deps.is_empty node.deps ->
+       if Spec.has_on_event_or_replay node.spec
+       then start_restoring node
+       else (
+         Counter.incr Metrics.Restore.nodes;
+         validate_value node;
+         Fiber.return Changed_or_not.Unchanged)
+     | Ok _ | Error { reproducible = true; _ } ->
+       if Spec.has_on_event_or_replay node.spec
+       then start_restoring node
+       else (
+         match node.deps with
+         | Deps.Static.Singleton (Dep_node.T dep)
+           when Run.is_current (Dep_node.last_validated_at dep) ->
+           (match
+              Run.compare (Dep_node.last_changed_at dep) (Dep_node.last_validated_at node)
+            with
+            | Gt -> start_restoring node
+            | Eq | Lt ->
+              Counter.incr Metrics.Restore.nodes;
+              Counter.incr Metrics.Restore.edges;
+              validate_value node;
+              Fiber.return Changed_or_not.Unchanged)
+         | Empty | Singleton _ | Seq _ | Par _ -> start_restoring node)
+     | Uninitialized | Error _ -> start_restoring node)
   | Restoring { restore_from_cache } ->
     Computation.read_but_first_check_for_cycles
       ~phase:Restore_from_cache
       restore_from_cache
-      ~dep_node:node
     >>| (function
      | Ok res -> res
      | Error dependency_cycle -> Cancelled { dependency_cycle })
@@ -220,7 +331,7 @@ and consider_and_compute_without_adding_dep
     start_computing node >>| Result.ok
   | Out_of_date -> start_computing node >>| Result.ok
   | Computing { compute } ->
-    Computation.read_but_first_check_for_cycles ~phase:Compute compute ~dep_node:node
+    Computation.read_but_first_check_for_cycles ~phase:Compute compute
 ;;
 
 let add_dep_from_caller_and_get_value : type i o. (i, o) Dep_node.t -> o Fiber.t =
@@ -266,11 +377,14 @@ let exec_dep_node_now : type i o. (i, o) Dep_node.t -> o Fiber.t =
      [consider_and_restore_from_cache_without_adding_dep], is a measurable win. *)
   if Run.is_current (Dep_node.last_validated_at node)
   then add_dep_from_caller_and_get_value node
-  else
-    Fiber.bind_apply
-      (consider_and_restore_from_cache_without_adding_dep node)
-      after_restore
-      node
+  else (
+    match node.state with
+    | Not_cached -> after_restore Changed node
+    | Cached | Out_of_date | Restoring _ | Computing _ ->
+      Fiber.bind_apply
+        (consider_and_restore_from_cache_without_adding_dep node)
+        after_restore
+        node)
 ;;
 
 let exec_dep_node node = Fiber.of_thunk_apply exec_dep_node_now node

@@ -85,6 +85,60 @@ when neither target exists yet.
   $ dune build --build-dir _build-library-first \
   >   generated/generated_list.cma generated/lst
 
+The same dependency set can request both the data and the library whose rule
+generation reads it.
+
+  $ cat >dune <<EOF
+  > (alias
+  >  (name paired)
+  >  (deps generated/lst generated/generated_list.cma))
+  > EOF
+  $ dune build --build-dir _build-paired @paired
+
+An already-known dependency set must not load an unrelated broken library.
+When that library is requested, its rule-generation error must not prevent
+an independent action from running and reporting its own failure.
+
+  $ mkdir paired-errors
+  $ cat >paired-errors/dune <<EOF
+  > (library
+  >  (name bad)
+  >  (modes byte)
+  >  (modules Missing))
+  > (rule
+  >  (targets first second)
+  >  (action
+  >   (progn
+  >    (write-file first "one\n")
+  >    (write-file second "two\n"))))
+  > (rule
+  >  (target action-error)
+  >  (action
+  >   (progn
+  >    (echo "independent action failed\n")
+  >    (run false))))
+  > (alias
+  >  (name good)
+  >  (deps first second))
+  > (alias
+  >  (name errors)
+  >  (deps bad.cma action-error))
+  > EOF
+  $ dune build @paired-errors/good
+  $ cat _build/default/paired-errors/first _build/default/paired-errors/second
+  one
+  two
+  $ dune build @paired-errors/errors >paired-errors.log 2>&1
+  [1]
+  $ grep '^Error: Module Missing' paired-errors.log
+  Error: Module Missing doesn't exist.
+  $ grep '^independent action failed$' paired-errors.log
+  independent action failed
+  $ grep -c '^Error: Module Missing' paired-errors.log
+  1
+  $ grep -c '^Command exited with code 1\.' paired-errors.log
+  1
+
 Removing the library must still allow stale compilation artifacts to be removed
 when the directory's complete target set is requested.
 
@@ -571,6 +625,162 @@ target declaration is static.
   $ DUNE_STAGE_EXTRA_TARGET=renamed dune build dynamic-inferred/renamed
   $ cat _build/default/dynamic-inferred/renamed
   inferred
+  $ test ! -e _build/default/dynamic-inferred/extra
+
+Refining several overlapping dynamic producers must remove both stale outputs,
+while retaining outputs confirmed by an earlier request in the same build.
+
+  $ mkdir overlapping-cleanup
+  $ cat >overlapping-cleanup/dune <<EOF
+  > (rule
+  >  (target first)
+  >  (action
+  >   (progn
+  >    (write-file first first)
+  >    (write-file %{env:DUNE_FIRST_OUTPUT=old-first} first))))
+  > (rule
+  >  (target second)
+  >  (deps first)
+  >  (action
+  >   (progn
+  >    (write-file second second)
+  >    (write-file %{env:DUNE_SECOND_OUTPUT=old-second} second))))
+  > EOF
+  $ dune build overlapping-cleanup/first overlapping-cleanup/second
+  $ DUNE_FIRST_OUTPUT=new-first DUNE_SECOND_OUTPUT=new-second dune build \
+  >   overlapping-cleanup/first overlapping-cleanup/second
+  $ cat _build/default/overlapping-cleanup/new-first
+  first
+  $ cat _build/default/overlapping-cleanup/new-second
+  second
+  $ test ! -e _build/default/overlapping-cleanup/old-first
+  $ test ! -e _build/default/overlapping-cleanup/old-second
+
+A combined request can rule out an artifact that either producer alone left
+pending. Cleanup must reconsider their overlap even if both producers were
+already requested separately earlier in the same build.
+
+  $ mkdir -p combined-cleanup/left combined-cleanup/right
+  $ touch combined-cleanup/left/a combined-cleanup/right/b
+  $ cat >combined-cleanup/dune <<EOF
+  > (copy_files left/{a,stale})
+  > (copy_files right/{b,stale})
+  > (rule
+  >  (target pattern)
+  >  (deps a b)
+  >  (action (write-file %{target} "{a,b,stale}")))
+  > (rule
+  >  (target done)
+  >  (deps (glob_files %{read:pattern}))
+  >  (action (write-file %{target} done)))
+  > EOF
+  $ mkdir -p _build/default/combined-cleanup
+  $ touch _build/default/combined-cleanup/stale
+  $ dune build combined-cleanup/done
+  $ test ! -e _build/default/combined-cleanup/stale
+
+Sparse requests across several cleanup blocks must remove only the stale
+entries belonging to the requested producer. Interleaved sibling entries stay
+available until their own producer is refined.
+
+  $ mkdir -p blocked-cleanup/left blocked-cleanup/right
+  $ touch blocked-cleanup/left/a blocked-cleanup/left/c blocked-cleanup/left/e \
+  >   blocked-cleanup/left/g blocked-cleanup/left/i blocked-cleanup/left/k
+  $ touch blocked-cleanup/right/b blocked-cleanup/right/d blocked-cleanup/right/f \
+  >   blocked-cleanup/right/h blocked-cleanup/right/j blocked-cleanup/right/l
+  $ cat >blocked-cleanup/dune <<EOF
+  > (copy_files left/{a,c,e,g,i,k,stale-left})
+  > (copy_files right/{b,d,f,h,j,l,stale-right})
+  > EOF
+  $ mkdir -p _build/default/blocked-cleanup
+  $ touch _build/default/blocked-cleanup/a _build/default/blocked-cleanup/b \
+  >   _build/default/blocked-cleanup/c _build/default/blocked-cleanup/d \
+  >   _build/default/blocked-cleanup/e _build/default/blocked-cleanup/f \
+  >   _build/default/blocked-cleanup/g _build/default/blocked-cleanup/h \
+  >   _build/default/blocked-cleanup/i _build/default/blocked-cleanup/j \
+  >   _build/default/blocked-cleanup/k _build/default/blocked-cleanup/l \
+  >   _build/default/blocked-cleanup/stale-left \
+  >   _build/default/blocked-cleanup/stale-right
+  $ dune build blocked-cleanup/a
+  $ test ! -e _build/default/blocked-cleanup/stale-left
+  $ test -f _build/default/blocked-cleanup/stale-right
+  $ for name in a b c d e f g h i j k l; do
+  >   test -f _build/default/blocked-cleanup/$name || exit 1
+  > done
+  $ dune build blocked-cleanup/b
+  $ test ! -e _build/default/blocked-cleanup/stale-right
+  $ for name in a b c d e f g h i j k l; do
+  >   test -f _build/default/blocked-cleanup/$name || exit 1
+  > done
+
+Exact declarations also refine interleaved entries across several cleanup
+blocks. Disabling one producer removes its old files without touching the
+other producer's pending files.
+
+  $ mkdir exact-cleanup
+  $ echo false >exact-cleanup/enabled
+  $ cat >exact-cleanup/dune <<EOF
+  > (rule
+  >  (targets a c e g i k m o)
+  >  (enabled_if (= %{read:enabled} true))
+  >  (action (run touch %{targets})))
+  > (rule
+  >  (targets b d f h j l n p)
+  >  (enabled_if (= %{read:enabled} true))
+  >  (action (run touch %{targets})))
+  > (rule
+  >  (target first)
+  >  (deps (glob_files a))
+  >  (action (write-file %{target} first)))
+  > (rule
+  >  (target second)
+  >  (deps first (glob_files b))
+  >  (action (write-file %{target} second)))
+  > EOF
+  $ mkdir -p _build/default/exact-cleanup
+  $ for name in a b c d e f g h i j k l m n o p; do
+  >   touch _build/default/exact-cleanup/$name
+  > done
+  $ dune build exact-cleanup/first
+  $ for name in a c e g i k m o; do
+  >   test ! -e _build/default/exact-cleanup/$name || exit 1
+  > done
+  $ for name in b d f h j l n p; do
+  >   test -f _build/default/exact-cleanup/$name || exit 1
+  > done
+  $ dune build exact-cleanup/second
+  $ for name in a b c d e f g h i j k l m n o p; do
+  >   test ! -e _build/default/exact-cleanup/$name || exit 1
+  > done
+
+Contiguous declarations can empty one cleanup branch before the remaining
+names in the same refinement have been visited.
+
+  $ cat >exact-cleanup/dune <<EOF
+  > (rule
+  >  (targets a b c d e f g h)
+  >  (enabled_if (= %{read:enabled} true))
+  >  (action (run touch %{targets})))
+  > (rule
+  >  (targets i j k l m n o p)
+  >  (enabled_if (= %{read:enabled} true))
+  >  (action (run touch %{targets})))
+  > (rule
+  >  (target first)
+  >  (deps (glob_files a))
+  >  (action (write-file %{target} first)))
+  > (rule
+  >  (target second)
+  >  (deps first (glob_files i))
+  >  (action (write-file %{target} second)))
+  > EOF
+  $ for name in a b c d e f g h i j k l m n o p; do
+  >   touch _build/default/exact-cleanup/$name
+  > done
+  $ dune build exact-cleanup/second
+  $ for name in a b c d e f g h i j k l m n o p; do
+  >   test ! -e _build/default/exact-cleanup/$name || exit 1
+  > done
 
 Target variables backed by a single literal declaration stay precise. Loading
 the seed must not force the independent rules whose conditions read that seed.
@@ -626,6 +836,7 @@ Quoted multi-target variables retain the ordinary target-directory validation.
 
 Refining a directory's rules must not remove fresh temporary files created
 after its initial cleanup. A later build still removes those stale files.
+This also holds when the action replaces an old file removed by that cleanup.
 
   $ mkdir cleanup-inventory
   $ cat >cleanup-inventory/dune-project <<EOF
@@ -645,6 +856,8 @@ after its initial cleanup. A later build still removes those stale files.
   >  (modules (:include lst)))
   > EOF
   $ touch cleanup-inventory/value.ml
+  $ mkdir -p _build/default/cleanup-inventory
+  $ echo stale >_build/default/cleanup-inventory/compiler.tmp
   $ dune build cleanup-inventory/temporary_files.cma
   $ cat _build/default/cleanup-inventory/compiler.tmp
   temporary
@@ -775,8 +988,8 @@ missing foreign source remains an error when its configuration is requested.
   Error: Object "missing" has no source; "missing.c" must be present.
   [1]
 
-Requesting one module should not generate compilation rules for another. The
-trace records rule generation, not just which compilation actions execute.
+Requesting one module reveals the compilation headers for its library, but
+must not build unrelated modules. Action construction remains delayed.
 
   $ mkdir module-producers
   $ cat >module-producers/dune <<EOF
@@ -789,8 +1002,11 @@ trace records rule generation, not just which compilation actions execute.
   $ DUNE_TRACE=debug dune build module-producers/.modules.objs/byte/a.cmo
   $ dune trace cat | jq -sr '[.[] | select(.name == "rule_generated") | .args.target_files[]? | select(endswith(".cmo"))] | unique[]'
   _build/default/module-producers/.modules.objs/byte/a.cmo
+  _build/default/module-producers/.modules.objs/byte/b.cmo
+  $ test ! -e _build/default/module-producers/.modules.objs/byte/b.cmo
+  $ test ! -e _build/default/module-producers/.modules.objs/byte/b.cmi
 
-Refining the module producers must retain artifacts owned by an unforced
+Selecting compilation headers must retain artifacts owned by an unrequested
 sibling, including when switching between exact file and alias requests.
 
   $ dune build module-producers/.modules.objs/byte/b.cmo
@@ -800,6 +1016,133 @@ sibling, including when switching between exact file and alias requests.
   $ dune build @module-producers/check
   $ test -f _build/default/module-producers/.modules.objs/byte/a.cmo
   $ test -f _build/default/module-producers/.modules.objs/byte/b.cmo
+
+A wider shared header set must preserve that ownership across several point
+lookups in one build, without building the unrequested siblings.
+
+  $ for name in c d e f g h i j k l m n o p; do
+  >   touch module-producers/$name.ml
+  > done
+  $ dune build module-producers/.modules.objs/byte/a.cmo \
+  >   module-producers/.modules.objs/byte/c.cmo \
+  >   module-producers/.modules.objs/byte/d.cmo
+  $ test -f _build/default/module-producers/.modules.objs/byte/b.cmo
+  $ test -f _build/default/module-producers/.modules.objs/byte/c.cmo
+  $ test -f _build/default/module-producers/.modules.objs/byte/d.cmo
+  $ test ! -e _build/default/module-producers/.modules.objs/byte/p.cmo
+
+Ordinary compilation must not reveal JS or Wasm headers. Selecting one backend
+module reveals all ordinary backend headers, but still delays the actions of
+its siblings. A fake compiler avoids depending on optional backend tools;
+its version predates the shape dependencies of newer js_of_ocaml releases.
+Unwrapped executables avoid introducing a special alias module into this check.
+
+  $ mkdir -p grouped-backends/bin
+  $ cat >grouped-backends/bin/js_of_ocaml <<'EOF'
+  > #!/bin/sh
+  > while [ "$#" -gt 0 ]; do
+  >   case "$1" in
+  >     --version) echo 5.0.0; exit 0 ;;
+  >     -o) printf 'fake backend output\n' >"$2"; exit 0 ;;
+  >   esac
+  >   shift
+  > done
+  > exit 1
+  > EOF
+  $ chmod +x grouped-backends/bin/js_of_ocaml
+  $ cp grouped-backends/bin/js_of_ocaml grouped-backends/bin/wasm_of_ocaml
+  $ cat >grouped-backends/dune-project <<EOF
+  > (lang dune 3.25)
+  > (wrapped_executables false)
+  > EOF
+  $ cat >grouped-backends/dune <<EOF
+  > (executable
+  >  (name a)
+  >  (modules a b)
+  >  (modes js wasm))
+  > EOF
+  $ echo 'let value = 42' >grouped-backends/a.ml
+  $ echo 'let =' >grouped-backends/b.ml
+  $ PATH="$PWD/grouped-backends/bin:$PATH" DUNE_TRACE=debug \
+  >   dune build grouped-backends/.a.eobjs/byte/a.cmi
+  $ dune trace cat | jq -sr '[.[] | select(.name == "rule_generated") | .args.target_files[]? | select(contains("/grouped-backends/.a.eobjs/jsoo/"))] | unique[]'
+  $ test ! -e _build/default/grouped-backends/.a.eobjs/jsoo/a.cmo.js
+  $ test ! -e _build/default/grouped-backends/.a.eobjs/jsoo/a.wasmo
+  $ PATH="$PWD/grouped-backends/bin:$PATH" DUNE_TRACE=debug \
+  >   dune build grouped-backends/.a.eobjs/jsoo/a.cmo.js
+  $ dune trace cat | jq -sr '[.[] | select(.name == "rule_generated") | .args.target_files[]? | select(contains("/grouped-backends/.a.eobjs/jsoo/"))] | unique[]'
+  _build/default/grouped-backends/.a.eobjs/jsoo/a.cmo.js
+  _build/default/grouped-backends/.a.eobjs/jsoo/a.wasmo
+  _build/default/grouped-backends/.a.eobjs/jsoo/b.cmo.js
+  _build/default/grouped-backends/.a.eobjs/jsoo/b.wasmo
+  $ cat _build/default/grouped-backends/.a.eobjs/jsoo/a.cmo.js
+  fake backend output
+  $ test ! -e _build/default/grouped-backends/.a.eobjs/jsoo/a.wasmo
+  $ test ! -e _build/default/grouped-backends/.a.eobjs/jsoo/b.cmo.js
+  $ test ! -e _build/default/grouped-backends/.a.eobjs/jsoo/b.wasmo
+  $ test ! -e _build/default/grouped-backends/.a.eobjs/byte/b.cmi
+
+A later point request still removes an unowned backend artifact and preserves
+the requested module's other backend output.
+
+  $ touch _build/default/grouped-backends/.a.eobjs/jsoo/obsolete.cmo.js
+  $ PATH="$PWD/grouped-backends/bin:$PATH" \
+  >   dune build grouped-backends/.a.eobjs/jsoo/a.wasmo
+  $ test ! -e _build/default/grouped-backends/.a.eobjs/jsoo/obsolete.cmo.js
+  $ test -f _build/default/grouped-backends/.a.eobjs/jsoo/a.cmo.js
+  $ test -f _build/default/grouped-backends/.a.eobjs/jsoo/a.wasmo
+  $ test ! -e _build/default/grouped-backends/.a.eobjs/jsoo/b.cmo.js
+  $ test ! -e _build/default/grouped-backends/.a.eobjs/jsoo/b.wasmo
+
+The invalid sibling's source is diagnosed only when its backend is requested.
+
+  $ PATH="$PWD/grouped-backends/bin:$PATH" \
+  >   dune build grouped-backends/.a.eobjs/jsoo/b.cmo.js \
+  >   >grouped-backend-error.log 2>&1
+  [1]
+  $ grep -q 'Syntax error' grouped-backend-error.log
+
+Missing link and runtime flag inputs must not affect module compilation.
+
+  $ cat >grouped-backends/dune <<EOF
+  > (executable
+  >  (name a)
+  >  (modules a)
+  >  (modes js wasm)
+  >  (js_of_ocaml
+  >   (link_flags (:include js-link-flags.sexp))
+  >   (build_runtime_flags (:include js-runtime-flags.sexp)))
+  >  (wasm_of_ocaml
+  >   (link_flags (:include wasm-link-flags.sexp))
+  >   (build_runtime_flags (:include wasm-runtime-flags.sexp))))
+  > EOF
+  $ PATH="$PWD/grouped-backends/bin:$PATH" \
+  >   dune build grouped-backends/.a.eobjs/jsoo/a.cmo.js \
+  >   grouped-backends/.a.eobjs/jsoo/a.wasmo
+
+Selecting compilation flags must still report missing inputs, independently
+for JS and Wasm.
+
+  $ cat >grouped-backends/dune <<EOF
+  > (executable
+  >  (name a)
+  >  (modules a)
+  >  (modes js wasm)
+  >  (js_of_ocaml (flags (:include js-compile-flags.sexp)))
+  >  (wasm_of_ocaml (flags (:include wasm-compile-flags.sexp))))
+  > EOF
+  $ PATH="$PWD/grouped-backends/bin:$PATH" \
+  >   dune build grouped-backends/.a.eobjs/jsoo/a.cmo.js \
+  >   >grouped-backend-js-flags.log 2>&1
+  [1]
+  $ grep -q 'No rule found for grouped-backends/js-compile-flags.sexp' \
+  >   grouped-backend-js-flags.log
+  $ PATH="$PWD/grouped-backends/bin:$PATH" \
+  >   dune build grouped-backends/.a.eobjs/jsoo/a.wasmo \
+  >   >grouped-backend-wasm-flags.log 2>&1
+  [1]
+  $ grep -q 'No rule found for grouped-backends/wasm-compile-flags.sexp' \
+  >   grouped-backend-wasm-flags.log
 
 Source discovery still selects generated files in custom dialects. A data
 producer depending on the resulting library remains independent.
@@ -926,3 +1269,118 @@ Rebuilding one implementation must also leave the sibling interface available.
   $ test -f _build/default/warm-preservation/.preserved.objs/byte/preserved__A.cmi
   $ test -f _build/default/warm-preservation/.preserved.objs/byte/preserved__B.cmi
   $ dune build warm-preservation/preserved.cma @warm-preservation/check
+
+Requesting one interface must not parse or compile an unrelated implementation
+with a syntax error, even if its compilation rules have been revealed. Native
+action flags must also remain unevaluated while only bytecode is requested.
+
+  $ mkdir delayed-module-actions
+  $ cat >delayed-module-actions/dune <<EOF
+  > (library
+  >  (name delayed)
+  >  (wrapped false)
+  >  (modes byte)
+  >  (ocamlopt_flags (:standard (:include native-flags.sexp))))
+  > EOF
+  $ cat >delayed-module-actions/a.ml <<EOF
+  > let value = 42
+  > EOF
+  $ cat >delayed-module-actions/b.ml <<EOF
+  > let =
+  > EOF
+  $ dune build delayed-module-actions/.delayed.objs/byte/a.cmi
+  $ test -f _build/default/delayed-module-actions/.delayed.objs/byte/a.cmi
+  $ test -f _build/default/delayed-module-actions/.delayed.objs/byte/a.cmo
+  $ test -f _build/default/delayed-module-actions/.delayed.objs/byte/a.cmt
+  $ test ! -e _build/default/delayed-module-actions/.delayed.objs/byte/b.cmi
+
+The sibling's dependency parsing error is reported when it is requested.
+After fixing its source, requesting its native output exposes the missing flag
+input instead. Neither failure should have prevented the earlier atomic build.
+
+  $ dune build delayed-module-actions/.delayed.objs/byte/b.cmi \
+  >   >delayed-syntax.log 2>&1
+  [1]
+  $ grep -q 'Syntax error' delayed-syntax.log
+  $ cat >delayed-module-actions/b.ml <<EOF
+  > let value = 0
+  > EOF
+  $ dune build delayed-module-actions/.delayed.objs/native/b.cmx \
+  >   >delayed-flags.log 2>&1
+  [1]
+  $ grep -q 'No rule found for delayed-module-actions/native-flags.sexp' \
+  >   delayed-flags.log
+
+A sibling's source generation and per-module preprocessing can both depend on
+the requested interface. Neither action may run until the sibling is requested.
+
+  $ mkdir delayed-module-inputs
+  $ cat >delayed-module-inputs/dune <<'EOF'
+  > (library
+  >  (name delayed_inputs)
+  >  (wrapped false)
+  >  (modes byte)
+  >  (preprocess
+  >   (per_module
+  >    ((action
+  >      (progn
+  >       (ignore-stdout (cat %{dep:.delayed_inputs.objs/byte/a.cmi}))
+  >       (echo "(* preprocessed b *)\n")
+  >       (cat %{input-file}))) B))))
+  > (rule
+  >  (target b.ml)
+  >  (deps .delayed_inputs.objs/byte/a.cmi)
+  >  (action (write-file %{target} "let value = A.value\n")))
+  > EOF
+  $ cat >delayed-module-inputs/a.ml <<EOF
+  > let value = 42
+  > EOF
+  $ dune build delayed-module-inputs/.delayed_inputs.objs/byte/a.cmi
+  $ test -f _build/default/delayed-module-inputs/.delayed_inputs.objs/byte/a.cmi
+  $ test ! -e _build/default/delayed-module-inputs/b.ml
+  $ test ! -e _build/default/delayed-module-inputs/b.pp.ml
+  $ test ! -e _build/default/delayed-module-inputs/.delayed_inputs.objs/byte/b.cmi
+  $ dune build delayed-module-inputs/.delayed_inputs.objs/byte/b.cmi
+  $ test -f _build/default/delayed-module-inputs/b.ml
+  $ test -f _build/default/delayed-module-inputs/b.pp.ml
+  $ test -f _build/default/delayed-module-inputs/.delayed_inputs.objs/byte/b.cmi
+
+Discovering a directory target through a descendant must not hide a same-name
+file producer when the owning rule is subsequently loaded for building.
+
+  $ mkdir directory-cache
+  $ cat >directory-cache/dune-project <<EOF
+  > (lang dune 3.25)
+  > EOF
+  $ cat >directory-cache/dune <<EOF
+  > (rule
+  >  (target output)
+  >  (action (write-file %{target} file)))
+  > (rule
+  >  (targets (dir output))
+  >  (deps (sandbox always))
+  >  (action (bash "mkdir output && touch output/leaf")))
+  > EOF
+  $ dune build directory-cache/output/leaf
+  Error: Multiple rules generated for _build/default/directory-cache/output:
+  - directory-cache/dune:1
+  - directory-cache/dune:4
+  [1]
+
+A mixed rule's file output must likewise validate the ownership of its directory
+output, even though the requested file itself has only one producer.
+
+  $ cat >directory-cache/dune <<EOF
+  > (rule
+  >  (target output)
+  >  (action (write-file %{target} file)))
+  > (rule
+  >  (targets stamp (dir output))
+  >  (deps (sandbox always))
+  >  (action (bash "mkdir output && touch output/leaf stamp")))
+  > EOF
+  $ dune build directory-cache/stamp
+  Error: Multiple rules generated for _build/default/directory-cache/output:
+  - directory-cache/dune:1
+  - directory-cache/dune:4
+  [1]

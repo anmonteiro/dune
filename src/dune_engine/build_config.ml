@@ -43,16 +43,21 @@ module Gen_rules = struct
       { build_dir_only_sub_dirs; directory_targets; rules = Memo.Lazy.force rules }
     ;;
 
-    let combine_exn r { build_dir_only_sub_dirs; directory_targets; rules } =
-      create
-        ~build_dir_only_sub_dirs:
-          (Build_only_sub_dirs.union r.build_dir_only_sub_dirs build_dir_only_sub_dirs)
-        ~directory_targets:
-          (Path.Build.Map.union_exn r.directory_targets directory_targets)
-        (let open Memo.O in
-         let+ a = r.rules
-         and+ b = rules in
-         Rules.union a b)
+    let combine_exn r ({ build_dir_only_sub_dirs; directory_targets; rules } as other) =
+      if r == empty
+      then other
+      else if other == empty
+      then r
+      else
+        create
+          ~build_dir_only_sub_dirs:
+            (Build_only_sub_dirs.union r.build_dir_only_sub_dirs build_dir_only_sub_dirs)
+          ~directory_targets:
+            (Path.Build.Map.union_exn r.directory_targets directory_targets)
+          (let open Memo.O in
+           let+ a = r.rules
+           and+ b = rules in
+           Rules.union a b)
     ;;
   end
 

@@ -275,6 +275,9 @@ end
     computations. *)
 val set_incremental : bool -> unit
 
+(** Whether dependencies are tracked for reuse across build runs. *)
+val is_incremental : unit -> bool
+
 (** Notify the memoization system that the build system has restarted. This
     removes the values specified by [Invalidation.t] from the memoization cache,
     and advances the current run. *)
@@ -316,6 +319,27 @@ val create
   -> ?cutoff:('o -> 'o -> bool)
   -> ?human_readable_description:('i -> User_message.Style.t Pp.t option)
   -> ?on_event:('i -> Event.t -> unit)
+  -> ('i -> 'o t)
+  -> ('i, 'o) Table.t
+
+(** Like [create], with a synchronous effect applied to each successful result
+    once per run, after computing it or validating its cached dependencies.
+    [replay] runs before the result is exposed, including when its caller is
+    restored without recomputation. It must not call Memo or change the
+    semantic value being cached.
+
+    Unlike [create], this retains the freshly computed result even when
+    [cutoff] considers it unchanged, so future replays use its latest auxiliary
+    data. Consumers must not depend on differences ignored by [cutoff].
+
+    A failed computation does not run [replay]. A [replay] exception is shared
+    with concurrent readers but is non-reproducible: it is retried after a
+    reset, rather than restoring the error in subsequent runs. *)
+val create_with_replay
+  :  string
+  -> input:(module Input with type t = 'i)
+  -> cutoff:('o -> 'o -> bool)
+  -> replay:('i -> 'o -> unit)
   -> ('i -> 'o t)
   -> ('i, 'o) Table.t
 
@@ -393,17 +417,6 @@ module Run : sig
     val current : unit -> t
     val of_int : int -> t
     val to_int : t -> int
-
-    module Pair : sig
-      type run := t
-      type t
-
-      val create : last_changed_at:run -> last_validated_at:run -> t
-      val last_changed_at : t -> run
-      val last_validated_at : t -> run
-      val with_last_validated_at : t -> last_validated_at:run -> t
-      val invalid : t
-    end
   end
 end
 
@@ -419,6 +432,23 @@ module Node : sig
   (** Mark this node as invalid, forcing recomputation of this value. The
       consumers may be recomputed or not, depending on early cutoff. *)
   val invalidate : reason:Invalidation.Reason.t -> _ t -> Invalidation.t
+
+  (** [is_unchanged node ~since] proves that [node] has a successful cached value
+      unchanged since [since] according to Memo's cutoffs, and that its recorded
+      dependencies remain valid.
+      It does not evaluate nodes, run replay or event callbacks, collect
+      dependencies, or mark nodes as validated in the current run.
+
+      [false] means that this cannot be proved without evaluation, not
+      necessarily that the value changed. In particular, errors, unfinished
+      computations, and old nodes with replay or event callbacks return [false].
+      A [since] later than the current run also returns [false]. *)
+  val is_unchanged : (_, _) t -> since:Run.t -> bool
+
+  (** Inspect the node's own cache without checking its dependencies. This is
+      false for invalidated, failed, uncomputed, or in-flight nodes. A successful
+      old value does not imply that its dependencies are still valid. *)
+  val is_successfully_cached : (_, _) t -> bool
 
   (** Like [Node.t] but with the input type hidden. *)
   module Packed : sig

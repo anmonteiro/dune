@@ -9,6 +9,7 @@ type t
     error boundaries around parallel evaluation. *)
 val set_enabled : bool -> unit
 
+val is_enabled : unit -> bool
 val create : unit -> t
 
 (** Run [f x] with [t] as the active collector. *)

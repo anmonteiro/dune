@@ -29,3 +29,8 @@
    2
    (run %{test})))
  (libraries stdune dune_scheduler unix fiber))
+
+(test
+ (name event_queue_tests)
+ (modules event_queue_tests)
+ (libraries stdune dune_scheduler fiber unix))

@@ -65,21 +65,25 @@ let rule_target_families ~dir ~dialects ~preprocess ~empty_intf =
             Path.Build.relative dir ("*" ^ Filename.Extension.to_string extension)
           in
           let file = Module.File.make dialect (Path.build source) in
-          let generated =
+          let _, generated =
             possible_files file ~ml_kind ~preprocess
-            |> List.filter_map ~f:(fun generated ->
+            |> List.fold_left ~init:([], []) ~f:(fun (seen, acc) generated ->
               let path = Module.File.path generated in
               if Path.equal path (Path.build source)
-              then None
-              else
-                Some
-                  (Path.basename path
-                   |> Filename.to_string
-                   |> Glob.of_string
-                   |> Predicate_lang.Glob.of_glob
-                   |> Target_mask.files_matching ~dir))
+              then seen, acc
+              else (
+                let pattern = Path.basename path |> Filename.to_string in
+                if List.mem seen pattern ~equal:String.equal
+                then seen, acc
+                else (
+                  let mask =
+                    pattern
+                    |> Predicate_lang.Glob.of_string
+                    |> Target_mask.files_matching ~dir
+                  in
+                  pattern :: seen, mask :: acc)))
           in
-          generated @ acc))
+          List.rev_append generated acc))
   in
   let empty_intf =
     if empty_intf
