@@ -6,35 +6,57 @@ let immutable_path_set_of_set set =
   else Path.Build.Set.to_list set |> Path.Build.Array.Set.of_sorted_list
 ;;
 
-(* CR-someday amokhov: Most of these records will have [dir = empty]. We might
-   want to somehow optimise for the common case, e.g. by switching to a sum type
-   with the [Files_only] constructor. It's best not to expose the current
-   representation so we can easily change it in future. *)
 type t =
-  { files : Path.Build.Array.Set.t
-  ; dirs : Path.Build.Array.Set.t
-  }
+  | Paths of
+      { files : Path.Build.Array.Set.t
+      ; dirs : Path.Build.Array.Set.t
+      }
+  | Files_in_dir of
+      { root : Path.Build.t
+      ; files : Filename.Set.t
+      }
+
+let empty =
+  Paths { files = Path.Build.Array.Set.empty; dirs = Path.Build.Array.Set.empty }
+;;
 
 module File = struct
   let create file =
-    { files = Path.Build.Array.Set.singleton file; dirs = Path.Build.Array.Set.empty }
+    Paths
+      { files = Path.Build.Array.Set.singleton file; dirs = Path.Build.Array.Set.empty }
   ;;
 end
 
 module Files = struct
   let create files =
-    { files = immutable_path_set_of_set files; dirs = Path.Build.Array.Set.empty }
+    Paths { files = immutable_path_set_of_set files; dirs = Path.Build.Array.Set.empty }
+  ;;
+
+  let create_in_dir ~dir files =
+    if Filename.Set.is_empty files then empty else Files_in_dir { root = dir; files }
   ;;
 end
 
 let create ~files ~dirs =
-  { files = immutable_path_set_of_set files; dirs = immutable_path_set_of_set dirs }
+  Paths { files = immutable_path_set_of_set files; dirs = immutable_path_set_of_set dirs }
 ;;
 
-let empty = { files = Path.Build.Array.Set.empty; dirs = Path.Build.Array.Set.empty }
+let file_paths = function
+  | Paths { files; _ } -> files
+  | Files_in_dir { root; files } ->
+    Filename.Set.to_list_map files ~f:(Path.Build.relative_fname root)
+    |> Path.Build.Array.Set.of_sorted_list
+;;
 
-let is_empty { files; dirs } =
-  Path.Build.Array.Set.is_empty files && Path.Build.Array.Set.is_empty dirs
+let dir_paths = function
+  | Paths { dirs; _ } -> dirs
+  | Files_in_dir _ -> Path.Build.Array.Set.empty
+;;
+
+let is_empty = function
+  | Paths { files; dirs } ->
+    Path.Build.Array.Set.is_empty files && Path.Build.Array.Set.is_empty dirs
+  | Files_in_dir _ -> false
 ;;
 
 let combine x y =
@@ -49,37 +71,61 @@ let combine x y =
   else if is_empty y
   then x
   else (
-    let { files = x_files; dirs = x_dirs } = x in
-    let { files = y_files; dirs = y_dirs } = y in
-    let files = Path.Build.Array.Set.union x_files y_files in
-    let dirs = Path.Build.Array.Set.union x_dirs y_dirs in
-    if Stdlib.(files == x_files && dirs == x_dirs)
-    then x
-    else if Stdlib.(files == y_files && dirs == y_dirs)
-    then y
-    else { files; dirs })
+    match x, y with
+    | Files_in_dir a, Files_in_dir b when Path.Build.equal a.root b.root ->
+      let files = Filename.Set.union a.files b.files in
+      if Stdlib.(files == a.files)
+      then x
+      else if Stdlib.(files == b.files)
+      then y
+      else Files_in_dir { root = a.root; files }
+    | _ ->
+      let x_files = file_paths x in
+      let x_dirs = dir_paths x in
+      let y_files = file_paths y in
+      let y_dirs = dir_paths y in
+      let files = Path.Build.Array.Set.union x_files y_files in
+      let dirs = Path.Build.Array.Set.union x_dirs y_dirs in
+      if Stdlib.(files == x_files && dirs == x_dirs)
+      then x
+      else if Stdlib.(files == y_files && dirs == y_dirs)
+      then y
+      else Paths { files; dirs })
 ;;
 
-let head { files; dirs } =
-  match Path.Build.Array.Set.choose files with
-  | Some _ as target -> target
-  | None -> Path.Build.Array.Set.choose dirs
+let head = function
+  | Files_in_dir { root; files } ->
+    Option.map (Filename.Set.choose files) ~f:(Path.Build.relative_fname root)
+  | Paths { files; dirs } ->
+    (match Path.Build.Array.Set.choose files with
+     | Some _ as target -> target
+     | None -> Path.Build.Array.Set.choose dirs)
 ;;
 
-let to_dyn { files; dirs } =
-  Dyn.Record
-    [ "files", Path.Build.Array.Set.to_dyn files
-    ; "dirs", Path.Build.Array.Set.to_dyn dirs
+let repr =
+  Repr.record
+    "targets"
+    [ Repr.field "files" (Repr.abstract Path.Build.Array.Set.to_dyn) ~get:file_paths
+    ; Repr.field "dirs" (Repr.abstract Path.Build.Array.Set.to_dyn) ~get:dir_paths
     ]
 ;;
 
-let all { files; dirs } =
-  Path.Build.Array.Set.to_list files @ Path.Build.Array.Set.to_list dirs
+let to_dyn = Repr.to_dyn repr
+
+let all = function
+  | Files_in_dir { root; files } ->
+    Filename.Set.to_list_map files ~f:(Path.Build.relative_fname root)
+  | Paths { files; dirs } ->
+    Path.Build.Array.Set.to_list files @ Path.Build.Array.Set.to_list dirs
 ;;
 
-let iter { files; dirs } ~file ~dir =
-  Path.Build.Array.Set.iter files ~f:file;
-  Path.Build.Array.Set.iter dirs ~f:dir
+let iter t ~file ~dir =
+  match t with
+  | Files_in_dir { root; files } ->
+    Filename.Set.iter files ~f:(fun name -> file (Path.Build.relative_fname root name))
+  | Paths { files; dirs } ->
+    Path.Build.Array.Set.iter files ~f:file;
+    Path.Build.Array.Set.iter dirs ~f:dir
 ;;
 
 module Validated = struct
@@ -135,7 +181,7 @@ module Validation_result = struct
     | File_and_directory_target_with_the_same_name of Path.Build.t
 end
 
-let validate { files; dirs } =
+let validate_paths ~files ~dirs =
   let first = Path.Build.Array.Set.choose files in
   if Path.Build.Array.Set.length files = 1 && Path.Build.Array.Set.is_empty dirs
   then (
@@ -178,6 +224,12 @@ let validate { files; dirs } =
          Valid { Validated.root; files; dirs }
        with
        | Invalid result -> result))
+;;
+
+let validate = function
+  | Files_in_dir { root; files } ->
+    Validation_result.Valid { Validated.root; files; dirs = Filename.Set.empty }
+  | Paths { files; dirs } -> validate_paths ~files ~dirs
 ;;
 
 module Produced = struct

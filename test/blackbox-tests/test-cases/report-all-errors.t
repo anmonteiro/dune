@@ -58,3 +58,63 @@ failing before it had a chance to start thinking about building `z`.
        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
   Command exited with code 1.
   [1]
+
+Example 2
+---------
+
+Independent command-line targets still build when another target fails. Mixing
+files, recursive aliases, nonrecursive aliases, and duplicate requests must not
+prevent the successful rule from running.
+
+  $ cat >dune <<EOF
+  > (rule (with-stdout-to bad (run ./fail.exe)))
+  > (rule
+  >  (target good)
+  >  (alias completed)
+  >  (action (write-file good "ok\n")))
+  > (executable (name fail))
+  > EOF
+
+  $ dune build bad good @completed @@completed good @completed
+  File "dune", line 1, characters 0-44:
+  1 | (rule (with-stdout-to bad (run ./fail.exe)))
+      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  Command exited with code 1.
+  [1]
+  $ cat _build/default/good
+  ok
+
+  $ dune build good good @completed @@completed
+
+Example 3
+---------
+
+File-only requests preserve independent successes in either order, including
+duplicates. Each order uses a fresh target, not the previous build's output.
+
+  $ cat >dune <<EOF
+  > (rule (with-stdout-to bad (run ./fail.exe)))
+  > (rule (with-stdout-to fresh-first (echo first)))
+  > (rule (with-stdout-to fresh-second (echo second)))
+  > (executable (name fail))
+  > EOF
+
+  $ test ! -e _build/default/fresh-first
+  $ dune build bad fresh-first fresh-first bad
+  File "dune", line 1, characters 0-44:
+  1 | (rule (with-stdout-to bad (run ./fail.exe)))
+      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  Command exited with code 1.
+  [1]
+  $ cat _build/default/fresh-first
+  first
+
+  $ test ! -e _build/default/fresh-second
+  $ dune build fresh-second bad bad fresh-second
+  File "dune", line 1, characters 0-44:
+  1 | (rule (with-stdout-to bad (run ./fail.exe)))
+      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  Command exited with code 1.
+  [1]
+  $ cat _build/default/fresh-second
+  second
