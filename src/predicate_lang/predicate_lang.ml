@@ -285,6 +285,12 @@ module Glob = struct
     Element (Element.Glob proxy)
   ;;
 
+  let of_string repr =
+    let proxy = Element.Proxy.of_string repr in
+    let (_ : Glob.t) = Element.unproxy proxy in
+    Element (Element.Glob proxy)
+  ;;
+
   let of_string_list s = Or (List.rev_map s ~f:(fun x -> Element (Element.Literal x)))
 
   let of_string_set s =

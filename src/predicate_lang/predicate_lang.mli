@@ -34,6 +34,9 @@ module Glob : sig
   val test : t -> standard:t -> string -> bool
   val of_glob : Dune_rpc.Private.Glob.t -> t
 
+  (** Parse a glob, raising [Invalid_argument] immediately if it is invalid. *)
+  val of_string : string -> t
+
   (** [of_string_list xs] return an expression that will match any element
       inside the list [xs] *)
   val of_string_list : string list -> t

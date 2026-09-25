@@ -149,13 +149,35 @@ let create
   create_with_cache name ~cache ~input ~cutoff ~human_readable_description ~on_event f
 ;;
 
+let create_with_replay
+      (type i)
+      name
+      ~input:(module Input : Input with type t = i)
+      ~cutoff
+      ~replay
+      f
+  =
+  let cache = Store.of_table (Stdune.Table.create (module Input) 2) in
+  let spec =
+    Spec.create_with_replay
+      ~name
+      ~input:(module Input : Store_intf.Input with type t = i)
+      ~cutoff
+      ~replay
+      f
+  in
+  Caches.register ~invalidate:(fun () -> Invalidation.invalidate_store cache);
+  { Table.cache; spec }
+;;
+
 let make_dep_node ~spec ~input : _ Dep_node.t =
   { id = Id.gen ()
   ; input
   ; spec
   ; state = Not_cached
   ; value = Uninitialized
-  ; runs = Run.Pair.invalid
+  ; last_changed_at = Run.invalid
+  ; last_validated_at = Run.invalid
   ; deps = Deps.empty
   }
 ;;
@@ -171,6 +193,7 @@ let dep_node (t : (_, _) Table.t) input =
 
 let check_point = Exec.check_point
 let set_incremental = Deps_collector.set_enabled
+let is_incremental = Deps_collector.is_enabled
 let exec (type i o) (t : (i, o) Table.t) i = Exec.exec_dep_node (dep_node t i)
 
 let create_rec
@@ -209,7 +232,21 @@ module Current_run = struct
   let invalidate ~reason = Invalidation.invalidate_node ~reason (dep_node memo ())
 end
 
-let current_run () = Current_run.exec ()
+let current_run =
+  let node = dep_node Current_run.memo () in
+  let read = Current_run.exec () in
+  let computation =
+    Fiber.of_thunk (fun () ->
+      if Deps_collector.is_enabled ()
+      then read
+      else (
+        match node.state, node.value with
+        | Cached, Ok run when Run.is_current (Dep_node.last_validated_at node) ->
+          Fiber.return run
+        | _ -> read))
+  in
+  fun () -> computation
+;;
 
 let of_non_reproducible_fiber fiber =
   let* (_ : Run.t) = current_run () in
@@ -266,12 +303,98 @@ module With_implicit_output = struct
   let exec t = t
 end
 
+module Cache_validity = struct
+  type status =
+    | Checking
+    | Proven
+
+  type step =
+    | Node of Run.t * Dep_node.packed
+    | Dependencies of Run.t * Dep_node.packed Deps.t
+    | Sections of Run.t * Dep_node.packed Deps.t Array.Immutable.t * int
+    | Finish of Id.t
+
+  let cache = Id.Table.create 128
+  let cached_run = ref (Run.current ())
+
+  let clear () =
+    Id.Table.clear cache;
+    cached_run := Run.current ()
+  ;;
+
+  let () = Caches.register ~invalidate:clear
+
+  let rec reject = function
+    | [] -> false
+    | Finish id :: rest ->
+      Id.Table.remove cache id;
+      reject rest
+    | _ :: rest -> reject rest
+  ;;
+
+  (* Only complete proofs survive a probe. The explicit stack bounds the OCaml
+     stack even for deep graphs; [Checking] rejects cycles in old dependencies. *)
+  let rec check = function
+    | [] -> true
+    | Node (since, Dep_node.T node) :: rest ->
+      (match node.state, node.value with
+       | Cached, Ok _ ->
+         if Run.compare (Dep_node.last_changed_at node) since = Gt
+         then reject rest
+         else if Run.is_current (Dep_node.last_validated_at node)
+         then check rest
+         else if (not (is_incremental ())) || Spec.has_on_event_or_replay node.spec
+         then reject rest
+         else (
+           match Id.Table.find cache node.id with
+           | Some Proven -> check rest
+           | Some Checking -> reject rest
+           | None ->
+             Id.Table.set cache node.id Checking;
+             check
+               (Dependencies (Dep_node.last_validated_at node, node.deps)
+                :: Finish node.id
+                :: rest))
+       | (Not_cached | Out_of_date | Restoring _ | Computing _), _
+       | Cached, (Uninitialized | Error _) -> reject rest)
+    | Dependencies (since, deps) :: rest ->
+      (match deps with
+       | Empty -> check rest
+       | Singleton node -> check (Node (since, node) :: rest)
+       | Seq sections | Par sections -> check (Sections (since, sections, 0) :: rest))
+    | Sections (since, sections, index) :: rest ->
+      if index = Array.Immutable.length sections
+      then check rest
+      else
+        check
+          (Dependencies (since, Array.Immutable.get sections index)
+           :: Sections (since, sections, index + 1)
+           :: rest)
+    | Finish id :: rest ->
+      Id.Table.set cache id Proven;
+      check rest
+  ;;
+
+  let is_unchanged node ~since =
+    if not (Run.is_current !cached_run) then clear ();
+    Run.compare since (Run.current ()) <> Gt && check [ Node (since, Dep_node.T node) ]
+  ;;
+end
+
 module Node = struct
   type ('i, 'o) t = ('i, 'o) Dep_node.t
 
   let input (t : (_, _) t) = t.input
   let read = Exec.exec_dep_node
   let invalidate = Invalidation.invalidate_node
+  let is_unchanged = Cache_validity.is_unchanged
+
+  let is_successfully_cached (t : (_, _) t) =
+    match t.state, t.value with
+    | Cached, Ok _ -> true
+    | (Not_cached | Out_of_date | Restoring _ | Computing _), _
+    | Cached, (Uninitialized | Error _) -> false
+  ;;
 
   module Packed = struct
     type 'o t = T : (_, 'o) Dep_node.t -> 'o t [@@unboxed]
@@ -377,6 +500,7 @@ struct
 end
 
 let reset invalidation =
+  Cache_validity.clear ();
   (* We rely on [invalidation] to list the actual reasons for the reset, which
      justifies the [~reason:Unknown] below. *)
   let invalidate_current_run = Current_run.invalidate ~reason:Unknown in
@@ -434,8 +558,6 @@ module Run = struct
     let current = Run.current
     let of_int = Run.For_testing.of_int
     let to_int = Run.For_testing.to_int
-
-    module Pair = Run.Pair
   end
 end
 
