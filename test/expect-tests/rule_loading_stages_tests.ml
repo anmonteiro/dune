@@ -109,7 +109,13 @@ let%expect_test "ownership proofs track deferred results behind unforced wrapper
          Rules.prefix_rules (Action_builder.return ()) ~f:(fun () -> Rules.produce tree)))
   in
   let views =
-    [ tree; restricted; prefixed; Rules.restrict prefixed (Target_mask.files [ target ]) ]
+    [ tree
+    ; restricted
+    ; prefixed
+    ; Rules.restrict prefixed (Target_mask.files [ target ])
+    ; Rules.restrict_to_directory tree ~dir
+    ; Rules.restrict_to_directory prefixed ~dir
+    ]
   in
   let check ~since expected =
     List.iter views ~f:(fun tree ->
