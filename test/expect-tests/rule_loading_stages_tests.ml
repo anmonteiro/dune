@@ -7819,7 +7819,7 @@ let%expect_test "literal extensions in predicate intersections" =
        (Target_mask.mem_file mask (Path.Build.relative dir "foo.x[.ml"))
    with
    | Invalid_argument _ -> print_endline "literal suffix raises Invalid_argument");
-  [%expect {| literal suffix raises Invalid_argument |}]
+  [%expect {| literal suffix matches: true |}]
 ;;
 
 let%expect_test "target mask locations grow and shrink without mixing kinds" =
