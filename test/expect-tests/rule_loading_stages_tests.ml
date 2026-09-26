@@ -7797,6 +7797,25 @@ let%expect_test "preprocessing output families preserve filename transformations
     |}]
 ;;
 
+let%expect_test "literal extensions in predicate intersections" =
+  let dir = path "default/literal-extension-intersection" in
+  let extensions =
+    Filename.Extension.Set.singleton (Filename.Extension.of_string_exn ".x[.ml")
+  in
+  let suffix = Target_mask.file_extensions ~dir extensions in
+  let predicate =
+    Target_mask.files_matching ~dir (Predicate_lang.Glob.of_string "*.ml")
+  in
+  (try
+     let mask = Target_mask.inter suffix predicate in
+     printfn
+       "literal suffix matches: %b"
+       (Target_mask.mem_file mask (Path.Build.relative dir "foo.x[.ml"))
+   with
+   | Invalid_argument _ -> print_endline "literal suffix raises Invalid_argument");
+  [%expect {| literal suffix raises Invalid_argument |}]
+;;
+
 let%expect_test "target mask locations grow and shrink without mixing kinds" =
   let dir = path "default/location-transitions" in
   let a = Path.Build.relative dir "a/item" in
