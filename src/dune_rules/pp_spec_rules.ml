@@ -76,8 +76,9 @@ let rule_target_families ~dir ~dialects ~preprocess ~empty_intf =
                 if List.mem seen pattern ~equal:String.equal
                 then seen, acc
                 else (
+                  let suffix = String.drop pattern 1 |> Glob.escape in
                   let mask =
-                    pattern
+                    "*" ^ suffix
                     |> Predicate_lang.Glob.of_string
                     |> Target_mask.files_matching ~dir
                   in

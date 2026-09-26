@@ -57,23 +57,21 @@ let of_string_exn loc repr =
 let compare x y = String.compare (to_string x) (to_string y)
 let hash t = String.hash (to_string t)
 
+let escape s =
+  let buf = Buffer.create (String.length s) in
+  String.iter s ~f:(fun c ->
+    (match c with
+     | '*' | '?' | '[' | ']' | '{' | '}' | ',' | '\\' -> Buffer.add_char buf '\\'
+     | _ -> ());
+    Buffer.add_char buf c);
+  Buffer.contents buf
+;;
+
 let matching_extensions extensions =
+  let extensions = List.map extensions ~f:Filename.Extension.to_string in
   let re =
     let open Re in
-    [ rep any
-    ; List.map extensions ~f:(fun s ->
-        let s = Filename.Extension.to_string s in
-        match of_string s with
-        | Literal _ -> str s
-        | Re _ ->
-          (* we cannot allow anything that can be parsed as a regex
-             here b/c we want the string representation to match [of_string]
-          *)
-          Code_error.raise "invalid extension" [ "s", Dyn.string s ])
-      |> alt
-    ]
-    |> seq
-    |> compile
+    [ rep any; List.map extensions ~f:str |> alt ] |> seq |> compile
   in
   Re
     { re
@@ -81,10 +79,7 @@ let matching_extensions extensions =
     ; repr =
         (match extensions with
          | [] -> Code_error.raise "empty list of extensions" []
-         | [ x ] -> sprintf "*%s" (Filename.Extension.to_string x)
-         | xs ->
-           sprintf
-             "*{%s}"
-             (String.concat (List.map xs ~f:Filename.Extension.to_string) ~sep:","))
+         | [ x ] -> "*" ^ escape x
+         | xs -> "*{" ^ String.concat (List.map xs ~f:escape) ~sep:"," ^ "}")
     }
 ;;
