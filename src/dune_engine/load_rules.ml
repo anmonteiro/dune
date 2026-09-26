@@ -1113,36 +1113,6 @@ end = struct
               [ "dir", Path.Build.to_dyn dir; "example", Path.Build.to_dyn p ])
     ;;
 
-    let check_all_rules_are_descendant ~of_:dir rules =
-      match
-        Path.Build.Map.find_key (Rules.to_map rules) ~f:(fun p ->
-          not (Path.Build.is_descendant p ~of_:dir))
-      with
-      | None -> ()
-      | Some p ->
-        let dir_rules = Rules.find rules (Path.build p) |> Rules.Dir_rules.consume in
-        Code_error.raise
-          "[gen_rules] returned rules in a directory that is not a descendant of the \
-           directory it was called for"
-          [ "dir", Path.Build.to_dyn dir
-          ; ( "example"
-            , match dir_rules with
-              | { rules = r :: _; _ } ->
-                Dyn.Variant
-                  ( "Rule"
-                  , [ Dyn.Record [ "targets", Targets.Validated.to_dyn r.targets ] ] )
-              | { rules = []; aliases } ->
-                (match Alias.Name.Map.choose aliases with
-                 | None -> assert false
-                 | Some (name, _) ->
-                   Dyn.Variant
-                     ( "Alias"
-                     , [ Dyn.Record
-                           [ "dir", Path.Build.to_dyn p; "name", Alias.Name.to_dyn name ]
-                       ] )) )
-          ]
-    ;;
-
     let make_rules_gen_result
           ~of_
           { Gen_rules.Rules.build_dir_only_sub_dirs; directory_targets; rules }
@@ -1152,8 +1122,7 @@ end = struct
       let rules =
         Memo.lazy_ ~name:"check-rules-are-descendant" (fun () ->
           let+ rules = rules in
-          check_all_rules_are_descendant ~of_ rules;
-          Rules.restrict rules (Target_mask.subtree of_))
+          Rules.restrict_to_directory rules ~dir:of_)
       in
       let inherited_descendants = lazy Dir_set.empty in
       { build_dir_only_sub_dirs
