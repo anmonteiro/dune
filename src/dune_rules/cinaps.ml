@@ -73,7 +73,7 @@ let () =
 let flags = Ocaml_flags.of_list [ "-w"; "-24" ]
 let for_ = Compilation_mode.Ocaml
 
-let gen_rules sctx t ~dir ~scope =
+let files_and_dir sctx ~dir t =
   let digest_input_repr =
     Repr.variant
       "cinaps-digest-input"
@@ -101,9 +101,8 @@ let gen_rules sctx t ~dir ~scope =
             | `No_files _ -> None)
       ]
   in
-  let loc = t.loc in
   (* Files checked by cinaps *)
-  let* cinapsed_files =
+  let+ cinapsed_files =
     Source_tree.files_of (Path.Build.drop_build_context_exn dir)
     >>| Path.Source.Set.to_list
     >>| List.filter_map ~f:(fun p ->
@@ -139,6 +138,25 @@ let gen_rules sctx t ~dir ~scope =
     in
     Path.Build.relative dir ("." ^ name ^ "." ^ stamp)
   in
+  cinapsed_files, cinaps_dir
+;;
+
+let alias ~dir t = Alias.make ~dir @@ Option.value t.alias ~default:cinaps_alias
+
+let rule_targets sctx ~dir t =
+  let+ _, cinaps_dir = files_and_dir sctx ~dir t in
+  let aliases =
+    let cinaps_alias = alias ~dir t in
+    match t.alias with
+    | Some _ -> [ cinaps_alias ]
+    | None -> [ cinaps_alias; Alias.make Alias0.runtest ~dir ]
+  in
+  Target_mask.union (Target_mask.subtree cinaps_dir) (Target_mask.aliases aliases)
+;;
+
+let gen_rules sctx t ~dir ~scope =
+  let loc = t.loc in
+  let* cinapsed_files, cinaps_dir = files_and_dir sctx ~dir t in
   let main_module_name = Module_name.of_checked_string name in
   let module_ =
     Module.generated ~kind:Impl ~for_ [ main_module_name ] ~src_dir:cinaps_dir
@@ -241,7 +259,7 @@ let gen_rules sctx t ~dir ~scope =
       ~promote:None
       ~env:(Action_builder.return Env.empty)
   in
-  let cinaps_alias = Alias.make ~dir @@ Option.value t.alias ~default:cinaps_alias in
+  let cinaps_alias = alias ~dir t in
   let* () =
     let action =
       let open Action_builder.O in

@@ -9,6 +9,7 @@ type t = Dep_node.packed Deps.Dynamic.t ref
 
 let enabled = ref true
 let set_enabled value = enabled := value
+let is_enabled () = !enabled
 let inactive = ref Deps.Dynamic.empty
 let disabled = ref Deps.Dynamic.empty
 let is_inactive t = Stdlib.( == ) t inactive

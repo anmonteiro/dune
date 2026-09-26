@@ -73,6 +73,292 @@ let%expect_test "bind_apply threads its argument" =
     15 |}]
 ;;
 
+let%expect_test "ready bind forms stay delayed and use the execution context" =
+  let check use_apply =
+    let var = Fiber.Var.create 0 in
+    let calls = ref 0 in
+    let callback value argument =
+      incr calls;
+      let+ context = Fiber.Var.get var in
+      value + argument + context
+    in
+    let input = Fiber.return 10 in
+    let fiber =
+      if use_apply
+      then Fiber.bind_apply input callback 5
+      else Fiber.bind input ~f:(fun value -> callback value 5)
+    in
+    printfn "%s" (if use_apply then "bind_apply" else "bind");
+    printfn "before: %d" !calls;
+    test int fiber;
+    test
+      int
+      (Fiber.Var.set var 100 (fun () ->
+         let* () = Scheduler.yield () in
+         fiber));
+    test int fiber;
+    printfn "calls: %d" !calls
+  in
+  check true;
+  check false;
+  [%expect
+    {|
+    bind_apply
+    before: 0
+    15
+    115
+    15
+    calls: 3
+    bind
+    before: 0
+    15
+    115
+    15
+    calls: 3 |}]
+;;
+
+let%expect_test "ready bind forms preserve both exception paths" =
+  let callback_error = Fiber.bind_apply (Fiber.return ()) (fun () () -> raise Exit) () in
+  let returned_fiber_error =
+    Fiber.bind_apply
+      (Fiber.return ())
+      (fun () () ->
+         let* () = Scheduler.yield () in
+         failwith "returned fiber")
+      ()
+  in
+  let check fiber =
+    test
+      (backtrace_result unit)
+      (Fiber.collect_errors (fun () ->
+         let* () = fiber in
+         failwith "unexpected continuation"))
+  in
+  check callback_error;
+  check returned_fiber_error;
+  check (Fiber.bind (Fiber.return ()) ~f:(fun () -> raise Exit));
+  check
+    (Fiber.bind (Fiber.return ()) ~f:(fun () ->
+       let* () = Scheduler.yield () in
+       failwith "returned fiber"));
+  [%expect
+    {|
+    Error [ { exn = "Stdlib.Exit"; backtrace = "" } ]
+    Error [ { exn = "Failure(\"returned fiber\")"; backtrace = "" } ]
+    Error [ { exn = "Stdlib.Exit"; backtrace = "" } ]
+    Error [ { exn = "Failure(\"returned fiber\")"; backtrace = "" } ] |}]
+;;
+
+let%expect_test "bind forms wait for a non-ready input" =
+  let check use_apply =
+    let ivar = Fiber.Ivar.create () in
+    let calls = ref 0 in
+    let callback value argument =
+      incr calls;
+      Fiber.return (value + argument)
+    in
+    let input = Fiber.Ivar.read ivar in
+    let fiber =
+      if use_apply
+      then Fiber.bind_apply input callback 5
+      else Fiber.bind input ~f:(fun value -> callback value 5)
+    in
+    printfn "%s" (if use_apply then "bind_apply" else "bind");
+    test
+      int
+      (Fiber.fork_and_join_unit
+         (fun () ->
+            let* () = Scheduler.yield () in
+            printfn "before fill: %d" !calls;
+            Fiber.Ivar.fill ivar 10)
+         (fun () -> fiber));
+    printfn "calls: %d" !calls
+  in
+  check true;
+  check false;
+  [%expect
+    {|
+    bind_apply
+    before fill: 0
+    15
+    calls: 1
+    bind
+    before fill: 0
+    15
+    calls: 1 |}]
+;;
+
+let%expect_test "deferred bind_apply returns into the caller context" =
+  let var = Fiber.Var.create 0 in
+  let calls = ref 0 in
+  let input =
+    Fiber.Var.set var 99 (fun () ->
+      let* () = Scheduler.yield () in
+      Fiber.return 10)
+  in
+  let fiber =
+    let* value =
+      Fiber.bind_apply
+        input
+        (fun value argument ->
+           incr calls;
+           Fiber.return (value + argument))
+        5
+    in
+    let+ context = Fiber.Var.get var in
+    value + context
+  in
+  printfn "before: %d" !calls;
+  test int fiber;
+  test int (Fiber.Var.set var 100 (fun () -> fiber));
+  test int fiber;
+  printfn "calls: %d" !calls;
+  [%expect
+    {|
+    before: 0
+    15
+    115
+    15
+    calls: 3 |}]
+;;
+
+let%expect_test "deferred bind_apply preserves callback and continuation errors" =
+  let input = Scheduler.yield () in
+  let apply callback = Fiber.bind_apply input callback () in
+  let check fiber =
+    test
+      (backtrace_result unit)
+      (Fiber.collect_errors (fun () ->
+         let* () = fiber in
+         failwith "continuation"))
+  in
+  check (apply (fun () () -> raise Exit));
+  check
+    (apply (fun () () ->
+       let* () = Scheduler.yield () in
+       failwith "returned fiber"));
+  check (apply (fun () () -> Fiber.return ()));
+  [%expect
+    {|
+    Error [ { exn = "Stdlib.Exit"; backtrace = "" } ]
+    Error [ { exn = "Failure(\"returned fiber\")"; backtrace = "" } ]
+    Error [ { exn = "Failure(\"continuation\")"; backtrace = "" } ] |}]
+;;
+
+let%expect_test "ready bind chains keep constant stack usage" =
+  let rec loop n =
+    let* () = Fiber.return () in
+    if n = 0 then Fiber.return (Gc.stat ()).stack_size else loop (n - 1)
+  in
+  let initial = Scheduler.run (loop 0) in
+  let repeated = Scheduler.run (loop 10_000) in
+  printfn "same stack: %b" (initial = repeated);
+  [%expect {| same stack: true |}]
+;;
+
+let%expect_test "parallel ready binds stay delayed and reuse the execution context" =
+  let var = Fiber.Var.create 0 in
+  let calls = ref 0 in
+  let worker =
+    Fiber.bind (Fiber.return 10) ~f:(fun value ->
+      incr calls;
+      let+ context = Fiber.Var.get var in
+      value + context)
+  in
+  let fiber =
+    Fiber.map_reduce_array [| worker; worker |] ~f:Fun.id ~empty:0 ~combine:( + )
+  in
+  printfn "before: %d" !calls;
+  test int fiber;
+  test
+    int
+    (Fiber.Var.set var 100 (fun () ->
+       let* () = Scheduler.yield () in
+       fiber));
+  test int fiber;
+  printfn "calls: %d" !calls;
+  [%expect
+    {|
+    before: 0
+    20
+    220
+    20
+    calls: 6 |}]
+;;
+
+let%expect_test "parallel ready binds collect errors and finish siblings" =
+  let check deferred =
+    let sibling_finished = ref false in
+    let failing =
+      Fiber.bind (Fiber.return ()) ~f:(fun () ->
+        if deferred
+        then
+          let* () = Scheduler.yield () in
+          failwith "returned fiber"
+        else raise Exit)
+    in
+    let sibling =
+      Fiber.bind (Fiber.return ()) ~f:(fun () ->
+        let+ () = Scheduler.yield () in
+        sibling_finished := true)
+    in
+    test
+      (backtrace_result unit)
+      (Fiber.collect_errors (fun () ->
+         let* () =
+           Fiber.map_reduce_array
+             [| failing; sibling |]
+             ~f:Fun.id
+             ~empty:()
+             ~combine:(fun () () -> ())
+         in
+         failwith "unexpected continuation"));
+    printfn "sibling finished: %b" !sibling_finished
+  in
+  check false;
+  check true;
+  [%expect
+    {|
+    Error [ { exn = "Stdlib.Exit"; backtrace = "" } ]
+    sibling finished: true
+    Error [ { exn = "Failure(\"returned fiber\")"; backtrace = "" } ]
+    sibling finished: true |}]
+;;
+
+let%expect_test "parallel ready binds preserve mixed ready and blocked order" =
+  let gate = Fiber.Ivar.create () in
+  let worker input name =
+    Fiber.bind input ~f:(fun () ->
+      print_endline name;
+      Fiber.return [ name ])
+  in
+  let blocked = worker (Fiber.Ivar.read gate) "blocked" in
+  let ready = worker (Fiber.return ()) "ready" in
+  let release =
+    Fiber.bind (Fiber.return ()) ~f:(fun () ->
+      print_endline "fill";
+      let+ () = Fiber.Ivar.fill gate () in
+      print_endline "released";
+      [ "release" ])
+  in
+  Scheduler.run
+    (let+ result =
+       Fiber.map_reduce_array
+         [| blocked; ready; release |]
+         ~f:Fun.id
+         ~empty:[]
+         ~combine:List.append
+     in
+     print_endline (String.concat ~sep:"," result));
+  [%expect
+    {|
+    ready
+    fill
+    released
+    blocked
+    ready,release,blocked |}]
+;;
+
 let%expect_test "map chains preserve callback order and exceptions" =
   let chain ~length ~raise_at =
     List.init length ~f:(fun i -> i + 1)
@@ -142,37 +428,45 @@ let%expect_test "collect_errors" =
 let[@inline never] raise_for_backtrace_test _ = raise Exit
 
 let%expect_test "scheduler exceptions preserve user backtraces" =
-  let previously_recording = Printexc.backtrace_status () in
-  let result =
-    Exn.protect
-      ~f:(fun () ->
-        Printexc.record_backtrace true;
-        Scheduler.run
-          (Fiber.collect_errors (fun () ->
-             Fiber.map (Fiber.return ()) ~f:raise_for_backtrace_test)))
-      ~finally:(fun () -> Printexc.record_backtrace previously_recording)
+  let check fiber =
+    let previously_recording = Printexc.backtrace_status () in
+    let result =
+      Exn.protect
+        ~f:(fun () ->
+          Printexc.record_backtrace true;
+          Scheduler.run (Fiber.collect_errors (fun () -> fiber)))
+        ~finally:(fun () -> Printexc.record_backtrace previously_recording)
+    in
+    let backtrace =
+      match result with
+      | Error [ { exn = Exit; backtrace } ] -> backtrace
+      | result ->
+        Code_error.raise
+          "Unexpected result in Fiber backtrace test"
+          [ "result", backtrace_result unit result ]
+    in
+    let contains_test_frame =
+      match Printexc.backtrace_slots backtrace with
+      | None -> false
+      | Some slots ->
+        Array.exists slots ~f:(fun slot ->
+          match Printexc.Slot.location slot with
+          | None -> false
+          | Some { filename; _ } -> Filename.basename filename = "fiber_tests.ml")
+    in
+    printfn "nonempty: %b" (Printexc.raw_backtrace_length backtrace > 0);
+    printfn "contains user frame: %b" contains_test_frame
   in
-  let backtrace =
-    match result with
-    | Error [ { exn = Exit; backtrace } ] -> backtrace
-    | result ->
-      Code_error.raise
-        "Unexpected result in Fiber backtrace test"
-        [ "result", backtrace_result unit result ]
-  in
-  let contains_test_frame =
-    match Printexc.backtrace_slots backtrace with
-    | None -> false
-    | Some slots ->
-      Array.exists slots ~f:(fun slot ->
-        match Printexc.Slot.location slot with
-        | None -> false
-        | Some { filename; _ } -> Filename.basename filename = "fiber_tests.ml")
-  in
-  printfn "nonempty: %b" (Printexc.raw_backtrace_length backtrace > 0);
-  printfn "contains user frame: %b" contains_test_frame;
+  check (Fiber.map (Fiber.return ()) ~f:raise_for_backtrace_test);
+  let raise_ready () () = raise_for_backtrace_test () in
+  check (Fiber.bind_apply (Fiber.return ()) raise_ready ());
+  check (Fiber.bind (Fiber.return ()) ~f:raise_for_backtrace_test);
   [%expect
     {|
+    nonempty: true
+    contains user frame: true
+    nonempty: true
+    contains user frame: true
     nonempty: true
     contains user frame: true |}]
 ;;

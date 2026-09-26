@@ -1211,7 +1211,7 @@ let rpc_request_action
     match kind with
     | Build targets ->
       let root = { root with to_cwd = []; reach_from_root_prefix = "" } in
-      Target.interpret_targets root setup targets
+      Target.build_targets root setup targets
     | Runtest test_paths ->
       Runtest_common.make_request ~scontexts:setup.scontexts ~to_cwd:[] ~test_paths)
 ;;

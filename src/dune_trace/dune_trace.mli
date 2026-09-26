@@ -66,6 +66,8 @@ module Event : sig
     ; dirs : Filename.Set.t
     }
 
+  val rule_generated : targets -> t
+
   val process_start
     :  extra_args:(string * Sexp.t) list
     -> pid:Pid.t

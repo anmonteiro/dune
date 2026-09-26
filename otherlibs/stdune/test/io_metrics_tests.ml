@@ -95,3 +95,102 @@ let%expect_test "directory metrics count directory scans" =
     { count = 2; time_changed = true }
     |}]
 ;;
+
+let%expect_test "directory scans preserve kinds and report missing directories" =
+  let dir = Temp.create Dir ~prefix:"directory-kinds" ~suffix:"test" in
+  Io.write_file_exn (Path.relative dir "file") "";
+  Path.mkdir_p (Path.relative dir "dir");
+  Unix.symlink "file" (Path.to_string (Path.relative dir "link"));
+  Unix.symlink "missing" (Path.to_string (Path.relative dir "broken-link"));
+  Readdir.read_directory_with_kinds (Path.to_string dir)
+  |> ok_exn
+  |> List.sort ~compare:(fun (a, _) (b, _) -> Filename.compare a b)
+  |> List.iter ~f:(fun (name, kind) ->
+    Printf.printf "%s: %s\n" (Filename.to_string name) (File_kind.to_string kind));
+  let missing = Path.to_string (Path.relative dir "missing") in
+  (match Readdir.read_directory_with_kinds missing with
+   | Error (Unix.ENOENT, _, _) -> print_endline "missing directory: ENOENT"
+   | Error error -> Unix_error.Detailed.raise error
+   | Ok _ -> failwith "unexpected directory listing");
+  [%expect
+    {|
+    broken-link: S_LNK
+    dir: S_DIR
+    file: S_REG
+    link: S_LNK
+    missing directory: ENOENT
+    |}]
+;;
+
+let%expect_test "directory scans preserve chunk boundaries and mixed kinds" =
+  List.iter
+    [ 0, 0
+    ; 1, 0
+    ; 63, 0
+    ; 64, 0
+    ; 65, 0
+    ; 127, 0
+    ; 128, 0
+    ; 129, 0
+    ; 255, 0
+    ; 256, 0
+    ; 257, 0
+    ; 65, 123
+    ; 65, 180
+    ]
+    ~f:(fun (count, width) ->
+      let dir = Temp.create Dir ~prefix:"directory-chunks" ~suffix:"test" in
+      let expected =
+        List.init count ~f:(fun index ->
+          let name =
+            Printf.sprintf "%03d-%s" index (String.make width 'x')
+            |> Filename.of_string_exn
+          in
+          let path = Path.relative dir (Filename.to_string name) in
+          let kind =
+            match index mod 3 with
+            | 0 ->
+              Io.write_file_exn path "";
+              Unix.S_REG
+            | 1 ->
+              Path.mkdir_p path;
+              Unix.S_DIR
+            | _ ->
+              Unix.symlink "missing" (Path.to_string path);
+              Unix.S_LNK
+          in
+          name, kind)
+      in
+      let count_before = Counter.read Metrics.Directory_read.count in
+      let names = Readdir.read_directory (Path.to_string dir) |> ok_exn in
+      let entries = Readdir.read_directory_with_kinds (Path.to_string dir) |> ok_exn in
+      let sorted =
+        List.sort entries ~compare:(fun (a, _) (b, _) -> Filename.compare a b)
+      in
+      Printf.printf
+        "%d/%d: contents=%b order=%b scans=%d\n"
+        count
+        width
+        (List.equal
+           (fun (a, ka) (b, kb) -> Filename.equal a b && ka = kb)
+           sorted
+           expected)
+        (List.equal Filename.equal names (List.map entries ~f:fst))
+        (Counter.read Metrics.Directory_read.count - count_before));
+  [%expect
+    {|
+    0/0: contents=true order=true scans=2
+    1/0: contents=true order=true scans=2
+    63/0: contents=true order=true scans=2
+    64/0: contents=true order=true scans=2
+    65/0: contents=true order=true scans=2
+    127/0: contents=true order=true scans=2
+    128/0: contents=true order=true scans=2
+    129/0: contents=true order=true scans=2
+    255/0: contents=true order=true scans=2
+    256/0: contents=true order=true scans=2
+    257/0: contents=true order=true scans=2
+    65/123: contents=true order=true scans=2
+    65/180: contents=true order=true scans=2
+    |}]
+;;

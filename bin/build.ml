@@ -202,7 +202,7 @@ let build =
           targets
         >>| Rpc.Rpc_common.wrap_build_outcome_exn ~print_on_success:true)
     | Ok () ->
-      let request setup = Target.interpret_targets (Common.root common) setup targets in
+      let request setup = Target.build_targets (Common.root common) setup targets in
       run_build_command ~common ~config ~request
   in
   Cmd.v (Cmd.info "build" ~doc ~man ~envs:Common.envs) term

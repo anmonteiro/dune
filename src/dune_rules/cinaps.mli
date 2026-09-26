@@ -14,5 +14,7 @@ type t
 
 include Stanza.S with type t := t
 
+val rule_targets : Super_context.t -> dir:Path.Build.t -> t -> Target_mask.t Memo.t
+
 (** Generate the rules to handle this cinaps stanza *)
 val gen_rules : Super_context.t -> t -> dir:Path.Build.t -> scope:Scope.t -> unit Memo.t

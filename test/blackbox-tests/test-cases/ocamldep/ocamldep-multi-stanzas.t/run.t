@@ -9,6 +9,8 @@ Reports modules that are claimed by multiple stanzas.
   module belongs to only one stanza. Stanzas without an explicit "modules"
   field use all modules in the directory by default. This applies to library,
   executable, executables, test, tests, and melange.emit stanzas.
+  -> required by _build/default/.merlin-conf/exe-test
+  -> required by _build/default/test.exe
   [1]
 
   $ dune build src/a.cma --debug-dep

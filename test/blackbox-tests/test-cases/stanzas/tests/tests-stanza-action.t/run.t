@@ -13,3 +13,22 @@ If there is no field, the program is run with no arguments:
 
   $ dune build @default/runtest
   argv[0] = "./my_test.exe"
+
+Custom expect actions may produce additional inferred targets.
+
+  $ mkdir additional-target
+  $ cat >additional-target/dune <<EOF
+  > (test
+  >  (name main)
+  >  (action
+  >   (progn
+  >    (with-stdout-to extra (echo "extra output"))
+  >    (run %{test}))))
+  > EOF
+  $ cat >additional-target/main.ml <<EOF
+  > let () = print_endline "test output"
+  > EOF
+  $ echo 'test output' >additional-target/main.expected
+  $ dune build @additional-target/runtest
+  $ cat _build/default/additional-target/extra
+  extra output

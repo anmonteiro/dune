@@ -7,7 +7,15 @@
 
 open! Stdune
 
-type 'node t
+module Static : sig
+  type 'node t = private
+    | Empty
+    | Singleton of 'node
+    | Seq of 'node t Array.Immutable.t
+    | Par of 'node t Array.Immutable.t
+end
+
+type 'node t = 'node Static.t
 
 val empty : 'node t
 val is_empty : _ t -> bool

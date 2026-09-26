@@ -44,6 +44,18 @@ val create
     without a cutoff predicate. *)
 val output_changed : (_, 'o) t -> old_value:'o -> new_value:'o -> bool
 
+val create_with_replay
+  :  name:string
+  -> input:(module Store_intf.Input with type t = 'i)
+  -> cutoff:('o -> 'o -> bool)
+  -> replay:('i -> 'o -> unit)
+  -> ('i -> 'o Fiber.t)
+  -> ('i, 'o) t
+
+val has_replay : _ t -> bool
+val has_on_event_or_replay : _ t -> bool
+val replay : ('i, 'o) t -> 'i -> 'o -> unit
+
 (** Whether the node has a cutoff predicate. If [false], [output_changed] is
     guaranteed to return [true] for any pair of values. *)
 val has_cutoff : _ t -> bool

@@ -285,10 +285,54 @@ module Glob = struct
     Element (Element.Glob proxy)
   ;;
 
+  let of_string repr =
+    let proxy = Element.Proxy.of_string repr in
+    let (_ : Glob.t) = Element.unproxy proxy in
+    Element (Element.Glob proxy)
+  ;;
+
   let of_string_list s = Or (List.rev_map s ~f:(fun x -> Element (Element.Literal x)))
 
   let of_string_set s =
     Or (String.Set.to_list_map ~f:(fun x -> Element (Element.Literal x)) s)
+  ;;
+
+  let rec finite_elements = function
+    | False -> Some String.Set.empty
+    | Element (Element.Literal name) -> Some (String.Set.singleton name)
+    | Element (Element.Glob glob) ->
+      Element.unproxy glob |> Glob.as_literal |> Option.map ~f:String.Set.singleton
+    | Or predicates ->
+      List.fold_left predicates ~init:(Some String.Set.empty) ~f:(fun acc predicate ->
+        let open Option.O in
+        let* acc = acc in
+        let+ names = finite_elements predicate in
+        String.Set.union acc names)
+    | And (first :: rest) ->
+      List.fold_left rest ~init:(finite_elements first) ~f:(fun acc predicate ->
+        let open Option.O in
+        let* acc = acc in
+        let+ names = finite_elements predicate in
+        String.Set.inter acc names)
+    | True | Standard | Not _ | And [] -> None
+  ;;
+
+  let rec may_match_suffix t suffix =
+    match t with
+    | False -> false
+    | Element (Element.Literal name) -> Filename.check_suffix name suffix
+    | Element (Element.Glob glob) ->
+      let glob = Element.unproxy glob in
+      (match Glob.as_literal glob with
+       | Some name -> Filename.check_suffix name suffix
+       | None ->
+         let required = Glob.literal_suffix glob in
+         Filename.check_suffix required suffix || Filename.check_suffix suffix required)
+    | Or predicates ->
+      List.exists predicates ~f:(fun predicate -> may_match_suffix predicate suffix)
+    | And predicates ->
+      List.for_all predicates ~f:(fun predicate -> may_match_suffix predicate suffix)
+    | True | Standard | Not _ -> true
   ;;
 
   let compare x y = compare Element.compare x y

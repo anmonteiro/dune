@@ -23,11 +23,16 @@ module Node_kind : sig
       [true] for any pair of values. *)
   val has_cutoff : _ t -> bool
 
+  val with_replay : cutoff:('o -> 'o -> bool) -> ('i -> 'o -> unit) -> ('i, 'o) t
+  val has_replay : _ t -> bool
+  val has_on_event_or_replay : _ t -> bool
+  val replay : ('i, 'o) t -> 'i -> 'o -> unit
+
   (** Notify the node about an event. *)
   val notify : ('i, _) t -> 'i -> Event.t -> unit
 end = struct
-  (* This is a product of two options, flattened to avoid unnecessary
-     indirections. Note that only a small number of [t]s have event tracking. *)
+  (* Ordinary nodes flatten two options to avoid unnecessary indirections.
+     Replay nodes have their own variant and require an early cutoff. *)
   type ('i, 'o) t =
     | Vanilla
     | With_event_tracker of { on_event : 'i -> Event.t -> unit }
@@ -35,6 +40,10 @@ end = struct
     | With_cutoff_and_event_tracker of
         { equal : 'o -> 'o -> bool
         ; on_event : 'i -> Event.t -> unit
+        }
+    | With_replay of
+        { equal : 'o -> 'o -> bool
+        ; replay : 'i -> 'o -> unit
         }
 
   let create ~cutoff ~on_event =
@@ -48,20 +57,41 @@ end = struct
   let output_changed t ~old_value ~new_value =
     match t with
     | Vanilla | With_event_tracker _ -> true
-    | With_cutoff { equal } | With_cutoff_and_event_tracker { equal; on_event = _ } ->
-      not (equal old_value new_value)
+    | With_cutoff { equal }
+    | With_cutoff_and_event_tracker { equal; on_event = _ }
+    | With_replay { equal; replay = _ } -> not (equal old_value new_value)
   ;;
 
   let has_cutoff = function
     | Vanilla | With_event_tracker _ -> false
-    | With_cutoff _ | With_cutoff_and_event_tracker _ -> true
+    | With_cutoff _ | With_cutoff_and_event_tracker _ | With_replay _ -> true
   ;;
 
   let notify t input event =
     match t with
-    | Vanilla | With_cutoff _ -> ()
+    | Vanilla | With_cutoff _ | With_replay _ -> ()
     | With_event_tracker { on_event }
     | With_cutoff_and_event_tracker { on_event; equal = _ } -> on_event input event
+  ;;
+
+  let with_replay ~cutoff:equal replay = With_replay { equal; replay }
+
+  let has_replay = function
+    | With_replay _ -> true
+    | Vanilla | With_event_tracker _ | With_cutoff _ | With_cutoff_and_event_tracker _ ->
+      false
+  ;;
+
+  let replay t input output =
+    match t with
+    | With_replay { replay; equal = _ } -> replay input output
+    | Vanilla | With_event_tracker _ | With_cutoff _ | With_cutoff_and_event_tracker _ ->
+      ()
+  ;;
+
+  let has_on_event_or_replay = function
+    | Vanilla | With_cutoff _ -> false
+    | With_event_tracker _ | With_cutoff_and_event_tracker _ | With_replay _ -> true
   ;;
 end
 
@@ -103,3 +133,20 @@ let output_changed t ~old_value ~new_value =
 
 let has_cutoff t = Node_kind.has_cutoff t.node_kind
 let notify t input event = Node_kind.notify t.node_kind input event
+
+let create_with_replay ~name ~input ~cutoff ~replay f =
+  let spec =
+    create
+      ~name:(Some name)
+      ~input
+      ~human_readable_description:None
+      ~cutoff:None
+      ~witness:true
+      f
+  in
+  { spec with node_kind = Node_kind.with_replay ~cutoff replay }
+;;
+
+let has_replay t = Node_kind.has_replay t.node_kind
+let has_on_event_or_replay t = Node_kind.has_on_event_or_replay t.node_kind
+let replay t input output = Node_kind.replay t.node_kind input output

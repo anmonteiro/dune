@@ -425,6 +425,8 @@ let dep_theory_file ~dir ~wrapper_name =
   |> Path.Build.set_extension ~ext:Filename.Extension.theory_d
 ;;
 
+let rocqproject_file ~dir = Path.Build.relative dir "_RocqProject"
+
 let rocq_stanza_flags ~sctx ~dir ~stanza_flags ~per_file_flags ~remove_q =
   let+ expander = Super_context.expander sctx ~dir in
   let flags = rocq_flags ~expander ~dir ~stanza_flags ~per_file_flags in
@@ -545,7 +547,7 @@ let setup_rocqproject_for_theory_rule
     let lifetime = Lifetime.Until_clean in
     Rule.Mode.Promote { lifetime; into = None; only = None }
   in
-  let rocqproject = Path.Build.relative dir "_RocqProject" in
+  let rocqproject = rocqproject_file ~dir in
   Super_context.add_rule
     ~mode
     ~loc
@@ -911,6 +913,11 @@ let source_rule ~sctx theories =
      List.concat l)
 ;;
 
+let rocqdoc_alias ~dir = function
+  | `Html -> Alias.make Alias0.doc ~dir
+  | `Latex -> Alias.make (Alias.Name.of_string "doc-latex") ~dir
+;;
+
 let setup_rocqdoc_rules ~sctx ~dir ~theories_deps (s : Rocq_stanza.Theory.t) rocq_modules =
   let loc, name = s.buildable.loc, snd s.name in
   let rule =
@@ -999,11 +1006,7 @@ let setup_rocqdoc_rules ~sctx ~dir ~theories_deps (s : Rocq_stanza.Theory.t) roc
          |> Action_builder.With_targets.add_directories ~directory_targets:[ doc_dir ])
         |> Super_context.add_rule ~loc ~dir sctx
       in
-      let alias =
-        match mode with
-        | `Html -> Alias.make Alias0.doc ~dir
-        | `Latex -> Alias.make (Alias.Name.of_string "doc-latex") ~dir
-      in
+      let alias = rocqdoc_alias ~dir mode in
       Rocq_doc.rocqdoc_directory ~mode ~obj_dir:dir ~name
       |> Path.build
       |> Action_builder.path
@@ -1057,6 +1060,106 @@ let extraction_context ~context ~scope (buildable : Rocq_stanza.Buildable.t) =
     ml_flags_and_plugin_ocamlpath ~context ~theories_deps ~lib_db buildable
   in
   theories_deps, ml_flags, plugin_ocamlpath
+;;
+
+let modules_of_source_files ~dir source_files =
+  List.concat_map source_files ~f:(fun (source_dir, files) ->
+    match
+      Path.Local.descendant (Path.Build.local source_dir) ~of_:(Path.Build.local dir)
+    with
+    | None -> []
+    | Some prefix ->
+      let prefix = Path.Local.explode prefix |> Filename.L.to_string in
+      Filename.Array.Set.filter files ~f:(fun file ->
+        Filename.Extension.Or_empty.check (Filename.extension file) Filename.Extension.v)
+      |> Filename.Array.Set.to_list_map ~f:(fun file ->
+        let name = Filename.remove_extension file |> Filename.to_string in
+        Rocq_module.make
+          ~source:(Path.build (Path.Build.relative_fname source_dir file))
+          ~prefix
+          ~name:(Rocq_module.Name.make name)))
+;;
+
+let module_rule_targets
+      ~dir
+      ~source_files
+      ~wrapper_name
+      ~buildable
+      ~unknown_modules
+      modules
+  =
+  let { Rocq_stanza.Buildable.mode; rocq_lang_version; _ } = buildable in
+  let mode = Option.value mode ~default:Rocq_mode.Native in
+  let files modules =
+    List.concat_map modules ~f:(fun m ->
+      let objects =
+        Rocq_module.obj_files m ~wrapper_name ~mode ~obj_dir:dir ~obj_files_mode:Build
+        |> List.map ~f:fst
+      in
+      if rocq_lang_version >= (0, 12)
+      then Rocq_module.output_file ~obj_dir:dir m :: objects
+      else objects)
+  in
+  let targets = Target_mask.files (files modules) in
+  let directory_group =
+    match source_files with
+    | [] | [ _ ] -> false
+    | _ :: _ :: _ -> true
+  in
+  if unknown_modules || directory_group
+  then (
+    (* Generated sources and directory mappings can change the output names.
+       Their inputs must remain readable before the namespace is available. *)
+    let extensions =
+      let objects = Rocq_module.obj_extensions ~mode in
+      (if rocq_lang_version >= (0, 12)
+       then Filename.Extension.of_string_exn ".output" :: objects
+       else objects)
+      |> Filename.Extension.Set.of_list
+    in
+    let generated =
+      if directory_group
+      then Target_mask.file_extensions_in_subtree ~dir extensions
+      else Target_mask.file_extensions ~dir extensions
+    in
+    Target_mask.union targets generated)
+  else targets
+;;
+
+let theory_rule_targets ~dir ~source_files (s : Rocq_stanza.Theory.t) =
+  let wrapper_name = Rocq_lib_name.wrapper (snd s.name) in
+  let modules =
+    let standard = modules_of_source_files ~dir source_files in
+    Rocq_module.eval ~dir ~standard s.modules
+  in
+  let project =
+    if snd s.generate_project_file
+    then
+      Target_mask.union
+        (Target_mask.files [ rocqproject_file ~dir ])
+        (Target_mask.aliases [ Alias.make Alias0.rocqproject ~dir ])
+    else Target_mask.empty
+  in
+  List.fold_left
+    [ module_rule_targets
+        ~dir
+        ~source_files
+        ~wrapper_name
+        ~buildable:s.buildable
+        ~unknown_modules:(Ordered_set_lang.has_standard s.modules)
+        modules
+    ; Target_mask.files [ dep_theory_file ~dir ~wrapper_name ]
+    ; Target_mask.directories
+        (List.map [ `Html; `Latex ] ~f:(fun mode ->
+           Rocq_doc.rocqdoc_directory ~mode ~obj_dir:dir ~name:(snd s.name)))
+    ; Target_mask.aliases
+        [ rocqdoc_alias ~dir `Html
+        ; rocqdoc_alias ~dir `Latex
+        ; Alias.make Alias0.runtest ~dir
+        ]
+    ]
+    ~init:project
+    ~f:Target_mask.union
 ;;
 
 let setup_theory_rules ~sctx ~dir ~dir_contents (s : Rocq_stanza.Theory.t) =
@@ -1245,12 +1348,35 @@ let install_rules ~sctx ~dir s =
       make_entry vfile vfile_dst :: obj_files)
 ;;
 
+let rocqpp_target source = Path.Build.set_extension source ~ext:Filename.Extension.ml
+
+let rocqpp_rule_targets ~dir ~source_files ({ modules; _ } : Rocq_stanza.Rocqpp.t) =
+  let standard =
+    List.concat_map source_files ~f:(fun (source_dir, files) ->
+      if not (Path.Build.equal dir source_dir)
+      then []
+      else
+        Filename.Array.Set.filter files ~f:(fun file ->
+          Filename.Extension.Or_empty.check
+            (Filename.extension file)
+            Filename.Extension.mlg)
+        |> Filename.Array.Set.to_list_map ~f:(Path.Build.relative_fname dir))
+  in
+  Ordered_set_lang.eval
+    modules
+    ~standard
+    ~parse:(fun ~loc:_ name -> Path.Build.relative dir (name ^ ".mlg"))
+    ~eq:Path.Build.equal
+  |> List.map ~f:rocqpp_target
+  |> Target_mask.files
+;;
+
 let setup_rocqpp_rules ~sctx ~dir ({ loc; modules } : Rocq_stanza.Rocqpp.t) =
   let* rocq = rocq ~loc ~sctx ~dir
   and* mlg_files = Rocq_sources.mlg_files ~sctx ~dir ~modules in
   let mlg_rule m =
     let source = Path.build m in
-    let target = Path.Build.set_extension m ~ext:Filename.Extension.ml in
+    let target = rocqpp_target m in
     let args = [ Command.Args.A "pp-mlg"; Dep source; Hidden_targets [ target ] ] in
     let build_dir = Super_context.context sctx |> Context.build_dir in
     Command.run ~dir:(Path.build build_dir) rocq args
@@ -1262,13 +1388,50 @@ let extraction_wrapper_name (s : Rocq_stanza.Extraction.t) : string =
   "Dune_Extraction_" ^ Rocq_module.Name.to_string (snd s.prelude)
 ;;
 
+let extraction_files ~dir s =
+  Rocq_stanza.Extraction.target_fnames s |> List.map ~f:(Path.Build.relative dir)
+;;
+
+let extraction_rule_targets ~dir ~source_files (s : Rocq_stanza.Extraction.t) =
+  let wrapper_name = extraction_wrapper_name s in
+  let modules =
+    modules_of_source_files ~dir source_files
+    |> List.filter ~f:(fun m ->
+      Rocq_module.Name.equal (Rocq_module.name m) (snd s.prelude))
+  in
+  let modules =
+    match modules with
+    | _ :: _ -> modules
+    | [] ->
+      let name = snd s.prelude in
+      let source =
+        Path.Build.relative
+          dir
+          (Rocq_module.Name.to_string name
+           ^ Filename.Extension.to_string Filename.Extension.v)
+      in
+      [ Rocq_module.make ~source:(Path.build source) ~prefix:[] ~name ]
+  in
+  List.fold_left
+    [ module_rule_targets
+        ~dir
+        ~source_files
+        ~wrapper_name
+        ~buildable:s.buildable
+        ~unknown_modules:false
+        modules
+    ; Target_mask.files (dep_theory_file ~dir ~wrapper_name :: extraction_files ~dir s)
+    ; Target_mask.aliases [ Alias.make Alias0.runtest ~dir ]
+    ]
+    ~init:Target_mask.empty
+    ~f:Target_mask.union
+;;
+
 let setup_extraction_rules ~sctx ~dir ~dir_contents (s : Rocq_stanza.Extraction.t) =
   let wrapper_name = extraction_wrapper_name s in
   let* rocq_sources = Dir_contents.rocq dir_contents in
   let rocq_module = Rocq_sources.extract rocq_sources s in
-  let file_targets =
-    Rocq_stanza.Extraction.target_fnames s |> List.map ~f:(Path.Build.relative dir)
-  in
+  let file_targets = extraction_files ~dir s in
   let loc = s.buildable.loc in
   let use_corelib = s.buildable.use_corelib in
   let rocq_lang_version = s.buildable.rocq_lang_version in

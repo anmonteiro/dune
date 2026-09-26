@@ -78,3 +78,50 @@ let%expect_test "dependency structure of Memo combinators" =
   print_deps "nested_empty" (seq (par (seq (par e))));
   [%expect {| nested_empty: Empty |}]
 ;;
+
+let%expect_test "flattening preserves section order and duplicates" =
+  let a = Memo.lazy_node ~name:"a" (fun () -> Memo.return ())
+  and b = Memo.lazy_node ~name:"b" (fun () -> Memo.return ())
+  and c = Memo.lazy_node ~name:"c" (fun () -> Memo.return ())
+  and d = Memo.lazy_node ~name:"d" (fun () -> Memo.return ()) in
+  let seq a b =
+    let* () = read a in
+    read b
+  in
+  let parallel nodes = Memo.parallel_iter nodes ~f:read in
+  let seq_section a b = Memo.all_concurrently_unit [ seq a b; Memo.return () ] in
+  print_deps
+    "mixed_seq"
+    (let* () = read a in
+     let* () = seq_section b c in
+     let* () = parallel [ b; c ] in
+     let* () = seq_section d a in
+     read c);
+  [%expect
+    {|
+    mixed_seq: Seq
+      [ Singleton (Some "a", ())
+      ; Singleton (Some "b", ())
+      ; Singleton (Some "c", ())
+      ; Par [ Singleton (Some "b", ()); Singleton (Some "c", ()) ]
+      ; Singleton (Some "d", ())
+      ; Singleton (Some "a", ())
+      ; Singleton (Some "c", ())
+      ]
+    |}];
+  print_deps
+    "mixed_par"
+    (Memo.all_concurrently
+       [ Memo.return (); parallel [ a; b ]; seq c d; parallel [ d; a ]; Memo.return () ]
+     |> Memo.map ~f:ignore);
+  [%expect
+    {|
+    mixed_par: Par
+      [ Singleton (Some "a", ())
+      ; Singleton (Some "b", ())
+      ; Seq [ Singleton (Some "c", ()); Singleton (Some "d", ()) ]
+      ; Singleton (Some "d", ())
+      ; Singleton (Some "a", ())
+      ]
+    |}]
+;;

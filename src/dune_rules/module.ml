@@ -42,6 +42,26 @@ module File = struct
     { dialect; path; original_path }
   ;;
 
+  let pped t =
+    (* Some tools inspect the extension, so insert the suffix before it. *)
+    let path =
+      Path.map_extension t.path ~f:(fun ext ->
+        Filename.Extension.Or_empty.of_string_exn
+          (".pp" ^ Filename.Extension.Or_empty.to_string ext))
+    in
+    { t with path }
+  ;;
+
+  let ml_source t ~ml_kind =
+    match Dialect.ml_suffix t.dialect ml_kind with
+    | None -> t
+    | Some suffix ->
+      let path =
+        Path.extend_basename t.path ~suffix:(Filename.Extension.to_filename suffix)
+      in
+      { t with dialect = Dialect.ocaml; path }
+  ;;
+
   let to_dyn { path; original_path; dialect } =
     let open Dyn in
     record
@@ -321,6 +341,8 @@ let to_dyn { source; obj_name; pp; visibility; kind; install_as } =
     ]
 ;;
 
+let wrapped_compat_dir dir = Path.relative dir ".wrapped_compat"
+
 let wrapped_compat t =
   assert (t.visibility = Public);
   let source =
@@ -331,12 +353,10 @@ let wrapped_compat t =
            compatibility mode for virtual libraries. That means none of the
            modules are implementing a virtual module, and therefore all have
            a source dir *)
-        Path.L.relative
-          (src_dir t)
-          [ ".wrapped_compat"
-          ; (Module_name.Path.to_string t.source.path
-             ^ Filename.Extension.(to_string ml_gen))
-          ]
+        Path.relative
+          (wrapped_compat_dir (src_dir t))
+          (Module_name.Path.to_string t.source.path
+           ^ Filename.Extension.(to_string ml_gen))
       in
       Some { File.dialect = Dialect.ocaml; path; original_path = path }
     in
@@ -429,28 +449,8 @@ let decode ~src_dir =
      { install_as = None; source; obj_name; pp = None; kind; visibility })
 ;;
 
-let pped =
-  map_files ~f:(fun _kind (file : File.t) ->
-    (* We need to insert the suffix before the extension as some tools inspect
-       the extension *)
-    let pp_path =
-      Path.map_extension file.path ~f:(fun ext ->
-        Filename.Extension.Or_empty.of_string_exn
-          (".pp" ^ Filename.Extension.Or_empty.to_string ext))
-    in
-    { file with path = pp_path })
-;;
-
-let ml_source =
-  map_files ~f:(fun ml_kind f ->
-    match Dialect.ml_suffix f.dialect ml_kind with
-    | None -> f
-    | Some suffix ->
-      let path =
-        Path.extend_basename f.path ~suffix:(Filename.Extension.to_filename suffix)
-      in
-      { f with dialect = Dialect.ocaml; path })
-;;
+let pped = map_files ~f:(fun _kind -> File.pped)
+let ml_source = map_files ~f:(fun ml_kind file -> File.ml_source file ~ml_kind)
 
 let version_installed t ~src_root ~install_dir =
   map_files t ~f:(fun _ -> File.version_installed ~src_root ~install_dir)

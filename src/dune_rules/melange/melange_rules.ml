@@ -502,6 +502,26 @@ let melange_compile_flags ~sctx ~dir (mel : Melange_stanzas.Emit.t) =
   >>| Ocaml_flags.allow_only_melange
 ;;
 
+let emit_rule_targets ~dir (mel : Melange_stanzas.Emit.t) =
+  let exe_target = Melange_stanzas.Emit.exe_target mel in
+  let obj_dir = Obj_dir.make_for_exe_target ~dir exe_target in
+  List.fold_left
+    [ Module_compilation.rule_targets ~dir ~obj_dir
+    ; Target_mask.subtree (Path.Build.relative dir Melange.Source.dir)
+    ; Target_mask.subtree (Melange_stanzas.Emit.target_dir ~dir mel)
+    ; Pp_spec_rules.lint_rule_targets ~dir mel.lint
+    ; Target_mask.aliases
+        (List.map
+           [ Alias0.check
+           ; Alias0.all
+           ; Option.value mel.alias ~default:Melange_stanzas.Emit.implicit_alias
+           ]
+           ~f:(Alias.make ~dir))
+    ]
+    ~init:Target_mask.empty
+    ~f:Target_mask.union
+;;
+
 let setup_emit_cmj_rules
       ~sctx
       ~scope
@@ -1137,7 +1157,7 @@ let setup_emit_js_rules sctx ~dir =
   | Some melange ->
     gen_emit_rules sctx ~dir melange
     >>= (function
-     | None -> Memo.return (Gen_rules.redirect_to_parent Gen_rules.Rules.empty)
+     | None -> Memo.return Gen_rules.no_rules
      | Some melange ->
        let+ directory_targets, melange = melange in
        Gen_rules.make ~directory_targets (Memo.return melange))

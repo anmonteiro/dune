@@ -6,6 +6,7 @@
   dune_engine
   dune_rules
   dune_tests_common
+  targets
   fiber
   memo
   ;; This is because of the (implicit_transitive_deps false)

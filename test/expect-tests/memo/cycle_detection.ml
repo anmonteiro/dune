@@ -33,6 +33,65 @@ let%expect_test "a self-dependency cycle is detected, then recomputed after remo
   Memo.reset Memo.Invalidation.empty
 ;;
 
+let%expect_test "the first cycle stops further DAG edges in the same run" =
+  Memo.Metrics.reset ();
+  let cyclic = Memo.Var.create ~name:"cyclic" true in
+  let table =
+    Memo.create_rec
+      "node"
+      ~input:(module Int)
+      (fun f i ->
+         let* cyclic = Memo.Var.read cyclic in
+         if cyclic then f (if i mod 3 = 2 then i - 2 else i + 1) else Memo.return (i + 100))
+  in
+  let attempt i =
+    let+ result =
+      run_collect_errors (fun () -> Memo.exec table i) |> Memo.of_reproducible_fiber
+    in
+    (match result with
+     | Error [ { Exn_with_backtrace.exn = Memo.Cycle_error.E error; _ } ] ->
+       let members =
+         Memo.Cycle_error.get error
+         |> List.map ~f:(fun frame ->
+           Memo.Stack_frame.as_instance_of frame ~of_:(Memo.Table.spec table)
+           |> Option.value_exn)
+         |> List.sort ~compare:Int.compare
+       in
+       printfn "f %d = cycle members %s" i (Dyn.to_string (Dyn.list Dyn.int members))
+     | result -> print_result i result);
+    printfn "cycle detection edges: %d" (Counter.read Memo.Metrics.Cycle_detection.edges);
+    Memo.Metrics.assert_invariants ()
+  in
+  (* The first cycle accepts 2 -> 0 and 1 -> 2, but rejects 0 -> 1. The
+     disjoint second cycle must reuse that error without adding 5 -> 3. Error
+     propagation can rotate its frames, so compare members from the same table.
+     Keep both attempts inside one top-level [Memo.run], which resets the latch. *)
+  run
+    (let* () = attempt 0 in
+     attempt 3);
+  [%expect
+    {|
+    f 0 = cycle members [ 0; 1; 2 ]
+    cycle detection edges: 2
+    f 3 = cycle members [ 0; 1; 2 ]
+    cycle detection edges: 2
+    |}];
+  Memo.reset (Memo.Var.set cyclic false);
+  Memo.Metrics.reset ();
+  run
+    (let* () = attempt 0 in
+     attempt 3);
+  [%expect
+    {|
+    f 0 = Ok 100
+    cycle detection edges: 0
+    f 3 = Ok 103
+    cycle detection edges: 0
+    |}];
+  Memo.reset Memo.Invalidation.empty;
+  Memo.Metrics.reset ()
+;;
+
 (* A cycle spanning several nodes: while the graph has 0 -> 1 -> 2 -> 0, node 0
    depends on itself transitively. Once the edge is broken, the formerly-cyclic
    node must recompute to a value rather than stay the cached cycle error. *)

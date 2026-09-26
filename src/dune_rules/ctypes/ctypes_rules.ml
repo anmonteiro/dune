@@ -276,6 +276,26 @@ let exe_link_only ~dir ~shared_cctx ~sandbox ~env program =
     ~env
 ;;
 
+let types_cout ctypes extension =
+  External_lib_name.to_string ctypes.Ctypes_field.external_library_name
+  ^ "__c_cout_generated_types"
+  ^ Filename.Extension.to_string extension
+;;
+
+let rule_targets ~dir (ctypes : Ctypes_field.t) =
+  let scripts =
+    Ctypes_field.type_gen_script ctypes
+    :: List.map ctypes.function_description ~f:(Ctypes_field.function_gen_script ctypes)
+  in
+  Ctypes_field.generated_ml_and_c_files ctypes
+  @ List.concat_map scripts ~f:(fun script -> [ script ^ ".ml"; script ^ ".exe" ])
+  @ List.map
+      [ Filename.Extension.of_string_exn ".c"; Filename.Extension.exe ]
+      ~f:(types_cout ctypes)
+  |> List.map ~f:(Path.Build.relative dir)
+  |> Target_mask.files
+;;
+
 let gen_rules ~cctx ~(buildable : Buildable.t) ~loc ~scope ~dir ~sctx =
   let ctypes = Option.value_exn buildable.ctypes in
   let external_library_name = ctypes.external_library_name in
@@ -327,15 +347,9 @@ let gen_rules ~cctx ~(buildable : Buildable.t) ~loc ~scope ~dir ~sctx =
      data/types produced in this step. *)
   let* () =
     let c_generated_types_cout_c =
-      sprintf
-        "%s__c_cout_generated_types.c"
-        (External_lib_name.to_string external_library_name)
+      types_cout ctypes (Filename.Extension.of_string_exn ".c")
     in
-    let c_generated_types_cout_exe =
-      sprintf
-        "%s__c_cout_generated_types.exe"
-        (External_lib_name.to_string external_library_name)
-    in
+    let c_generated_types_cout_exe = types_cout ctypes Filename.Extension.exe in
     let* () =
       let type_gen_script = Ctypes_field.type_gen_script ctypes in
       let* () =
