@@ -538,11 +538,6 @@ module Processed = struct
     |> Nonempty_list.of_list
   ;;
 
-  let get t ~file =
-    Option.map (configurations t ~file) ~f:(fun configurations ->
-      (Nonempty_list.hd configurations).directives)
-  ;;
-
   let dump_entries
         { per_file_config = { exact; without_extension }; pp_config; config; for_ = _ }
     : Dump_entry.t list

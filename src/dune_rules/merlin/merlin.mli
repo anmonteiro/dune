@@ -56,7 +56,6 @@ module Processed : sig
       print the resulting configuration in dot-merlin syntax. *)
   val print_generic_dot_merlin : Path.t list -> unit
 
-  val get : t -> file:Path.Build.t -> Sexp.t option
   val configurations : t -> file:Path.Build.t -> file_configuration Nonempty_list.t option
 end
 
