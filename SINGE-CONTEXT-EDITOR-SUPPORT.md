@@ -243,8 +243,9 @@ for the singular lookup. Preserve that implementation when extracting the
 plural `configurations` API; do not implement the plural lookup as an
 independent filter over group members.
 
-Keep `Processed.get` as the compatibility projection of `configurations`:
-choose the first applicable entry in group order.
+Remove `Processed.get` after migrating its caller to `configurations`. Keep the
+singular compatibility projection in the CLI's `load_merlin_file`: choose the
+first applicable entry in group order for the legacy `File` request.
 
 ### 3. Add an additive configuration-server request
 
@@ -508,25 +509,26 @@ escapes into `_build` or points at the wrong conditional source.
 ### 4. Make phase caches configuration-correct
 
 Creating a fresh `Mpipeline` does not create fresh reader and PPX phase caches.
-Those caches are process-global. The reader fingerprint currently contains the
-source digest and completion position, even though parsing can also depend on
-configuration fields such as suffixes, extensions, warnings, and external
-readers.
+Those caches are process-global. Retain upstream's reader `Cache.key`, including
+its `Mconfig.t`, source digest, and completion position. Do not replace the
+configuration with a hand-picked projection: compiler flags such as
+`-principal` also enter the PPX context and can change a rewriter's output.
 
 Merlin should remain unaware of Dune compilation modes. Before ocaml-lsp starts
 alternating configurations for one source file:
 
-- include every parser-affecting `Mconfig.t` field in the reader fingerprint;
 - retain reader and PPX entries in an LRU with capacity two in version 1, or
   provide equivalent configuration partitioning, so the regular
   `OCaml, Melange, OCaml, Melange` access pattern reuses both entries;
-- keep PPX identity based on its actual command, arguments, working directory,
-  and reader input rather than on a Dune mode name.
+- preserve upstream's cache keys and invalidation rules rather than adding
+  mode identifiers, fingerprints, or new command-line flags.
 
 Add an `A, B, A` regression test using the same source with parser-affecting
 configurations `A` and `B`. It must observe the correct parse for each
-configuration and reuse the `A` entry on the final run. Add the corresponding
-PPX test if the generic phase-cache implementation is changed.
+configuration and reuse the `A` entry on the final run. Also use a real PPX
+whose output depends on `Clflags.principal`: alternating configurations must
+match uncached results and reuse both cached entries. Retain the existing
+tests for changes to PPX arguments and dependencies.
 
 ### 5. Merlin tests
 
@@ -755,6 +757,11 @@ it as invalid according to the feature's policy.
 
 ### 6. Common failure policy
 
+Share failure logging and policy in `Document.Merlin.successful_results` and
+`all_results`. The former keeps successful configured values or raises the
+primary error when all failed; the latter reports any failed modes. Keep each
+feature's result merging local. Neither helper may swallow cancellation.
+
 - Cancellation aborts the complete aggregate. Explicit requests return
   `RequestCancelled`; background diagnostics publish nothing from the cancelled
   generation. No result class returns a partial response after cancellation.
@@ -837,6 +844,11 @@ literal `ocamllsp`.
 Typed-hole diagnostics follow the same rule: identical hole range and type
 collapse; differing types are displayed separately with mode provenance.
 
+Give every scheduled diagnostic computation a unique generation token. Closing
+a document invalidates its current token; reopening the same URI, even with the
+same document version, must not reuse it. Publish only while the computation's
+token is still current.
+
 ### Completion and completion resolve
 
 File: `ocaml-lsp-server/src/compl.ml`.
@@ -886,6 +898,11 @@ item's identity, ordering, insertion text, detail, or edit. If the original
 document version has changed, or the item is no longer portable in the current
 configuration set, return it unchanged rather than applying or replacing its
 edit.
+
+There is no legacy completion-resolve payload to support: both plural and
+legacy Dune configurations use the current completion producer. Require the
+version and item identity in resolve data, and test resolution using actual
+items returned by `textDocument/completion`.
 
 ### Hover and extended hover
 
@@ -1088,9 +1105,12 @@ Read-only navigation actions may be unioned and mode-labelled. An action that
 cannot establish a portable edit should be omitted rather than offered for the
 default mode.
 
-`codeAction/resolve` currently returns its input unchanged and remains
-configuration-independent. If it later computes a Merlin-derived edit, it must
-carry enough data to apply the same consensus policy during resolution.
+Compute inline edits eagerly for shared files, even when the client supports
+`codeAction/resolve`, so consensus compares actual edits rather than identical
+unresolved action data. A singleton file may retain deferred inline resolution;
+the resolver must check the document version and current configuration set and
+reject the action with `ContentModified` if the file has become shared. Keep
+the existing disabled-action explanation for singleton files.
 
 ### Custom requests
 
@@ -1282,6 +1302,8 @@ At minimum, end-to-end tests must demonstrate:
 - intersection semantic tokens and selection ranges;
 - rename rejection for different edits and success for identical edits;
 - code-action suppression for a one-mode-only edit;
+- eager inline-edit consensus even when the client supports deferred resolve,
+  and rejection of a deferred singleton action after the file becomes shared;
 - cross-document operations pairing equal mode keys and rejecting disjoint mode
   sets or ambiguous legacy-to-plural pairing, including a shared interface whose
   OCaml and Melange configurations name different exact implementation
@@ -1293,7 +1315,9 @@ At minimum, end-to-end tests must demonstrate:
 - partial mode failures following each result class's policy, and cancellation
   discarding partial union and composite results as well as intersections;
 - semantic-token history evicting the oldest of three results and being cleared
-  when the document closes.
+  when the document closes;
+- discarding in-flight diagnostics after closing and reopening the same URI
+  with the same document version.
 
 ### Real integration fixture
 
@@ -1340,8 +1364,8 @@ Keep ownership clear across repositories:
    tests.
 4. **Merlin protocol:** add the shared codec and tests without changing
    standalone Merlin selection behavior.
-5. **Merlin cache readiness:** make reader fingerprints configuration-correct
-   and retain enough reader and PPX entries for alternating configurations.
+5. **Merlin cache readiness:** preserve upstream configuration-aware cache keys
+   and retain two reader and PPX entries for alternating configurations.
 6. **ocaml-lsp execution foundation:** load a nonempty set, add `dispatch_all`,
    remove active-mode state and selection requests, and land definition plus
    the first real-stack fixture as the first vertical slice.
