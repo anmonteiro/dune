@@ -13,17 +13,53 @@ let run memo =
   | Memo.Error.E error -> raise (Memo.Error.get error)
 ;;
 
-let%expect_test "completed targets after explicit batch invalidation" =
+let%expect_test "rule lookup, invalidation and generator directory bounds" =
   let context =
     Build_context.create ~name:(Context_name.of_string "test-completed-target-epoch")
   in
   let a = Path.Build.relative context.build_dir "a" in
   let b = Path.Build.relative context.build_dir "b" in
+  let direct_escape = Path.Build.relative context.build_dir "direct-root-escape" in
+  let deferred_escape = Path.Build.relative context.build_dir "deferred-root-escape" in
+  let nested_escape = Path.Build.relative context.build_dir "nested-root-escape" in
+  let directory_escape = Path.Build.relative context.build_dir "directory-root-escape" in
   let second_run = ref false in
   let generator_runs = ref 0 in
   let module Rule_generator = struct
     let gen_rules _ ~dir _ =
-      if not (Path.Build.equal dir context.build_dir)
+      if
+        List.mem
+          [ direct_escape; deferred_escape; nested_escape; directory_escape ]
+          dir
+          ~equal:Path.Build.equal
+      then (
+        let targets =
+          if Path.Build.equal dir directory_escape
+          then
+            Targets.create
+              ~files:Path.Build.Set.empty
+              ~dirs:(Path.Build.Set.singleton dir)
+          else Targets.File.create dir
+        in
+        let rule =
+          Rule.make ~targets (Action_builder.return (Action.Full.make Action.empty))
+        in
+        let rules =
+          if Path.Build.equal dir direct_escape
+          then Memo.return (Rules.of_rules [ rule ])
+          else
+            Rules.collect_unit (fun () ->
+              Rules.narrow (Target_mask.subtree dir) (fun () ->
+                if Path.Build.equal dir nested_escape
+                then
+                  Rules.narrow (Target_mask.files [ dir ]) (fun () ->
+                    Rules.Produce.rule rule)
+                else Rules.Produce.rule rule))
+        in
+        Memo.return
+          (Build_config.Gen_rules.Gen_rules_result.rules_here
+             (Build_config.Gen_rules.Rules.create rules)))
+      else if not (Path.Build.equal dir context.build_dir)
       then Memo.return Build_config.Gen_rules.Gen_rules_result.no_rules
       else (
         incr generator_runs;
@@ -89,6 +125,19 @@ let%expect_test "completed targets after explicit batch invalidation" =
   printfn "point lookup uses the freshly generated rule: %b" (second == fresh);
   printfn "point lookup forgets the retired sibling: %b" (Option.is_none retired);
   printfn "generator runs: %d" !generator_runs;
+  (* FIXME: deferring a rule must not allow its target to escape into the
+     generator's parent directory. *)
+  let check_root_escape label dir =
+    try
+      ignore (run (Load_rules.load_dir ~dir:(Path.build dir)) : Load_rules.Loaded.t);
+      printfn "%s root target: accepted" label
+    with
+    | Code_error.E _ -> printfn "%s root target: rejected" label
+  in
+  check_root_escape "direct" direct_escape;
+  check_root_escape "deferred" deferred_escape;
+  check_root_escape "nested" nested_escape;
+  check_root_escape "directory" directory_escape;
   [%expect
     {|
     independent misses before invalidation: true
@@ -98,6 +147,10 @@ let%expect_test "completed targets after explicit batch invalidation" =
     point lookup uses the freshly generated rule: true
     point lookup forgets the retired sibling: true
     generator runs: 2
+    direct root target: rejected
+    deferred root target: accepted
+    nested root target: accepted
+    directory root target: rejected
     |}]
 ;;
 
