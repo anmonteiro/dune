@@ -125,8 +125,8 @@ let%expect_test "rule lookup, invalidation and generator directory bounds" =
   printfn "point lookup uses the freshly generated rule: %b" (second == fresh);
   printfn "point lookup forgets the retired sibling: %b" (Option.is_none retired);
   printfn "generator runs: %d" !generator_runs;
-  (* FIXME: deferring a rule must not allow its target to escape into the
-     generator's parent directory. *)
+  (* Deferring a rule must not allow its target to escape into the generator's
+     parent directory, including through another suspension. *)
   let check_root_escape label dir =
     try
       ignore (run (Load_rules.load_dir ~dir:(Path.build dir)) : Load_rules.Loaded.t);
@@ -148,8 +148,8 @@ let%expect_test "rule lookup, invalidation and generator directory bounds" =
     point lookup forgets the retired sibling: true
     generator runs: 2
     direct root target: rejected
-    deferred root target: accepted
-    nested root target: accepted
+    deferred root target: rejected
+    nested root target: rejected
     directory root target: rejected
     |}]
 ;;

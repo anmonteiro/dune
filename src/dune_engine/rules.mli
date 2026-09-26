@@ -112,6 +112,10 @@ val narrow_after : Target_mask.t -> 'a Deferred.t -> ('a -> unit Memo.t) -> unit
 (** Validate and restrict a rule tree to its producer's ownership mask. *)
 val restrict : t -> Target_mask.t -> t
 
+(** Restrict direct and suspended rule production to [dir] and its descendants.
+    A target equal to [dir] belongs to its parent and is not allowed. *)
+val restrict_to_directory : t -> dir:Path.Build.t -> t
+
 (** Prove that previously evaluated producers still have their cached outputs.
     This does not evaluate producers, including those never requested. A failed
     proof only means that cleanup must take a fresh inventory. *)

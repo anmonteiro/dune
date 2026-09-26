@@ -973,7 +973,7 @@ let collect_unit f =
   rules
 ;;
 
-let rec restrict t mask =
+let rec restrict t mask ~of_ =
   let check ~dir name matches =
     if not matches
     then
@@ -982,6 +982,12 @@ let rec restrict t mask =
         [ "target", Path.Build.to_dyn (Path.Build.relative_fname dir name) ]
   in
   Path.Build.Map.iteri t.direct.by_dir ~f:(fun dir rules ->
+    if not (Path.Build.is_descendant dir ~of_)
+    then
+      Code_error.raise
+        "[gen_rules] returned rules in a directory that is not a descendant of the \
+         directory it was called for"
+        [ "dir", Path.Build.to_dyn of_; "rule_dir", Path.Build.to_dyn dir ];
     let rules = (rules : Dir_rules.Nonempty.t :> Dir_rules.t) in
     let remaining = ref 4 in
     let few_rules =
@@ -1010,15 +1016,20 @@ let rec restrict t mask =
           Code_error.raise
             "Rule stage produced an alias outside its mask"
             [ "alias", Alias.to_dyn alias ]));
-  (* Each suspension already validates its own outputs. An unchanged mask
-     does not need another memoized validation layer. *)
+  (* Each suspension already validates its own mask. Subtree masks include
+     their root as a target, whose rule directory is the parent: retain the
+     generator's directory bound when a child could produce that target. *)
   let suspensions =
     Id.Map.foldi
       t.suspensions
       ~init:t.suspensions
       ~f:(fun id ({ mask = child_mask; rules; _ } as underlying) acc ->
         let mask = Target_mask.inter mask child_mask in
-        if mask == child_mask
+        let within_directory =
+          Path.Build.is_root of_
+          || not (Target_mask.mem_file mask of_ || Target_mask.mem_directory mask of_)
+        in
+        if mask == child_mask && within_directory
         then acc
         else (
           let observed = ref Unforced in
@@ -1027,7 +1038,7 @@ let rec restrict t mask =
               observed := Evaluating;
               let open Memo.O in
               let+ rules = rules in
-              let rules = restrict rules mask in
+              let rules = restrict rules mask ~of_ in
               observed := Produced rules;
               rules)
           in
@@ -1043,6 +1054,9 @@ let rec restrict t mask =
   in
   if suspensions == t.suspensions then t else create ~direct:t.direct ~suspensions
 ;;
+
+let restrict_to_directory t ~dir = restrict t (Target_mask.subtree dir) ~of_:dir
+let restrict t mask = restrict t mask ~of_:Path.Build.root
 
 module Deferred = struct
   type 'a t =
