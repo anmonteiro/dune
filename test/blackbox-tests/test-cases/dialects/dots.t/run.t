@@ -15,3 +15,55 @@ Test the (dialect ...) stanza inside the `dune-project` file.
 
   $ dune build @show
   print_endline "Hello, World"
+
+Dialect extensions are literal strings, even when they contain glob syntax.
+An unused dialect with an unmatched bracket currently crashes rule generation.
+
+  $ mkdir unused-extension
+  $ cd unused-extension
+  $ cat >dune-project <<EOF
+  > (lang dune 3.25)
+  > (dialect
+  >  (name custom)
+  >  (implementation
+  >   (extension "x[")
+  >   (preprocess (cat %{input-file}))))
+  > EOF
+  $ cat >dune <<EOF
+  > (library (name foo))
+  > EOF
+  $ cat >foo.ml <<EOF
+  > let x = 42
+  > EOF
+  $ dune build --root . foo.cma >output 2>&1
+  [1]
+  $ grep -o 'invalid glob: :unclosed character set' output
+  invalid glob: :unclosed character set
+  $ cd ..
+
+A copied dialect source also exposes the mismatch between literal extensions
+and the glob used to declare its preprocessing target.
+
+  $ mkdir copied-extension
+  $ cd copied-extension
+  $ cat >dune-project <<EOF
+  > (lang dune 3.25)
+  > (dialect
+  >  (name custom)
+  >  (implementation
+  >   (extension "x[ab]")
+  >   (preprocess (cat %{input-file}))))
+  > EOF
+  $ cat >dune <<EOF
+  > (library (name foo))
+  > (copy_files %{env:SRC_DIR=inputs}/*)
+  > EOF
+  $ mkdir inputs
+  $ cat >'inputs/foo.x[ab]' <<EOF
+  > let x = 42
+  > EOF
+  $ dune build --root . foo.cma >output 2>&1
+  [1]
+  $ grep -o 'Rule stage produced a target outside its mask' output
+  Rule stage produced a target outside its mask
+  $ cd ..
