@@ -2,6 +2,20 @@ module Glob = Dune_rpc.Private.Glob
 
 let printf = Printf.printf
 
+let%expect_test "escaped metacharacters remain literal" =
+  let literal = "*?[ab]{c,d}\\name" in
+  let glob = Glob.of_string (Glob.escape literal) in
+  printf "matches literal: %b\n" (Glob.test glob literal);
+  printf "literal representation: %b\n" (Glob.as_literal glob = Some literal);
+  printf "rejects other text: %b\n" (not (Glob.test glob "cname"));
+  [%expect
+    {|
+    matches literal: true
+    literal representation: true
+    rejects other text: true
+    |}]
+;;
+
 let test glob s ~expect =
   let res = Glob.test glob s in
   let status = if res = expect then "pass" else "fail" in
