@@ -417,6 +417,7 @@ let for_ = Compilation_mode.Ocaml
 let mdx_prog_gen t ~sctx ~dir ~scope ~mdx_prog =
   let loc = t.loc in
   let* ocaml_toolchain = Context.ocaml (Super_context.context sctx) in
+  let lib_db = Scope.libs scope in
   (* Libs from the libraries field should have their include directories sent to
      mdx *)
   let action =
@@ -425,7 +426,7 @@ let mdx_prog_gen t ~sctx ~dir ~scope ~mdx_prog =
       let+ libs_to_include =
         Resolve.Memo.List.filter_map t.libraries ~f:(function
           | Direct lib | Re_export lib ->
-            let+ lib = Lib.DB.resolve (Scope.libs scope) lib in
+            let+ lib = Lib.DB.resolve lib_db lib in
             Some lib
           | _ -> Resolve.Memo.return None)
       in
@@ -464,7 +465,7 @@ let mdx_prog_gen t ~sctx ~dir ~scope ~mdx_prog =
     let lib name = Lib_dep.Direct (loc, Lib_name.of_string name) in
     let compile_info =
       Lib.DB.resolve_user_written_deps
-        (Scope.libs scope)
+        lib_db
         exe_target
         ~allow_overlaps:false
         ~forbidden_libraries:[]
