@@ -61,9 +61,8 @@ let make ~sctx ~scope ~(lib : Library.t) ~info ~vlib ~for_ =
       modules, foreign_objects
   in
   let impl_cm_kind =
-    let vlib_info = Lib.info vlib in
     let { Lib_mode.Map.ocaml = { byte; native = _ }; melange = _ } =
-      Lib_info.modes vlib_info
+      Lib_info.modes info
     in
     Mode.cm_kind (if byte then Byte else Native)
   in
