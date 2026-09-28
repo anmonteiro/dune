@@ -31,6 +31,11 @@ let targets ~dir m ~cmly =
 
 let mock m = m ^ "__mock"
 let mock_ml ~dir m = Path.Build.relative dir (mock m ^ ".ml.mock")
+
+let raw_mock_ml ~dir m =
+  Path.Build.extend_basename (mock_ml ~dir m) ~suffix:(Filename.of_string_exn ".raw")
+;;
+
 let inferred_mli ~dir m = Path.Build.relative dir (mock m ^ ".mli.inferred")
 let conflicts ~dir m = Path.Build.relative dir (m ^ ".conflicts")
 
@@ -60,6 +65,7 @@ let targets_for_basename ~dir base =
   in
   Target_mask.files
     (mock
+     :: raw_mock_ml ~dir base
      :: preprocessed
      :: inferred_mli ~dir base
      :: conflicts ~dir base
@@ -82,7 +88,7 @@ let rule_targets ~dir ~source_files ~obj_dirs (stanza : stanza) =
         ~dir
         (Filename.Extension.Set.of_list
            (List.map
-              [ ".ml"; ".mli"; ".cmly"; ".conflicts"; ".mock"; ".inferred" ]
+              [ ".ml"; ".mli"; ".cmly"; ".conflicts"; ".mock"; ".raw"; ".inferred" ]
               ~f:Filename.Extension.of_string_exn))
   in
   List.fold_left obj_dirs ~init:(Target_mask.union known dynamic) ~f:(fun mask obj_dir ->
@@ -368,10 +374,7 @@ module Run (P : PARAMS) = struct
       let query =
         match alias with
         | None -> mock_ml base
-        | Some _ ->
-          Path.Build.extend_basename
-            (mock_ml base)
-            ~suffix:(Filename.of_string_exn ".raw")
+        | Some _ -> raw_mock_ml ~dir base
       in
       let action =
         menhir
