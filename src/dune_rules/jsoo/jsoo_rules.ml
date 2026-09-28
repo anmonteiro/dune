@@ -374,23 +374,23 @@ type sub_command =
   | Link
   | Build_runtime
 
-let js_of_ocaml_flags t ~dir ~mode (spec : Js_of_ocaml.Flags.Spec.t) =
-  Action_builder.of_memo
+let js_of_ocaml_flags t ~dir ~mode ~sub_command (spec : Js_of_ocaml.Flags.Spec.t) =
+  Action_builder.of_memo_join
   @@
   let+ expander = Super_context.expander t ~dir
   and+ js_of_ocaml = jsoo_env ~dir ~mode in
-  Js_of_ocaml.Flags.make
-    ~spec
-    ~default:js_of_ocaml.flags
-    ~eval:(Expander.expand_and_eval_set expander)
+  let spec, standard =
+    match sub_command with
+    | Compile -> spec.compile, js_of_ocaml.flags.compile
+    | Link -> spec.link, js_of_ocaml.flags.link
+    | Build_runtime -> spec.build_runtime, js_of_ocaml.flags.build_runtime
+  in
+  Expander.expand_and_eval_set expander spec ~standard
 ;;
 
 let resolve_config sctx ~dir ~(mode : Js_of_ocaml.Mode.t) flags =
   let open Action_builder.O in
-  let* compile_flags =
-    js_of_ocaml_flags sctx ~dir ~mode flags
-    |> Action_builder.bind ~f:(fun (x : _ Js_of_ocaml.Flags.t) -> x.compile)
-  in
+  let* compile_flags = js_of_ocaml_flags sctx ~dir ~mode ~sub_command:Compile flags in
   let* jsoo = compiler ~dir sctx ~mode in
   let* jsoo_version = Action_builder.of_memo (Version.jsoo_version jsoo) in
   if jsoo_has_build_config jsoo_version
@@ -414,13 +414,7 @@ let js_of_ocaml_rule
   =
   let open Action_builder.O in
   let jsoo = compiler ~dir sctx ~mode in
-  let flags =
-    let* flags = js_of_ocaml_flags sctx ~dir ~mode flags in
-    match sub_command with
-    | Compile -> flags.compile
-    | Link -> flags.link
-    | Build_runtime -> flags.build_runtime
-  in
+  let flags = js_of_ocaml_flags sctx ~dir ~mode ~sub_command flags in
   let flags =
     (* Avoid duplicating flags that are covered by the config *)
     Action_builder.map flags ~f:(fun flags ->
@@ -827,11 +821,13 @@ let build_cm'
     ~sourcemap
 ;;
 
+let cm_target ~mode ~src ~obj_dir ~config =
+  let name = with_js_ext ~mode (Path.basename src |> Filename.to_string) in
+  in_obj_dir ~obj_dir ~config [ name ]
+;;
+
 let build_from_cm sctx ~dir ~in_context ~mode ~src ~obj_dir ~shapes ~config ~sourcemap =
-  let target =
-    let name = with_js_ext ~mode (Path.basename src |> Filename.to_string) in
-    in_obj_dir ~obj_dir ~config [ name ]
-  in
+  let target = cm_target ~mode ~src ~obj_dir ~config in
   build_cm'
     sctx
     ~dir
@@ -993,17 +989,18 @@ let setup_separate_compilation_rules sctx components =
                     [ "stdlib"; with_js_ext ~mode "stdlib.cma" ])
                :: l
            in
-           build_cm'
-             sctx
-             ~dir
-             ~in_context:Js_of_ocaml.In_context.default
-             ~mode
-             ~src
-             ~target
-             ~config:(Some (Action_builder.return config))
-             ~sourcemap:Js_of_ocaml.Sourcemap.Inline
-             ~shapes
-           |> Super_context.add_rule sctx ~dir)))
+           Rules.narrow (Target_mask.files [ target ]) (fun () ->
+             build_cm'
+               sctx
+               ~dir
+               ~in_context:Js_of_ocaml.In_context.default
+               ~mode
+               ~src
+               ~target
+               ~config:(Some (Action_builder.return config))
+               ~sourcemap:Js_of_ocaml.Sourcemap.Inline
+               ~shapes
+             |> Super_context.add_rule sctx ~dir))))
   | _ -> Memo.return ()
 ;;
 
@@ -1236,8 +1233,13 @@ let build_exe
 let runner = "node"
 
 let js_of_ocaml_runtest_alias ~dir ~mode =
-  let+ js_of_ocaml = jsoo_env ~dir ~mode in
-  match js_of_ocaml.runtest_alias with
-  | Some a -> a
-  | None -> Alias0.runtest
+  let+ alias =
+    Env_stanza_db.value_opt ~dir ~f:(fun (env : Dune_env.config) ->
+      let config =
+        Js_of_ocaml.Mode.select ~mode ~js:env.js_of_ocaml ~wasm:env.wasm_of_ocaml
+      in
+      Memo.return config.runtest_alias)
+  in
+  Option.iter alias ~f:Alias0.register_as_standard;
+  Option.value alias ~default:Alias0.runtest
 ;;

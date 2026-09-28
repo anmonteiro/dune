@@ -1123,28 +1123,29 @@ let setup_package_aliases_format sctx (pkg : Package.t) (output : Output_format.
     let dir = Path.Build.append_source (Context.build_dir ctx) pkg_dir in
     Output_format.alias output ~dir
   in
-  match (output : Output_format.t) with
-  | Markdown ->
-    let directory_target = Paths.markdown ctx (Pkg name) in
-    let toplevel_index = Paths.markdown_index ctx in
-    let deps =
-      let open Action_builder.O in
-      let+ () = Action_builder.path (Path.build directory_target)
-      and+ () = Action_builder.path (Path.build toplevel_index) in
-      ()
-    in
-    Rules.Produce.Alias.add_deps alias deps
-  | Html | Json ->
-    let* libs =
-      Context.name ctx |> libs_of_pkg ~pkg:name >>| List.map ~f:(fun lib -> Lib lib)
-    in
-    let deps =
-      Pkg name :: libs
-      |> List.map ~f:(Dep.format_alias output ctx)
-      |> Dune_engine.Dep.Set.of_list_map ~f:(fun f -> Dune_engine.Dep.alias f)
-      |> Action_builder.deps
-    in
-    Rules.Produce.Alias.add_deps alias deps
+  Rules.narrow (Target_mask.aliases [ alias ]) (fun () ->
+    match (output : Output_format.t) with
+    | Markdown ->
+      let directory_target = Paths.markdown ctx (Pkg name) in
+      let toplevel_index = Paths.markdown_index ctx in
+      let deps =
+        let open Action_builder.O in
+        let+ () = Action_builder.path (Path.build directory_target)
+        and+ () = Action_builder.path (Path.build toplevel_index) in
+        ()
+      in
+      Rules.Produce.Alias.add_deps alias deps
+    | Html | Json ->
+      let* libs =
+        Context.name ctx |> libs_of_pkg ~pkg:name >>| List.map ~f:(fun lib -> Lib lib)
+      in
+      let deps =
+        Pkg name :: libs
+        |> List.map ~f:(Dep.format_alias output ctx)
+        |> Dune_engine.Dep.Set.of_list_map ~f:(fun f -> Dune_engine.Dep.alias f)
+        |> Action_builder.deps
+      in
+      Rules.Produce.Alias.add_deps alias deps)
 ;;
 
 let setup_package_aliases sctx (pkg : Package.t) =
@@ -1281,9 +1282,13 @@ let gen_rules sctx ~dir rest =
     has_rules
       ~directory_targets
       (Sherlodoc.sherlodoc_dot_js sctx ~dir:(Paths.html_root ctx)
-       >>> setup_support_files_rule sctx ~dir:(Paths.odoc_support ctx)
-       >>> setup_toplevel_index_rule sctx Html
-       >>> setup_toplevel_index_rule sctx Json)
+       >>> Rules.narrow
+             (Target_mask.directories [ Paths.odoc_support ctx ])
+             (fun () -> setup_support_files_rule sctx ~dir:(Paths.odoc_support ctx))
+       >>> Memo.parallel_iter [ Output_format.Html; Json ] ~f:(fun format ->
+         Rules.narrow
+           (Target_mask.files [ Output_format.toplevel_index_path format ctx ])
+           (fun () -> setup_toplevel_index_rule sctx format)))
   | [ "_markdown" ] ->
     let* packages = Dune_load.packages () in
     let ctx = Super_context.context sctx in
@@ -1299,11 +1304,16 @@ let gen_rules sctx ~dir rest =
     in
     has_rules
       ~directory_targets
-      (let* () = setup_toplevel_index_rule sctx Markdown in
+      (let* () =
+         Rules.narrow
+           (Target_mask.files [ Output_format.toplevel_index_path Markdown ctx ])
+           (fun () -> setup_toplevel_index_rule sctx Markdown)
+       in
        Package.Name.Map.to_seq packages
        |> Memo.parallel_iter_seq ~f:(fun (_, (pkg : Package.t)) ->
          let pkg_name = Package.name pkg in
-         setup_pkg_markdown_rules sctx ~pkg:pkg_name))
+         let targets = Target_mask.directories [ Paths.markdown ctx (Pkg pkg_name) ] in
+         Rules.narrow targets (fun () -> setup_pkg_markdown_rules sctx ~pkg:pkg_name)))
   | [ "_markdown"; _lib_unique_name_or_pkg ] ->
     (* package directories are directory targets *)
     Memo.return Gen_rules.no_rules
@@ -1397,5 +1407,5 @@ let gen_rules sctx ~dir rest =
            setup_pkg_html_rules sctx ~pkg:name ~for_
        in
        ())
-  | _ -> Memo.return (Gen_rules.redirect_to_parent Gen_rules.Rules.empty)
+  | _ -> Memo.return Gen_rules.no_rules
 ;;

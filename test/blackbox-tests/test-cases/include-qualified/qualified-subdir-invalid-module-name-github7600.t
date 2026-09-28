@@ -18,7 +18,7 @@ directories too.
   $ mkdir src/baz-bar
   $ touch src/baz-bar/x.ml
 
-  $ dune build @install
+  $ dune build src/foo.exe
   File "src/baz-bar", line 1, characters 0-0:
   Error: "baz-bar" is an invalid module name.
   Module names must be non-empty, start with a letter, and composed only of the

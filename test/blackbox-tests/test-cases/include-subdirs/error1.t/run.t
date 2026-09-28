@@ -1,6 +1,6 @@
 Reports duplicate modules across directories with (include_subdirs unqualified).
 
-  $ dune build
+  $ dune build foo.cma
   File "dune", line 1, characters 0-0:
   Error: Module "X" appears in several directories:
   - _build/default/a

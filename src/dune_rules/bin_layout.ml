@@ -131,6 +131,5 @@ let gen_rules context_name ~dir rest =
   | [ key ] ->
     make_dispatch ~dir Subdir_set.empty (fun () ->
       symlink_rules_for_key context_name ~dir key)
-  | _ :: _ :: _ ->
-    Build_config.Gen_rules.redirect_to_parent Build_config.Gen_rules.Rules.empty
+  | _ :: _ :: _ -> Build_config.Gen_rules.no_rules
 ;;

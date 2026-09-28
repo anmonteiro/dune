@@ -1,7 +1,7 @@
 This test tries to load the rules in a directory that is a target of another
 rule.
 
-  $ make_directory_targets_project 3.4
+  $ make_directory_targets_project 3.23
 
   $ cat >dune <<EOF
   > (rule
@@ -9,6 +9,9 @@ rule.
   >  (targets (dir output))
   >  (action (bash "echo creating output dir && mkdir -p output/a && touch output/a/b")))
   > EOF
+
+Target lookups and complete directory views both emit `load-dir`. A target
+lookup only forces producers whose masks intersect its request.
 
   $ loadedDirs() {
   > jq -c 'select(.name == "load-dir") | .args'
@@ -25,7 +28,7 @@ rule.
   creating output dir
   {"dir":"_build/default"}
   {"dir":"_build/default/.dune"}
-  {"dir":"_build"}
+  {"dir":"_build/default/.dune"}
   $ find _build/default/output
   _build/default/output
   _build/default/output/a
@@ -39,7 +42,7 @@ output/
   {"dir":"_build/default/output/a"}
   {"dir":"_build/default"}
   {"dir":"_build/default/.dune"}
-  {"dir":"_build"}
+  {"dir":"_build/default/.dune"}
   $ find _build/default/output
   _build/default/output
   _build/default/output/a
@@ -73,7 +76,7 @@ Now we try loading the rules in output/a and make sure that nothing is deleted:
   {"dir":"_build/default/output"}
   {"dir":"_build/default"}
   {"dir":"_build/default/.dune"}
-  {"dir":"_build"}
+  {"dir":"_build/default/.dune"}
 
   $ find _build/default/output
   _build/default/output

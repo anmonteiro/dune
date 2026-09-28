@@ -1,5 +1,11 @@
 open Import
 
+val rule_targets
+  :  dir:Path.Build.t
+  -> ext_obj:Filename.Extension.t
+  -> kinds:Foreign.Source.kind list
+  -> Target_mask.t
+
 val foreign_flags
   :  Super_context.t
   -> dir:Path.Build.t

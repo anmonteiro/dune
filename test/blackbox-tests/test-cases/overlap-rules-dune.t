@@ -15,6 +15,8 @@ elsewhere.
   $ cat _build/default/$target
   foo
 
+Compilation rules from the parent are still available in that directory.
+
   $ cat >>dune <<EOF
   > (executable
   >  (name foo))
@@ -25,12 +27,3 @@ elsewhere.
   > EOF
 
   $ dune build ./foo.exe
-  File "dune", line 5, characters 7-10:
-  5 |  (name foo))
-             ^^^
-  Error: No rule found for .foo.eobjs/native/dune__exe__Foo.cmx
-  File "dune", line 5, characters 7-10:
-  5 |  (name foo))
-             ^^^
-  Error: No rule found for .foo.eobjs/native/dune__exe__Foo.o
-  [1]

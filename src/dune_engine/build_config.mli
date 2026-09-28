@@ -57,9 +57,7 @@ module Gen_rules : sig
     type t =
       | Rules of Rules.t
       | Unknown_context
-      | Redirect_to_parent of Rules.t
 
-    val redirect_to_parent : Rules.t -> t
     val rules_here : Rules.t -> t
     val unknown_context : t
     val no_rules : t

@@ -79,3 +79,29 @@ When both [--root] and [DUNE_ROOT] are specified, [--root] has priority:
 
   $ DUNE_ROOT=./subdir1 dune runtest --force --root=./subdir2
   subdir2
+
+Literal file targets follow the discovered working directory. An explicit root
+instead makes them relative to that root.
+
+  $ echo '(lang dune 3.21)' > dune-workspace
+  $ cat >>dune <<'EOF'
+  > (rule
+  >  (target literal-target)
+  >  (action (write-file %{target} "root\n")))
+  > EOF
+  $ cat >>subdir1/dune <<'EOF'
+  > (rule
+  >  (target literal-target)
+  >  (action (write-file %{target} "subdir1\n")))
+  > EOF
+
+Root discovery is disabled inside tests, so unset INSIDE_DUNE in this subshell.
+
+  $ (cd subdir1 && unset INSIDE_DUNE && dune build literal-target) 2>/dev/null
+  $ cat _build/default/subdir1/literal-target
+  subdir1
+  $ test ! -e _build/default/literal-target
+
+  $ (cd subdir1 && dune build --root=.. literal-target)
+  $ cat _build/default/literal-target
+  root

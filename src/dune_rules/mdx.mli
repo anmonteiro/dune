@@ -8,6 +8,8 @@ val enabled_if : t -> Blang.t
 
 include Stanza.S with type t := t
 
+val rule_targets : dir:Path.Build.t -> t -> Target_mask.t
+
 (** Generates the rules to handle the given mdx stanza *)
 val gen_rules
   :  t

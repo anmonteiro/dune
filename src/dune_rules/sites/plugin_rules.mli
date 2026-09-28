@@ -1,5 +1,6 @@
 open Import
 
+val rule_targets : dir:Path.Build.t -> Plugin.t -> Target_mask.t
 val setup_rules : sctx:Super_context.t -> dir:Path.Build.t -> Plugin.t -> unit Memo.t
 
 val install_rules

@@ -38,3 +38,66 @@ We add a `(menhir ..)` stanza in the group root dune file
 Show that the menhir stanza must live next to the source
 
   $ dune build
+
+A generated module list in the parser's own directory can describe both the
+Menhir inputs and the library modules.
+
+  $ make_menhir_project 3.25 3.0
+  $ mkdir same-dir
+  $ cat >same-dir/dune <<EOF
+  > (rule
+  >  (target parser-lst)
+  >  (action (copy modules.in %{target})))
+  > (menhir (modules (:include parser-lst)))
+  > (library
+  >  (name dynamic_parser)
+  >  (modes byte)
+  >  (modules (:include parser-lst)))
+  > EOF
+  $ cp src/a/my_parser.mly same-dir/parser.mly
+  $ cp src/a/my_parser.mly same-dir/other_parser.mly
+  $ echo parser >same-dir/modules.in
+  $ dune build same-dir/dynamic_parser.cma
+
+Changes to the list must also update the selected parser without cleaning.
+
+  $ echo other_parser >same-dir/modules.in
+  $ dune build same-dir/dynamic_parser.cma
+
+Dynamic module names can refer to grammar files copied from another directory.
+
+  $ mkdir copied-input
+  $ cat >copied-input/dune <<EOF
+  > (copy_files ../src/a/*.mly)
+  > (rule
+  >  (target parsers)
+  >  (action (write-file %{target} my_parser)))
+  > (menhir (modules (:include parsers)))
+  > (library (name copied_parser) (modes byte))
+  > (rule
+  >  (target inference-query)
+  >  (action (copy my_parser__mock.ml.mock.raw %{target})))
+  > EOF
+  $ cat >copied-input/copied_parser.ml <<EOF
+  > let parse = My_parser.main
+  > EOF
+
+The raw inference query can be requested before the parser's rules have been
+loaded, even though the copied grammar is absent from the source inventory.
+
+  $ dune build copied-input/inference-query
+  $ dune build copied-input/copied_parser.cma copied-input/my_parser.ml
+
+A generated module list ending in .raw is not a Menhir inference query.
+
+  $ mkdir raw-list
+  $ cp src/a/my_parser.mly raw-list/parser.mly
+  $ cat >raw-list/dune <<EOF
+  > (rule
+  >  (target parsers.raw)
+  >  (action (write-file %{target} parser)))
+  > (menhir (modules (:include parsers.raw)))
+  > (library (name grammar) (modes byte))
+  > EOF
+  $ dune build raw-list/parsers.raw
+  $ dune build raw-list/grammar.cma
