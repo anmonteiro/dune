@@ -97,11 +97,11 @@ let analyze_binary t ~dir name =
 ;;
 
 let binary t ?hint ?(where = Original_path) ~dir ~loc name =
+  let context = Context.name t.context in
   analyze_binary t ~dir name
   >>= function
   | `Resolved path -> Memo.return @@ Ok path
   | `None ->
-    let context = Context.name t.context in
     Memo.return
     @@ Error
          (Action.Prog.Not_found.create
@@ -113,7 +113,7 @@ let binary t ?hint ?(where = Original_path) ~dir ~loc name =
   | `Origin { dir; binding; dst; enabled_if = _; package = _ } ->
     (match where with
      | Install_dir ->
-       let install_dir = Install.Context.bin_dir ~context:(Context.name t.context) in
+       let install_dir = Install.Context.bin_dir ~context in
        Memo.return @@ Ok (Path.build @@ Path.Build.append_local install_dir dst)
      | Original_path ->
        let+ expanded =
