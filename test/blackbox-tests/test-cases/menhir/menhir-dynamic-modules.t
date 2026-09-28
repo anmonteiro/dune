@@ -74,8 +74,16 @@ Dynamic module names can refer to grammar files copied from another directory.
   >  (action (write-file %{target} my_parser)))
   > (menhir (modules (:include parsers)))
   > (library (name copied_parser) (modes byte))
+  > (rule
+  >  (target inference-query)
+  >  (action (copy my_parser__mock.ml.mock.raw %{target})))
   > EOF
   $ cat >copied-input/copied_parser.ml <<EOF
   > let parse = My_parser.main
   > EOF
+
+The raw inference query can be requested before the parser's rules have been
+loaded, even though the copied grammar is absent from the source inventory.
+
+  $ dune build copied-input/inference-query
   $ dune build copied-input/copied_parser.cma copied-input/my_parser.ml
