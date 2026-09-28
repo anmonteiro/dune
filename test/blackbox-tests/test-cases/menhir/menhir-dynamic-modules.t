@@ -87,3 +87,24 @@ loaded, even though the copied grammar is absent from the source inventory.
 
   $ dune build copied-input/inference-query
   $ dune build copied-input/copied_parser.cma copied-input/my_parser.ml
+
+A generated module list ending in .raw is not a Menhir inference query.
+The broad inference-query mask currently creates an avoidable cycle.
+
+  $ mkdir raw-list
+  $ cp src/a/my_parser.mly raw-list/parser.mly
+  $ cat >raw-list/dune <<EOF
+  > (rule
+  >  (target parsers.raw)
+  >  (action (write-file %{target} parser)))
+  > (menhir (modules (:include parsers.raw)))
+  > (library (name grammar) (modes byte))
+  > EOF
+  $ dune build raw-list/parsers.raw
+  Error: Dependency cycle between:
+     (:include _build/default/raw-list/parsers.raw) at raw-list/dune:4
+  [1]
+  $ dune build raw-list/grammar.cma
+  Error: Dependency cycle between:
+     (:include _build/default/raw-list/parsers.raw) at raw-list/dune:4
+  [1]
