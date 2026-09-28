@@ -13,6 +13,8 @@ type basename =
   | Any
   | Name of Filename.t
   | Names of names
+  (* Alias names accepted before Dune 2.0 need not be filenames. *)
+  | Legacy_aliases of Alias.Name.Set.t
   | Extensions of Filename.Extension.Set.t
   | Matching of Predicate_lang.Glob.t list
 
@@ -104,13 +106,13 @@ let file_name_bounds { files; _ } ~dir =
   let rec exact = function
     | [] -> true
     | (Name _ | Names _) :: rest -> exact rest
-    | (Any | Extensions _ | Matching _) :: _ -> false
+    | (Any | Legacy_aliases _ | Extensions _ | Matching _) :: _ -> false
   in
   let rec bounds = function
     | [] -> `Empty
     | Name name :: rest -> add_bounds name name rest
     | Names { first; last; _ } :: rest -> add_bounds first last rest
-    | (Any | Extensions _ | Matching _) :: _ -> `Non_exact
+    | (Any | Legacy_aliases _ | Extensions _ | Matching _) :: _ -> `Non_exact
   and add_bounds first last rest =
     match bounds rest with
     | `Non_exact -> `Non_exact
@@ -152,6 +154,7 @@ let basename_mem selector name =
     Filename.compare name first <> Lt
     && Filename.compare name last <> Gt
     && Filename.Set.mem values name
+  | Legacy_aliases _ -> false
   | Extensions extensions ->
     Filename.Extension.Set.exists extensions ~f:(fun extension ->
       Filename.check_suffix
@@ -219,6 +222,9 @@ let rec add_basename names selectors =
       ; weight = a.weight + b.weight
       }
     :: rest
+  | Legacy_aliases a, Legacy_aliases b :: rest ->
+    let names = Alias.Name.Set.union a b in
+    if names == b then selectors else Legacy_aliases names :: rest
   | Extensions a, Extensions b :: rest ->
     Extensions (Filename.Extension.Set.union a b) :: rest
   | Matching a, Matching b :: _ when List.equal Predicate_lang.Glob.equal a b -> selectors
@@ -306,6 +312,10 @@ let smaller_names a b = if a.weight <= b.weight then a, b else b, a
 let basename_inter a b =
   match a, b with
   | Any, x | x, Any -> Some x
+  | Legacy_aliases a, Legacy_aliases b ->
+    let names = Alias.Name.Set.inter a b in
+    Option.some_if (not (Alias.Name.Set.is_empty names)) (Legacy_aliases names)
+  | Legacy_aliases _, _ | _, Legacy_aliases _ -> None
   | Name name, other | other, Name name ->
     Option.some_if (basename_mem other name) (Name name)
   | Names a, Names b ->
@@ -352,6 +362,8 @@ let basename_inter a b =
 let basename_intersects a b =
   match a, b with
   | Any, _ | _, Any -> true
+  | Legacy_aliases a, Legacy_aliases b -> not (Alias.Name.Set.are_disjoint a b)
+  | Legacy_aliases _, _ | _, Legacy_aliases _ -> false
   | Name name, other | other, Name name -> basename_mem other name
   | Names a, Names b ->
     (not (disjoint_name_ranges a b))
@@ -852,18 +864,48 @@ let mem_path { files; directories; _ } ~dir name =
   || mem_recursive_name directories.recursive ~dir name
 ;;
 
-let alias_path alias =
-  Path.Build.relative (Alias.dir alias) (Alias.Name.to_string (Alias.name alias))
+let rec legacy_alias_mem selectors name =
+  match selectors with
+  | [] -> false
+  | Any :: _ -> true
+  | Legacy_aliases names :: rest ->
+    Alias.Name.Set.mem names name || legacy_alias_mem rest name
+  | (Name _ | Names _ | Extensions _ | Matching _) :: rest -> legacy_alias_mem rest name
+;;
+
+let rec legacy_alias_in_ancestors by_dir dir name =
+  match Path.Build.Map.find by_dir dir with
+  | Some names when legacy_alias_mem names name -> true
+  | None | Some _ ->
+    (match Path.Build.parent dir with
+     | None -> false
+     | Some parent -> legacy_alias_in_ancestors by_dir parent name)
+;;
+
+let mem_legacy_alias { direct; recursive } ~dir name =
+  (match direct with
+   | Empty -> false
+   | One (root, names) -> Path.Build.equal dir root && legacy_alias_mem names name
+   | Many { by_dir; _ } ->
+     (match Path.Build.Map.find by_dir dir with
+      | None -> false
+      | Some names -> legacy_alias_mem names name))
+  ||
+  match recursive with
+  | Empty -> false
+  | One (root, names) ->
+    Path.Build.is_descendant dir ~of_:root && legacy_alias_mem names name
+  | Many { by_dir; _ } -> legacy_alias_in_ancestors by_dir dir name
 ;;
 
 let mem_alias t alias =
   if regions_empty t.aliases
   then false
   else (
+    let dir = Alias.dir alias in
     match Filename.of_string (Alias.Name.to_string (Alias.name alias)) with
-    | None -> mem ~include_root:false t.aliases (alias_path alias)
+    | None -> mem_legacy_alias t.aliases ~dir (Alias.name alias)
     | Some name ->
-      let dir = Alias.dir alias in
       mem_direct t.aliases.direct dir name || mem_recursive t.aliases.recursive dir name)
 ;;
 
@@ -898,7 +940,17 @@ let files paths = { empty with files = exact_paths paths }
 let directories paths = { empty with directories = exact_paths paths }
 
 let aliases aliases =
-  { empty with aliases = List.map aliases ~f:alias_path |> exact_paths }
+  let direct =
+    List.fold_left aliases ~init:empty_locations ~f:(fun acc alias ->
+      let name = Alias.name alias in
+      let selector =
+        match Filename.of_string (Alias.Name.to_string name) with
+        | Some name -> Name name
+        | None -> Legacy_aliases (Alias.Name.Set.singleton name)
+      in
+      add_location acc (Alias.dir alias) [ selector ])
+  in
+  { empty with aliases = { empty_regions with direct } }
 ;;
 
 let files_in_directory dir =

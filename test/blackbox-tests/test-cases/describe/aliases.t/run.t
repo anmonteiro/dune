@@ -217,7 +217,6 @@ From dune 3.25 onward, cram aliases keep the full test name:
 
 Before dune 2.0, alias names may be dots. They belong to their stanza's
 directory, rather than naming its parent or the directory itself.
-Rule streaming currently crashes while describing these aliases.
 
   $ mkdir legacy
   $ cd legacy
@@ -229,9 +228,15 @@ Rule streaming currently crashes while describing these aliases.
   > (alias (name ..))
   > (alias (name ordinary))
   > EOF
-  $ dune show aliases --root . 2>&1 | head -n 5
-  Internal error! Please report to https://github.com/ocaml/dune/issues,
-  providing the file _build/trace.csexp, if possible. This includes build
-  commands, message logs, and file paths.
-  Description:
-    ("Path.Local.basename called on the root", {})
+  $ dune show aliases --root .
+  .
+  ..
+  all
+  default
+  ocaml-index
+  ordinary
+  pkg-install
+  revdep
+  revdep-check
+  revdep-install
+  revdep-runtest
