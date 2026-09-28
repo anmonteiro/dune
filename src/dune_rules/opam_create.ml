@@ -534,7 +534,6 @@ let gen_rules sctx ~dir ~nearest_src_dir ~src_dir =
     (match Path.Source.is_descendant src_dir ~of_:project_root with
      | false -> None
      | true ->
-       let project_root = Dune_project.root project in
        let project_rules = Path.Source.equal project_root src_dir in
        let opam_file_location = Dune_project.opam_file_location project in
        let opam_dir = "opam" in
