@@ -2099,20 +2099,14 @@ end = struct
       | None ->
         let dir = Path.Build.parent_exn target in
         Dune_trace.emit Debug (fun () -> Dune_trace.Event.load_dir (Path.build dir));
-        let ready =
-          if Memo.is_incremental ()
-          then None
-          else Path.Build.Table.find completed_targets.build_directories dir
-        in
-        (match ready with
+        (match Path.Build.Table.find completed_targets.build_directories dir with
          | Some build_dir -> load_build_directory_exn build_dir (Target target)
          | None ->
            get_dir_triage ~dir:(Path.build dir)
            >>= (function
             | Known loaded -> Memo.return loaded
             | Build_directory build_dir ->
-              if not (Memo.is_incremental ())
-              then Path.Build.Table.set completed_targets.build_directories dir build_dir;
+              Path.Build.Table.set completed_targets.build_directories dir build_dir;
               load_build_directory_exn build_dir (Target target)))
   ;;
 
