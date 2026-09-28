@@ -71,12 +71,15 @@ let layout_dir ~context key =
   Path.Build.L.relative (Install.Context.dir ~context) [ ".binaries"; key ]
 ;;
 
+let artifacts context =
+  let open Memo.O in
+  let* sctx = Super_context.find_exn context in
+  Artifacts_db.get (Super_context.context sctx)
+;;
+
 let create context ~dir bin_names =
   let open Memo.O in
-  let* artifacts =
-    let* sctx = Super_context.find_exn context in
-    Artifacts_db.get (Super_context.context sctx)
-  in
+  let* artifacts = artifacts context in
   let+ entries =
     Memo.List.filter_map bin_names ~f:(fun lookup_name ->
       Artifacts.local_binary_install_name artifacts ~dir lookup_name
@@ -96,10 +99,7 @@ let create context ~dir bin_names =
 let symlink_rules_for_key context_name ~dir key =
   let entries = Key.decode key in
   let open Memo.O in
-  let* artifacts =
-    let* sctx = Super_context.find_exn context_name in
-    Artifacts_db.get (Super_context.context sctx)
-  in
+  let* artifacts = artifacts context_name in
   Entry.Set.to_list entries
   |> Memo.parallel_iter ~f:(fun ({ Entry.lookup_name; install_name } as entry) ->
     let* prog =
