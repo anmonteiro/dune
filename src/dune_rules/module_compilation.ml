@@ -203,6 +203,7 @@ let build_cm cctx ~force_write_cmi ~precompiled_cmi ~cm_kind (m : Module.t) =
   let dir = Compilation_context.dir cctx in
   let obj_dir = Compilation_context.obj_dir cctx in
   let ctx = Super_context.context sctx in
+  let build_dir = Context.build_dir ctx in
   let mode = Lib_mode.of_cm_kind cm_kind in
   let sandbox =
     match Module.kind m with
@@ -351,12 +352,12 @@ let build_cm cctx ~force_write_cmi ~precompiled_cmi ~cm_kind (m : Module.t) =
           Compilation_context.scope cctx |> Scope.project |> Dune_project.dune_version
         in
         (* TODO DUNE4 get rid of the old behavior *)
-        if dune_version >= (3, 7) then dir else Context.build_dir ctx)
+        if dune_version >= (3, 7) then dir else build_dir)
      ?loc:(Compilation_context.loc cctx)
      (let open Action_builder.With_targets.O in
       Action_builder.with_no_targets other_cm_files
       >>> Command.run
-            ~dir:(Path.build (Context.build_dir ctx))
+            ~dir:(Path.build build_dir)
             ~sandbox
             ~forbid_action_runner:true
             compiler
