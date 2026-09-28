@@ -316,11 +316,11 @@ include Sub_system.Register_end_point (struct
           ~melange_package_name:None
           ~package
       in
+      let ocaml = Compilation_context.ocaml cctx in
       let* modes =
         let+ jsoo_enabled_modes =
           Jsoo_rules.jsoo_enabled_modes ~expander ~dir ~in_context:js_of_ocaml
         in
-        let ocaml = Compilation_context.ocaml cctx in
         let lib_has_native =
           let { Lib_config.has_native; _ } = ocaml.lib_config in
           let lib_modes = Dune_lang.Mode_conf.Lib.Set.eval lib.modes ~has_native in
@@ -349,9 +349,7 @@ include Sub_system.Register_end_point (struct
             else []
           in
           jsoo
-          @
-          let ocaml = Compilation_context.ocaml cctx in
-          List.map modes ~f:(fun (mode : Mode_conf.t) ->
+          @ List.map modes ~f:(fun (mode : Mode_conf.t) ->
             match mode with
             | Native -> Exe.Linkage.native
             | Best -> Exe.Linkage.native_or_custom ocaml
