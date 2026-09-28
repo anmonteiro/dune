@@ -766,6 +766,10 @@ end = struct
     let pkg_root =
       Install.Context.lib_dir ~context:(Context.name ctx) ~package:pkg_name
     in
+    let ext_obj =
+      let+ ocaml = Context.ocaml ctx in
+      ocaml.lib_config.ext_obj
+    in
     let lib_root lib =
       let subdir =
         Lib_info.Status.relative_to_package
@@ -820,10 +824,7 @@ end = struct
                actually only install them for virtual libraries. See
                [Lib_archives.make] *)
             let dir = Obj_dir.obj_dir obj_dir in
-            let* ext_obj =
-              let+ ocaml = Context.ocaml ctx in
-              ocaml.lib_config.ext_obj
-            in
+            let* ext_obj = ext_obj in
             let+ foreign_sources = Dir_contents.foreign_sources dir_contents in
             Foreign_sources.for_lib ~name foreign_sources
             |> Foreign.Sources.object_files ~dir ~ext_obj
