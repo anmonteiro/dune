@@ -640,6 +640,81 @@ let%expect_test "target masks distinguish kinds and directory boundaries" =
     |}]
 ;;
 
+let%expect_test "target masks preserve literal alias names and their directories" =
+  let dir = path "default" in
+  let child = Path.Build.relative dir "child" in
+  let sibling = Path.Build.relative dir "sibling" in
+  let nested = Path.Build.relative child "nested" in
+  let alias ~dir name =
+    Alias.Name.of_string_opt_loose name |> Option.value_exn |> Alias.make ~dir
+  in
+  let names = [ "."; ".."; "ordinary"; "second" ] in
+  let aliases ~dir names = List.map names ~f:(alias ~dir) |> Target_mask.aliases in
+  let root_aliases = aliases ~dir names in
+  let child_aliases = aliases ~dir:child names in
+  let both = Target_mask.union root_aliases child_aliases in
+  let direct = Target_mask.inter both (Target_mask.aliases_in_directory dir) in
+  let subtree = Target_mask.inter both (Target_mask.subtree child) in
+  let recursive =
+    Target_mask.union (Target_mask.subtree child) (Target_mask.subtree sibling)
+  in
+  List.iter names ~f:(fun name ->
+    let root_alias = alias ~dir name in
+    let child_alias = alias ~dir:child name in
+    let sibling_alias = alias ~dir:sibling name in
+    assert (Target_mask.mem_alias root_aliases root_alias);
+    assert (not (Target_mask.mem_alias root_aliases child_alias));
+    assert (Target_mask.mem_alias both root_alias);
+    assert (Target_mask.mem_alias both child_alias);
+    assert (not (Target_mask.mem_alias both sibling_alias));
+    assert (Target_mask.mem_alias direct root_alias);
+    assert (not (Target_mask.mem_alias direct child_alias));
+    assert (not (Target_mask.mem_alias subtree root_alias));
+    assert (Target_mask.mem_alias subtree child_alias);
+    assert (not (Target_mask.mem_alias recursive root_alias));
+    assert (Target_mask.mem_alias recursive child_alias);
+    assert (Target_mask.mem_alias recursive sibling_alias);
+    assert (Target_mask.mem_alias recursive (alias ~dir:nested name)));
+  assert (not (Target_mask.mem_alias both (alias ~dir "absent")));
+  assert (Target_mask.is_empty (Target_mask.inter root_aliases child_aliases));
+  assert (not (Target_mask.intersects root_aliases child_aliases));
+  assert (Target_mask.intersects_directory both dir);
+  assert (Target_mask.intersects_directory both child);
+  assert (not (Target_mask.intersects_directory both sibling));
+  let left = aliases ~dir [ "."; "ordinary" ] in
+  let right = aliases ~dir [ ".."; "ordinary"; "second" ] in
+  List.iter
+    [ Target_mask.inter left right; Target_mask.inter right left ]
+    ~f:(fun mask ->
+      List.iter names ~f:(fun name ->
+        assert (
+          Bool.equal
+            (Target_mask.mem_alias mask (alias ~dir name))
+            (String.equal name "ordinary"))));
+  assert (Target_mask.intersects left right);
+  let dots = aliases ~dir [ "."; ".." ] in
+  let dot = aliases ~dir [ "." ] in
+  let parent_dot = aliases ~dir [ ".." ] in
+  let only_dot = Target_mask.inter dots dot in
+  assert (Target_mask.mem_alias only_dot (alias ~dir "."));
+  assert (not (Target_mask.mem_alias only_dot (alias ~dir "..")));
+  assert (Target_mask.intersects dots dot);
+  assert (Target_mask.is_empty (Target_mask.inter dot parent_dot));
+  assert (not (Target_mask.intersects dot parent_dot));
+  List.iter
+    [ Target_mask.union left right; Target_mask.union dots root_aliases ]
+    ~f:(fun mask ->
+      List.iter names ~f:(fun name ->
+        assert (Target_mask.mem_alias mask (alias ~dir name))));
+  let path_mask = Target_mask.path (Path.Build.relative dir "ordinary") in
+  assert (not (Target_mask.intersects both path_mask));
+  assert (Target_mask.is_empty (Target_mask.inter both path_mask));
+  let normalized_dot = alias ~dir:Path.Build.root "default" in
+  assert (not (Target_mask.mem_alias dot normalized_dot));
+  assert (not (Target_mask.intersects dot (Target_mask.aliases [ normalized_dot ])));
+  [%expect {| |}]
+;;
+
 let%expect_test "filename predicates preserve precise literal intersections" =
   let dir = path "default/predicates" in
   let matching pattern =
