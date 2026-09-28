@@ -214,3 +214,24 @@ From dune 3.25 onward, cram aliases keep the full test name:
   $ dune build @mytest.t
 
   $ dune test mytest.t
+
+Before dune 2.0, alias names may be dots. They belong to their stanza's
+directory, rather than naming its parent or the directory itself.
+Rule streaming currently crashes while describing these aliases.
+
+  $ mkdir legacy
+  $ cd legacy
+  $ cat > dune-project << EOF
+  > (lang dune 1.0)
+  > EOF
+  $ cat > dune << EOF
+  > (alias (name .))
+  > (alias (name ..))
+  > (alias (name ordinary))
+  > EOF
+  $ dune show aliases --root . 2>&1 | head -n 5
+  Internal error! Please report to https://github.com/ocaml/dune/issues,
+  providing the file _build/trace.csexp, if possible. This includes build
+  commands, message logs, and file paths.
+  Description:
+    ("Path.Local.basename called on the root", {})
