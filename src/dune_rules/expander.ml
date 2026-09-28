@@ -268,25 +268,41 @@ let expand_artifact =
 ;;
 
 let expand_melange_emit ~source t arg =
-  let target_dir = Path.Build.relative t.dir arg in
   let loc = Dune_lang.Template.Pform.loc source in
-  let stanza_dir = Path.Build.parent_exn target_dir in
-  if Path.Build.is_root stanza_dir
+  let target_dir = Path.Build.relative ~error_loc:loc t.dir arg in
+  if not (Path.Build.is_descendant target_dir ~of_:(Context.build_dir t.context))
   then User_error.raise ~loc [ Pp.text "cannot escape the workspace root directory" ];
-  let* artifacts =
+  let lookup dir =
     let lookup = Fdecl.get lookup_artifacts in
-    Action_builder.of_memo (lookup ~dir:stanza_dir ~for_:Compilation_mode.Melange)
+    let+ artifacts =
+      Action_builder.of_memo (lookup ~dir ~for_:Compilation_mode.Melange)
+    in
+    Artifacts_obj.lookup_melange_emit artifacts target_dir
   in
-  match Artifacts_obj.lookup_melange_emit artifacts target_dir with
+  let* emit =
+    let stanza_dir = Path.Build.parent_exn target_dir in
+    let* named =
+      if Path.Build.is_root stanza_dir
+      then Action_builder.return None
+      else lookup stanza_dir
+    in
+    match named with
+    | Some _ -> Action_builder.return named
+    | None -> lookup target_dir
+  in
+  match emit with
   | None ->
     User_error.raise ~loc [ Pp.textf "Melange emit target %S does not exist." arg ]
   | Some { Melange.Emit.output_dir; stanza_dir; alias } ->
     let stanza_alias = Alias.make alias ~dir:stanza_dir in
-    let target_alias = Alias.make alias ~dir:target_dir in
     let output_dir = Path.build output_dir in
     let open Action_builder.O in
     let+ () = Action_builder.dep (Dep.alias stanza_alias)
-    and+ () = Action_builder.dep (Dep.alias target_alias) in
+    and+ () =
+      if Path.Build.equal target_dir stanza_dir
+      then Action_builder.return ()
+      else Action_builder.dep (Dep.alias (Alias.make alias ~dir:target_dir))
+    in
     [ Value.Path output_dir ]
 ;;
 
