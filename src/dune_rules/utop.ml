@@ -180,21 +180,21 @@ let findlib_conf sctx ~dir =
     Action_builder.write_file_dyn path contents |> Super_context.add_rule sctx ~dir
 ;;
 
-let lib_db sctx ~dir =
-  let* scope = Scope.DB.find_by_dir dir in
+let lib_db sctx ~scope =
+  let libs = Scope.libs scope in
   let* lock_dir_exists = Memo.Lazy.force utop_dev_tool_lock_dir_exists in
   match lock_dir_exists with
-  | false -> Memo.return (Scope.libs scope)
+  | false -> Memo.return libs
   | true ->
     let* ocamlpath = Memo.Lazy.force utop_ocamlpath in
     Lib.DB.of_paths (Super_context.context sctx) ~paths:ocamlpath
-    >>| Lib.DB.with_parent ~parent:(Some (Scope.libs scope))
+    >>| Lib.DB.with_parent ~parent:(Some libs)
 ;;
 
 let setup sctx ~dir =
   let* expander = Super_context.expander sctx ~dir in
   let* scope = Scope.DB.find_by_dir dir in
-  let* db = lib_db sctx ~dir in
+  let* db = lib_db sctx ~scope in
   let* libs, pps = libs_and_ppx_under_dir sctx ~db ~dir:(Path.build dir) in
   let pps =
     if List.is_empty pps
@@ -249,7 +249,8 @@ let setup sctx ~dir =
 ;;
 
 let requires_under_dir sctx ~dir =
-  let* db = lib_db sctx ~dir in
+  let* scope = Scope.DB.find_by_dir dir in
+  let* db = lib_db sctx ~scope in
   let* libs = libs_under_dir sctx ~db ~dir:(Path.build dir) in
   let loc = Toplevel.Source.loc (source ~dir) in
   requires ~loc ~db ~libs
