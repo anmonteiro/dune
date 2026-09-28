@@ -40,6 +40,7 @@ val c_compile_args
   -> dir:Path.Build.t
   -> expander:Expander.t
   -> loc:Loc.t
+  -> ocaml:Ocaml_toolchain.t
   -> src:Foreign.Source.t
   -> include_flags:Command.Args.without_targets Command.Args.t
   -> Command.Args.without_targets Command.Args.t
