@@ -88,7 +88,14 @@ let rule_targets ~dir ~source_files ~obj_dirs (stanza : stanza) =
         ~dir
         (Filename.Extension.Set.of_list
            (List.map
-              [ ".ml"; ".mli"; ".cmly"; ".conflicts"; ".mock"; ".raw"; ".inferred" ]
+              [ ".ml"
+              ; ".mli"
+              ; ".cmly"
+              ; ".conflicts"
+              ; ".mock"
+              ; ".ml.mock.raw"
+              ; ".inferred"
+              ]
               ~f:Filename.Extension.of_string_exn))
   in
   List.fold_left obj_dirs ~init:(Target_mask.union known dynamic) ~f:(fun mask obj_dir ->
