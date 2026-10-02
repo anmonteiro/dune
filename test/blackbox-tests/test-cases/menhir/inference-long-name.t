@@ -1,6 +1,6 @@
 Menhir inference supports long parser names in qualified subdirectories.
-With a 228-character basename, the helper added by #16464 would exceed a
-255-byte filename limit.
+With a 228-character basename, the path-based helper name from #16464 would
+exceed the 255-byte filename limit.
 
   $ make_menhir_project 3.25 3.0
   $ cat >dune <<'EOF'

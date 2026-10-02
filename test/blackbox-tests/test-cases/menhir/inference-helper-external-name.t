@@ -1,5 +1,5 @@
-The private inference helper proposed in #16464 must not shadow a module with
-the same name from another library.
+The private inference helper must not collide with an external module using
+the path-based name introduced in #16464.
 
   $ make_menhir_project 3.25 3.0
 
