@@ -17,6 +17,14 @@ val interpret_targets
   -> Arg.Dep.t list
   -> unit Dune_engine.Action_builder.t
 
+(** Execution-only requests. Use [interpret_targets] to inspect rules and
+    their dependencies. *)
+val build_targets
+  :  Workspace_root.t
+  -> Dune_rules.Main.build_system
+  -> Arg.Dep.t list
+  -> unit Dune_engine.Action_builder.t
+
 val expand_path_from_root
   :  Workspace_root.t
   -> Dune_rules.Super_context.t

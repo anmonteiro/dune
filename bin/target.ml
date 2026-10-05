@@ -17,6 +17,17 @@ let request targets =
     | Alias a -> Alias.request a)
 ;;
 
+let build_request targets =
+  List.fold_left targets ~init:(Action_builder.return ()) ~f:(fun acc target ->
+    acc
+    >>>
+    match (target : Request.t) with
+    | File path ->
+      let build = Memo.of_thunk_apply Build_system.build_file path in
+      Action_builder.record_success build
+    | Alias a -> Alias.request a)
+;;
+
 module Target_type = struct
   type t =
     | File
@@ -275,6 +286,11 @@ let resolve_targets_exn root setup user_targets =
 let interpret_targets root setup user_targets =
   let* () = Action_builder.return () in
   resolve_targets_exn root setup user_targets >>= request
+;;
+
+let build_targets root setup user_targets =
+  let* () = Action_builder.return () in
+  resolve_targets_exn root setup user_targets >>= build_request
 ;;
 
 type target_type = Target_type.t =

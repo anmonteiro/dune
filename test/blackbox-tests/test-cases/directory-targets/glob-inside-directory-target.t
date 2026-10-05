@@ -14,3 +14,20 @@ that matches nothing, we still copy the directory and make it empty.
   > EOF
 
   $ DUNE_SANDBOX=copy dune build x
+
+Direct directory requests build and validate their dependencies too.
+
+  $ echo before > input
+  $ cat > dune <<EOF
+  > (rule
+  >  (targets (dir output))
+  >  (deps input)
+  >  (action (system "mkdir output && cp input output/value")))
+  > EOF
+  $ dune build output
+  $ cat _build/default/output/value
+  before
+  $ echo after > input
+  $ dune build output output
+  $ cat _build/default/output/value
+  after
