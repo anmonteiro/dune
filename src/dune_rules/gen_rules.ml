@@ -75,76 +75,102 @@ module For_stanza = struct
 
   (* XXX it's weird how we're handling some [enabled_if] here, and others are
      being handled directly in the stanza. *)
-  let of_stanza stanza ~sctx ~src_dir ~ctx_dir ~scope ~dir_contents ~expander =
+  let prepare stanza ~targets ~sctx ~src_dir ~ctx_dir ~scope ~dir_contents ~expander =
+    let defer f =
+      let+ prepared =
+        Rules.defer_after
+          targets
+          ~prepare:(Memo.Lazy.force Configurator_rules.force_files)
+          (fun () ->
+             let* () = Memo.Lazy.force Configurator_rules.inputs in
+             f ())
+      in
+      Some prepared
+    in
     let dir = ctx_dir in
     match Stanza.repr stanza with
     | Toplevel_stanza.T toplevel ->
-      let+ () = Toplevel.Stanza.setup ~sctx ~dir ~toplevel in
-      empty
-    | Library.T lib ->
-      let* enabled_if =
-        Lib.DB.available_by_lib_id
-          (Scope.libs scope)
-          (Local (Library.to_lib_id ~src_dir lib))
-      in
-      if_available
-        (fun () ->
-           let* dir_contents = dir_contents in
-           let+ cctx_merlins = Lib_rules.rules lib ~sctx ~scope ~dir_contents ~expander in
-           match cctx_merlins.ocaml, cctx_merlins.melange with
-           | None, None -> empty
-           | Some cctx_merlin, None | None, Some cctx_merlin ->
-             with_cctx_merlin ~loc:lib.buildable.loc cctx_merlin
-           | Some (ocaml_cctx, ocaml_merlin), Some (melange_cctx, melange_merlin) ->
-             { merlin =
-                 [ Merlin.group ~default:ocaml_merlin ~alternatives:[ melange_merlin ] ]
-             ; cctx = [ lib.buildable.loc, ocaml_cctx; lib.buildable.loc, melange_cctx ]
-             })
-        enabled_if
-    | Foreign_library.T lib ->
-      Expander.eval_blang expander lib.enabled_if
-      >>= if_available (fun () ->
-        let* dir_contents = dir_contents in
-        let+ () = Lib_rules.foreign_rules lib ~sctx ~dir ~dir_contents ~expander in
+      defer (fun () ->
+        let+ () = Toplevel.Stanza.setup ~sctx ~dir ~toplevel in
         empty)
+    | Library.T lib ->
+      defer (fun () ->
+        let* enabled_if =
+          Lib.DB.available_by_lib_id
+            (Scope.libs scope)
+            (Local (Library.to_lib_id ~src_dir lib))
+        in
+        if_available
+          (fun () ->
+             let* dir_contents = dir_contents in
+             let+ cctx_merlins =
+               Lib_rules.rules lib ~sctx ~scope ~dir_contents ~expander
+             in
+             match cctx_merlins.ocaml, cctx_merlins.melange with
+             | None, None -> empty
+             | Some cctx_merlin, None | None, Some cctx_merlin ->
+               with_cctx_merlin ~loc:lib.buildable.loc cctx_merlin
+             | Some (ocaml_cctx, ocaml_merlin), Some (melange_cctx, melange_merlin) ->
+               { merlin =
+                   [ Merlin.group ~default:ocaml_merlin ~alternatives:[ melange_merlin ] ]
+               ; cctx = [ lib.buildable.loc, ocaml_cctx; lib.buildable.loc, melange_cctx ]
+               })
+          enabled_if)
+    | Foreign_library.T lib ->
+      defer (fun () ->
+        Expander.eval_blang expander lib.enabled_if
+        >>= if_available (fun () ->
+          let* dir_contents = dir_contents in
+          let+ () = Lib_rules.foreign_rules lib ~sctx ~dir ~dir_contents ~expander in
+          empty))
     | Executables.T exes ->
-      Expander.eval_blang expander exes.enabled_if
-      >>= if_available (fun () ->
-        let* dir_contents = dir_contents in
-        let+ () =
-          Memo.Option.iter exes.install_conf ~f:(install_stanza_rules ~expander ~ctx_dir)
-        and+ cctx_merlin = Exe_rules.rules exes ~sctx ~scope ~expander ~dir_contents in
-        with_cctx_merlin ~loc:exes.buildable.loc cctx_merlin)
+      defer (fun () ->
+        Expander.eval_blang expander exes.enabled_if
+        >>= if_available (fun () ->
+          let* dir_contents = dir_contents in
+          let+ () =
+            Memo.Option.iter
+              exes.install_conf
+              ~f:(install_stanza_rules ~expander ~ctx_dir)
+          and+ cctx_merlin = Exe_rules.rules exes ~sctx ~scope ~expander ~dir_contents in
+          with_cctx_merlin ~loc:exes.buildable.loc cctx_merlin))
     | Alias_conf.T alias ->
-      let+ () = Simple_rules.alias sctx alias ~dir ~expander in
-      empty
+      defer (fun () ->
+        let+ () = Simple_rules.alias sctx alias ~dir ~expander in
+        empty)
     | Tests.T tests ->
-      Expander.eval_blang expander tests.exes.enabled_if
-      >>= if_available_buildable ~loc:tests.exes.buildable.loc (fun () ->
-        let* dir_contents = dir_contents in
-        Test_rules.rules tests ~sctx ~dir ~scope ~expander ~dir_contents)
+      defer (fun () ->
+        Expander.eval_blang expander tests.exes.enabled_if
+        >>= if_available_buildable ~loc:tests.exes.buildable.loc (fun () ->
+          let* dir_contents = dir_contents in
+          Test_rules.rules tests ~sctx ~dir ~scope ~expander ~dir_contents))
     | Install_conf.T i ->
-      let+ () = install_stanza_rules ~ctx_dir ~expander i in
-      empty
+      defer (fun () ->
+        let+ () = install_stanza_rules ~ctx_dir ~expander i in
+        empty)
     (* There is probably something to do with documentation stanzas, as they
        also generate install rules. *)
     | Plugin.T p ->
-      let+ () = Plugin_rules.setup_rules ~sctx ~dir p in
-      empty
-    | Cinaps.T cinaps ->
-      let+ () = Cinaps.gen_rules sctx cinaps ~dir ~scope in
-      empty
-    | Mdx.T mdx ->
-      Expander.eval_blang expander (Mdx.enabled_if mdx)
-      >>= if_available (fun () ->
-        let+ () = Mdx.gen_rules ~sctx ~dir ~scope ~expander mdx in
+      defer (fun () ->
+        let+ () = Plugin_rules.setup_rules ~sctx ~dir p in
         empty)
+    | Cinaps.T cinaps ->
+      defer (fun () ->
+        let+ () = Cinaps.gen_rules sctx cinaps ~dir ~scope in
+        empty)
+    | Mdx.T mdx ->
+      defer (fun () ->
+        Expander.eval_blang expander (Mdx.enabled_if mdx)
+        >>= if_available (fun () ->
+          let+ () = Mdx.gen_rules ~sctx ~dir ~scope ~expander mdx in
+          empty))
     | Melange_stanzas.Emit.T mel ->
-      Expander.eval_blang expander mel.enabled_if
-      >>= if_available_buildable ~loc:mel.loc (fun () ->
-        let* dir_contents = dir_contents in
-        Melange_rules.setup_emit_cmj_rules ~dir_contents ~scope ~sctx ~expander mel)
-    | _ -> Memo.return empty
+      defer (fun () ->
+        Expander.eval_blang expander mel.enabled_if
+        >>= if_available_buildable ~loc:mel.loc (fun () ->
+          let* dir_contents = dir_contents in
+          Melange_rules.setup_emit_cmj_rules ~dir_contents ~scope ~sctx ~expander mel))
+    | _ -> Memo.return None
   ;;
 end
 
@@ -260,27 +286,23 @@ let gen_rules_for_stanzas
           stanza
       in
       let+ prepared =
-        Rules.defer_after
-          targets
-          ~prepare:(Memo.Lazy.force Configurator_rules.force_files)
-          (fun () ->
-             let* () = Memo.Lazy.force Configurator_rules.inputs in
-             For_stanza.of_stanza
-               stanza
-               ~sctx
-               ~src_dir
-               ~ctx_dir
-               ~scope
-               ~dir_contents
-               ~expander)
+        For_stanza.prepare
+          stanza
+          ~targets
+          ~sctx
+          ~src_dir
+          ~ctx_dir
+          ~scope
+          ~dir_contents
+          ~expander
       in
       stanza, targets, prepared)
   in
   let cctxs =
     List.fold_left prepared ~init:cctxs ~f:(fun cctxs (stanza, _, prepared) ->
-      match stanza_context_loc stanza with
-      | None -> cctxs
-      | Some loc ->
+      match prepared, stanza_context_loc stanza with
+      | None, _ | _, None -> cctxs
+      | Some prepared, Some loc ->
         let cctx =
           Memo.lazy_ ~name:"stanza-compilation-context" (fun () ->
             let+ { For_stanza.cctx; _ } =
@@ -337,9 +359,9 @@ let gen_rules_for_stanzas
       (Context.merlin (Super_context.context sctx))
       (fun () ->
          Memo.parallel_iter prepared ~f:(fun (stanza, _, prepared) ->
-           match stanza_merlin_ident stanza with
-           | None -> Memo.return ()
-           | Some ident ->
+           match prepared, stanza_merlin_ident stanza with
+           | None, _ | _, None -> Memo.return ()
+           | Some prepared, Some ident ->
              let targets =
                Target_mask.union
                  (Target_mask.files [ Merlin_ident.merlin_file_path ctx_dir ident ])
@@ -355,107 +377,114 @@ let gen_rules_for_stanzas
                    ~f:(Merlin.add_rules sctx ~dir:ctx_dir ~more_src_dirs ~expander))))
   in
   let+ () =
-    Memo.parallel_iter prepared ~f:(fun (stanza, targets, _) ->
-      match Stanza.repr stanza with
-      | Parser_generators.Ocamllex.T ocamllex ->
-        Rules.narrow targets (fun () ->
-          let* dir_contents = Dir_contents.Standalone_or_root.root standalone_or_root in
-          Expander.eval_blang expander ocamllex.enabled_if
-          >>= function
-          | false -> Memo.return ()
-          | true ->
-            Parser_generator_rules.gen_rules
-              sctx
-              ~dir_contents
-              ~dir:ctx_dir
-              ~for_:(Ocamllex ocamllex))
-      | Parser_generators.Ocamlyacc.T ocamlyacc ->
-        Rules.narrow targets (fun () ->
-          let* dir_contents = Dir_contents.Standalone_or_root.root standalone_or_root in
-          Expander.eval_blang expander ocamlyacc.enabled_if
-          >>= function
-          | false -> Memo.return ()
-          | true ->
-            Parser_generator_rules.gen_rules
-              sctx
-              ~dir_contents
-              ~dir:ctx_dir
-              ~for_:(Ocamlyacc ocamlyacc))
-      | Menhir_stanza.T m ->
-        Rules.narrow targets (fun () ->
-          Expander.eval_blang expander m.enabled_if
-          >>= function
-          | false -> Memo.return ()
-          | true ->
-            let* dir_contents = Dir_contents.Standalone_or_root.root standalone_or_root in
-            let* ml_sources = Dir_contents.ml dir_contents ~for_:Ocaml in
-            let { Ml_sources.Parser_generators.deps = _; targets } =
-              Ml_sources.Parser_generators.modules ml_sources ~for_:(Menhir m.loc)
-            in
-            let* context =
-              Memo.List.find_map
-                (Module_trie.to_list_mapi targets ~f:(fun module_path (_, m) ->
-                   module_path, m))
-                ~f:(fun (module_path, m) ->
-                  let* origin =
-                    Ml_sources.find_origin
-                      ml_sources
-                      ~libs:(Scope.libs scope)
-                      (Module.Source.path m)
-                  in
-                  match
-                    Option.bind origin ~f:(fun loc ->
-                      Loc.Map.find cctxs (Ml_sources.Origin.loc loc))
-                  with
-                  | None -> Memo.return None
-                  | Some context ->
-                    let+ context = Memo.Lazy.force context in
-                    Option.map context ~f:(fun cctx -> module_path, cctx))
-            in
-            (match context with
-             | Some (module_path, cctx) ->
-               let module_path, _ = Nonempty_list.destruct_last module_path in
-               Menhir_rules.gen_rules
-                 (Option.value_exn cctx.ocaml)
-                 m
-                 ~dir:ctx_dir
-                 ~module_path
-             | None ->
-               let file_targets =
-                 Module_trie.to_list_map targets ~f:(fun (_, m) ->
-                   List.map (Module.Source.files m) ~f:(fun m ->
-                     Module.File.path m |> Path.as_in_build_dir_exn))
-                 |> List.concat
-               in
-               Super_context.add_rule
-                 sctx
-                 ~dir:ctx_dir
-                 (Action_builder.fail
-                    { fail =
-                        (fun () ->
-                          User_error.raise
-                            ~loc:m.loc
-                            [ Pp.text
-                                "I can't determine what library/executable the files \
-                                 produced by this stanza are part of."
-                            ])
-                    }
-                  |> Action_builder.with_file_targets ~file_targets)))
-      | Rocq_stanza.Theory.T m ->
-        Rules.narrow targets (fun () ->
-          let* dir_contents = Dir_contents.Standalone_or_root.root standalone_or_root in
-          Expander.eval_blang expander m.enabled_if
-          >>= function
-          | false -> Memo.return ()
-          | true -> Rocq_rules.setup_theory_rules ~sctx ~dir:ctx_dir ~dir_contents m)
-      | Rocq_stanza.Extraction.T m ->
-        Rules.narrow targets (fun () ->
-          let* dir_contents = Dir_contents.Standalone_or_root.root standalone_or_root in
-          Rocq_rules.setup_extraction_rules ~sctx ~dir:ctx_dir ~dir_contents m)
-      | Rocq_stanza.Rocqpp.T m ->
-        Rules.narrow targets (fun () ->
-          Rocq_rules.setup_rocqpp_rules ~sctx ~dir:ctx_dir m)
-      | _ -> Memo.return ())
+    Memo.parallel_iter prepared ~f:(fun (stanza, targets, prepared) ->
+      match prepared with
+      | Some _ -> Memo.return ()
+      | None when Target_mask.is_empty targets -> Memo.return ()
+      | None ->
+        let+ (_ : unit Rules.Deferred.t) =
+          Rules.defer_after
+            targets
+            ~prepare:(Memo.Lazy.force Configurator_rules.force_files)
+            (fun () ->
+               let* () = Memo.Lazy.force Configurator_rules.inputs in
+               match Stanza.repr stanza with
+               | Parser_generators.Ocamllex.T ocamllex ->
+                 let* dir_contents = dir_contents in
+                 Expander.eval_blang expander ocamllex.enabled_if
+                 >>= (function
+                  | false -> Memo.return ()
+                  | true ->
+                    Parser_generator_rules.gen_rules
+                      sctx
+                      ~dir_contents
+                      ~dir:ctx_dir
+                      ~for_:(Ocamllex ocamllex))
+               | Parser_generators.Ocamlyacc.T ocamlyacc ->
+                 let* dir_contents = dir_contents in
+                 Expander.eval_blang expander ocamlyacc.enabled_if
+                 >>= (function
+                  | false -> Memo.return ()
+                  | true ->
+                    Parser_generator_rules.gen_rules
+                      sctx
+                      ~dir_contents
+                      ~dir:ctx_dir
+                      ~for_:(Ocamlyacc ocamlyacc))
+               | Menhir_stanza.T m ->
+                 Expander.eval_blang expander m.enabled_if
+                 >>= (function
+                  | false -> Memo.return ()
+                  | true ->
+                    let* dir_contents = dir_contents in
+                    let* ml_sources = Dir_contents.ml dir_contents ~for_:Ocaml in
+                    let { Ml_sources.Parser_generators.deps = _; targets } =
+                      Ml_sources.Parser_generators.modules ml_sources ~for_:(Menhir m.loc)
+                    in
+                    let* context =
+                      Memo.List.find_map
+                        (Module_trie.to_list_mapi targets ~f:(fun module_path (_, m) ->
+                           module_path, m))
+                        ~f:(fun (module_path, m) ->
+                          let* origin =
+                            Ml_sources.find_origin
+                              ml_sources
+                              ~libs:(Scope.libs scope)
+                              (Module.Source.path m)
+                          in
+                          match
+                            Option.bind origin ~f:(fun loc ->
+                              Loc.Map.find cctxs (Ml_sources.Origin.loc loc))
+                          with
+                          | None -> Memo.return None
+                          | Some context ->
+                            let+ context = Memo.Lazy.force context in
+                            Option.map context ~f:(fun cctx -> module_path, cctx))
+                    in
+                    (match context with
+                     | Some (module_path, cctx) ->
+                       let module_path, _ = Nonempty_list.destruct_last module_path in
+                       Menhir_rules.gen_rules
+                         (Option.value_exn cctx.ocaml)
+                         m
+                         ~dir:ctx_dir
+                         ~module_path
+                     | None ->
+                       let file_targets =
+                         Module_trie.to_list_map targets ~f:(fun (_, m) ->
+                           List.map (Module.Source.files m) ~f:(fun m ->
+                             Module.File.path m |> Path.as_in_build_dir_exn))
+                         |> List.concat
+                       in
+                       Super_context.add_rule
+                         sctx
+                         ~dir:ctx_dir
+                         (Action_builder.fail
+                            { fail =
+                                (fun () ->
+                                  User_error.raise
+                                    ~loc:m.loc
+                                    [ Pp.text
+                                        "I can't determine what library/executable the \
+                                         files produced by this stanza are part of."
+                                    ])
+                            }
+                          |> Action_builder.with_file_targets ~file_targets)))
+               | Rocq_stanza.Theory.T m ->
+                 let* dir_contents = dir_contents in
+                 Expander.eval_blang expander m.enabled_if
+                 >>= (function
+                  | false -> Memo.return ()
+                  | true ->
+                    Rocq_rules.setup_theory_rules ~sctx ~dir:ctx_dir ~dir_contents m)
+               | Rocq_stanza.Extraction.T m ->
+                 let* dir_contents = dir_contents in
+                 Rocq_rules.setup_extraction_rules ~sctx ~dir:ctx_dir ~dir_contents m
+               | Rocq_stanza.Rocqpp.T m ->
+                 Rocq_rules.setup_rocqpp_rules ~sctx ~dir:ctx_dir m
+               | _ -> Memo.return ())
+        in
+        ())
   in
   cctxs
 ;;
