@@ -64,6 +64,25 @@ A forwarded build resolves its target from the client's directory.
   $ find _build/default -name rpc-build-target -type f -print
   _build/default/sub/rpc-build-target
 
+Forwarded requests still track file dependencies across rebuilds.
+
+  $ echo before > sub/input
+  $ cat >>sub/dune <<'EOF'
+  > (rule
+  >  (target rpc-copy)
+  >  (deps input)
+  >  (action (copy %{deps} %{target})))
+  > EOF
+  $ with_timeout dune rpc flush-file-watcher --wait
+  $ (cd sub && unset INSIDE_DUNE; dune build rpc-copy) 2>/dev/null
+  $ cat _build/default/sub/rpc-copy
+  before
+  $ echo after > sub/input
+  $ with_timeout dune rpc flush-file-watcher --wait
+  $ (cd sub && unset INSIDE_DUNE; dune build rpc-copy) 2>/dev/null
+  $ cat _build/default/sub/rpc-copy
+  after
+
 An absolute target inside the workspace is treated as an external path instead
 of a build target.
 
