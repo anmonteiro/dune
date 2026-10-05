@@ -1229,9 +1229,30 @@ let build_exe
 
 let runner = "node"
 
-let js_of_ocaml_runtest_alias ~dir ~mode =
-  let+ js_of_ocaml = jsoo_env ~dir ~mode in
-  match js_of_ocaml.runtest_alias with
-  | Some a -> a
-  | None -> Alias0.runtest
+let js_of_ocaml_runtest_alias =
+  let make mode =
+    let name =
+      match (mode : Js_of_ocaml.Mode.t) with
+      | JS -> "js-runtest-alias"
+      | Wasm -> "wasm-runtest-alias"
+    in
+    Env_stanza_db.inherited
+      ~name
+      ~root:(fun _ _ -> Memo.return None)
+      ~f:(fun ~parent ~dir:_ (local : Dune_env.config) ->
+        let local =
+          Js_of_ocaml.Mode.select ~mode ~js:local.js_of_ocaml ~wasm:local.wasm_of_ocaml
+        in
+        (* Overridden parent aliases must also be registered as standard. *)
+        let+ parent = parent in
+        let alias = Option.first_some local.runtest_alias parent in
+        Option.iter alias ~f:Alias0.register_as_standard;
+        alias)
+    |> Staged.unstage
+  in
+  let js = make JS in
+  let wasm = make Wasm in
+  fun ~dir ~mode ->
+    let+ alias = Js_of_ocaml.Mode.select ~mode ~js ~wasm dir in
+    Option.value alias ~default:Alias0.runtest
 ;;
