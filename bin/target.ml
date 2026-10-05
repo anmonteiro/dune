@@ -9,12 +9,10 @@ module Request = struct
 end
 
 let request targets =
-  List.fold_left targets ~init:(Action_builder.return ()) ~f:(fun acc target ->
-    acc
-    >>>
-    match (target : Request.t) with
-    | File path -> Action_builder.path path
-    | Alias a -> Alias.request a)
+  Action_builder.all_unit
+    (List.map targets ~f:(function
+       | Request.File path -> Action_builder.path path
+       | Alias a -> Alias.request a))
 ;;
 
 module Target_type = struct
