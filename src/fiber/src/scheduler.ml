@@ -318,7 +318,16 @@ and exec_fiber : type a. context -> a t -> a continuation -> Jobs.t -> step' =
   | Map_t (t, f) -> exec_fiber ctx t (Map (f, k)) jobs
   | Map2_t (t, f, g) -> exec_fiber ctx t (Map2 (f, g, k)) jobs
   | Map3_t (t, f, g, h) -> exec_fiber ctx t (Map3 (f, g, h, k)) jobs
+  | Bind_t (Return_t value, f) ->
+    (match f value with
+     | exception exn -> handle_exception ctx exn jobs
+     | Return_t result -> exec ctx k result jobs
+     | t -> exec_fiber ctx t k jobs)
   | Bind_t (t, f) -> exec_fiber ctx t (Bind (f, k)) jobs
+  | Bind_apply_t (Return_t value, f, x) ->
+    (match f value x with
+     | exception exn -> handle_exception ctx exn jobs
+     | t -> exec_fiber ctx t k jobs)
   | Bind_apply_t (t, f, x) -> exec_fiber ctx t (Apply (f, x, k)) jobs
   | Bind_result_t (t, f) -> exec_fiber ctx t (Bind_result (f, k)) jobs
   | Thunk_t f -> exec_fiber_thunk ctx f k jobs
