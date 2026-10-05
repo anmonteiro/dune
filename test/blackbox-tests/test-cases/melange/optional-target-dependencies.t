@@ -142,8 +142,11 @@ themselves. An explicit target still needs to copy these assets.
   $ cat in-place/_build/default/dist/node_modules/pkg/asset.txt
   source asset
 
-The targetless form currently conflicts with the ordinary source-file copy.
+Without a target, the ordinary source-file copy still tracks asset updates.
 
+  $ cat >in-place/node_modules/pkg/asset.txt <<EOF
+  > updated asset
+  > EOF
   $ cat >in-place/dune <<EOF
   > (subdir node_modules (dirs pkg))
   > (melange.emit
@@ -151,18 +154,15 @@ The targetless form currently conflicts with the ordinary source-file copy.
   >  (emit_stdlib false))
   > EOF
   $ (cd in-place && dune build @melange)
-  Error: Multiple rules generated for
-  _build/default/node_modules/pkg/asset.txt:
-  - dune:2
-  - file present in source tree
-  -> required by alias melange
-  Hint: rm -f node_modules/pkg/asset.txt
-  [1]
   $ cat in-place/node_modules/pkg/asset.txt
-  source asset
+  updated asset
+  $ cat in-place/_build/default/node_modules/pkg/asset.txt
+  updated asset
+  $ node in-place/_build/default/main.js
+  package
 
-A generated directory asset already at its destination must keep its original
-producer too. Test it separately so the file conflict cannot hide this case.
+A generated directory asset already at its destination keeps its original
+producer. Changing that producer must update the asset used by the emit.
 
   $ cat >in-place/node_modules/pkg/dune <<EOF
   > (library
@@ -187,15 +187,28 @@ producer too. Test it separately so the file conflict cannot hide this case.
   $ (cd in-place && dune build @melange)
   $ cat in-place/_build/default/dist/node_modules/pkg/assets/generated.txt
   generated asset
+  $ cat >in-place/node_modules/pkg/dune <<EOF
+  > (library
+  >  (public_name pkg)
+  >  (modes melange)
+  >  (melange.runtime_deps assets))
+  > (rule
+  >  (target (dir assets))
+  >  (action
+  >   (progn
+  >    (run mkdir %{target})
+  >    (no-infer
+  >     (write-file %{target}/generated.txt "updated generated asset\n")))))
+  > EOF
   $ cat >in-place/dune <<EOF
   > (subdir node_modules (dirs pkg))
   > (melange.emit
   >  (libraries pkg)
   >  (emit_stdlib false))
   > EOF
-  $ (cd in-place && dune build @melange) >in-place/directory.log 2>&1
-  [1]
-  $ grep -q assets in-place/directory.log
+  $ (cd in-place && dune build @melange)
+  $ cat in-place/_build/default/node_modules/pkg/assets/generated.txt
+  updated generated asset
 
 Relocating a targetless emit must also preserve imports from private libraries
 outside the emit directory. First check their unpromoted layout.
@@ -234,9 +247,155 @@ outside the emit directory. First check their unpromoted layout.
   > EOF
   $ (cd private-promotion && dune build @app/melange)
   $ find private-promotion/relocated -name '*.js' | sort
-  private-promotion/relocated/app/helper.js
   private-promotion/relocated/app/main.js
-  $ node private-promotion/relocated/app/main.js 2>private-promotion/node.stderr
-  [1]
-  $ grep 'Cannot find module' private-promotion/node.stderr
-  Error: Cannot find module '../lib/helper.js'
+  private-promotion/relocated/lib/helper.js
+  $ node private-promotion/relocated/app/main.js
+  loaded private
+  private
+
+Local-library outputs include generated root modules and selected sources.
+Qualified selects use paths relative to the library's module-group root for
+both the result and its branches.
+
+  $ mkdir -p library-sources/app library-sources/dependency
+  $ mkdir -p library-sources/rooted library-sources/selected/sub
+  $ cat >library-sources/dune-project <<EOF
+  > (lang dune 3.25)
+  > (using melange 1.0)
+  > EOF
+  $ cat >library-sources/dependency/dune <<EOF
+  > (library
+  >  (name dependency)
+  >  (modes melange))
+  > EOF
+  $ cat >library-sources/dependency/dependency.ml <<EOF
+  > let message () = "root module"
+  > EOF
+  $ cat >library-sources/rooted/dune <<EOF
+  > (library
+  >  (name rooted)
+  >  (root_module root)
+  >  (libraries dependency)
+  >  (modes melange))
+  > EOF
+  $ cat >library-sources/rooted/dependency.ml <<EOF
+  > let message () = "shadowed"
+  > EOF
+  $ cat >library-sources/rooted/rooted.ml <<EOF
+  > let message () = Root.Dependency.message ()
+  > EOF
+  $ cat >library-sources/selected/dune <<EOF
+  > (include_subdirs qualified)
+  > (library
+  >  (name selected)
+  >  (modes melange)
+  >  (libraries
+  >   (select flat.ml from
+  >    (-> flat.selected.ml))
+  >   (select sub/message.ml from
+  >    (-> sub/message.selected.ml))))
+  > EOF
+  $ cat >library-sources/selected/flat.selected.ml <<EOF
+  > let message () = "flat"
+  > EOF
+  $ cat >library-sources/selected/sub/message.selected.ml <<EOF
+  > let message () = "qualified"
+  > EOF
+  $ cat >library-sources/selected/selected.ml <<EOF
+  > let message () = Flat.message () ^ " " ^ Sub.Message.message ()
+  > EOF
+  $ cat >library-sources/app/dune <<EOF
+  > (melange.emit
+  >  (libraries rooted selected)
+  >  (emit_stdlib false))
+  > EOF
+  $ cat >library-sources/app/main.ml <<EOF
+  > let () = Js.log (Rooted.message ())
+  > let () = Js.log (Selected.message ())
+  > EOF
+
+Request the generated library outputs before the entry point or emit alias.
+
+  $ (cd library-sources && dune build rooted/.melange_src/root.js)
+  $ (cd library-sources && dune build selected/.melange_src/flat.js \
+  >   selected/.melange_src/sub/message.js)
+  $ (cd library-sources && dune build app/main.js rooted/rooted.js \
+  >   dependency/dependency.js selected/selected.js)
+  $ node library-sources/_build/default/app/main.js
+  root module
+  flat qualified
+
+Both private and public virtual libraries can be emitted with implementations
+of the same visibility. Private implementations of public virtual libraries
+remain unsupported by Melange; that restriction is independent of the target.
+
+  $ mkdir -p virtuals/app virtuals/private-vlib virtuals/private-impl
+  $ mkdir -p virtuals/public-vlib virtuals/public-impl
+  $ cat >virtuals/dune-project <<EOF
+  > (lang dune 3.25)
+  > (using melange 1.0)
+  > (package (name virtuals))
+  > EOF
+  $ cat >virtuals/private-vlib/dune <<EOF
+  > (library
+  >  (name private_vlib)
+  >  (modes melange)
+  >  (virtual_modules virt))
+  > EOF
+  $ cat >virtuals/private-vlib/virt.mli <<EOF
+  > val message : unit -> string
+  > EOF
+  $ cat >virtuals/private-vlib/private_vlib.ml <<EOF
+  > let message () = Virt.message ()
+  > EOF
+  $ cat >virtuals/private-impl/dune <<EOF
+  > (library
+  >  (name private_impl)
+  >  (implements private_vlib)
+  >  (modes melange))
+  > EOF
+  $ cat >virtuals/private-impl/virt.ml <<EOF
+  > let message () = "private virtual"
+  > EOF
+  $ cat >virtuals/public-vlib/dune <<EOF
+  > (library
+  >  (name public_vlib)
+  >  (public_name virtuals.vlib)
+  >  (modes melange)
+  >  (virtual_modules virt))
+  > EOF
+  $ cat >virtuals/public-vlib/virt.mli <<EOF
+  > val message : unit -> string
+  > EOF
+  $ cat >virtuals/public-vlib/public_vlib.ml <<EOF
+  > let message () = Virt.message ()
+  > EOF
+  $ cat >virtuals/public-impl/dune <<EOF
+  > (library
+  >  (name public_impl)
+  >  (public_name virtuals.impl)
+  >  (implements virtuals.vlib)
+  >  (modes melange))
+  > EOF
+  $ cat >virtuals/public-impl/virt.ml <<EOF
+  > let message () = "public virtual"
+  > EOF
+  $ cat >virtuals/app/dune <<EOF
+  > (melange.emit
+  >  (libraries private_vlib private_impl virtuals.vlib virtuals.impl))
+  > EOF
+  $ cat >virtuals/app/main.ml <<EOF
+  > let () = Js.log (Private_vlib.message ())
+  > let () = Js.log (Public_vlib.message ())
+  > EOF
+
+Request both the virtual library's concrete modules and its implementation.
+
+  $ (cd virtuals && dune build private-vlib/private_vlib.js private-impl/virt.js)
+  $ (cd virtuals && dune build node_modules/virtuals.vlib/public_vlib.js \
+  >   node_modules/virtuals.impl/virt.js)
+  $ (cd virtuals && dune build app/main.js)
+  $ (cd virtuals && dune build @app/melange)
+  $ node virtuals/_build/default/app/main.js
+  private virtual
+  public virtual

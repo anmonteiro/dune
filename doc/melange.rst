@@ -426,6 +426,12 @@ targets support promotion; with an explicit target, Melange 1.0 promotion
 places the output beside the original source rather than preserving the
 target-directory prefix.
 
+With Melange 1.0, ``(promote (into <dir>))`` interprets ``<dir>`` relative to
+the stanza's directory and preserves the relative paths between entry modules
+and private workspace libraries without a package. Libraries outside the
+stanza's directory retain their relative positions, so their promoted output
+can be outside ``<dir>`` too.
+
 Design Choices
 =====================
 

@@ -392,12 +392,7 @@ let compute_promote_in_source ~promote_in_source ~project ~dir ~mode ~output ~sr
                Option.map p.into ~f:(fun into -> Path.relative dir into.dir)
                |> Option.value ~default:dir
              in
-             let segment =
-               Path.descendant src_dir ~of_:dir
-               |> Option.value_exn
-               |> Path.as_in_source_tree_exn
-             in
-             Path.append_source into_dir segment
+             Path.relative into_dir (Path.reach ~from:dir src_dir)
            in
            Path.reach ~from:dst_dir into_dir
          | Public_library { lib_dir; output_dir; target_dir = _ } ->
@@ -653,6 +648,12 @@ module Runtime_deps = struct
 
   let empty = { copy = []; deps = [] }
 
+  let add_copy { copy; deps } ~src ~dst =
+    match Path.equal src (Path.build dst) with
+    | true -> { copy; deps = src :: deps }
+    | false -> { copy = (src, dst) :: copy; deps }
+  ;;
+
   let eval_local ~sctx ~dir (loc, deps) =
     let* expander = Super_context.expander sctx ~dir in
     Lib_file_deps.eval ~expander ~loc ~paths:Allow_all deps
@@ -685,7 +686,7 @@ module Runtime_deps = struct
       in
       match output with
       | Output_kind.Public_library { lib_dir; _ } ->
-        Path.Set.fold ~init:empty deps ~f:(fun src ({ copy; deps = _ } as acc) ->
+        Path.Set.fold ~init:empty deps ~f:(fun src acc ->
           (match Path.as_external src with
            | None -> ()
            | Some src_e ->
@@ -693,14 +694,14 @@ module Runtime_deps = struct
               | Some lib_dir_e when Path.External.is_descendant src_e ~of_:lib_dir_e -> ()
               | Some _ | None -> raise_external_dep_error src ~for_));
           let dst = Output_kind.output_path output src in
-          { acc with copy = (src, dst) :: copy })
+          add_copy acc ~src ~dst)
       | Private_library_or_emit _ ->
-        Path.Set.fold ~init:empty deps ~f:(fun src ({ copy; deps } as acc) ->
+        Path.Set.fold ~init:empty deps ~f:(fun src ({ deps; _ } as acc) ->
           match Path.as_in_build_dir src with
           | None -> { acc with deps = src :: deps }
           | Some src_build ->
             let dst = Output_kind.output_path output (Path.build src_build) in
-            { acc with copy = (src, dst) :: copy })
+            add_copy acc ~src ~dst)
   ;;
 end
 
@@ -795,10 +796,6 @@ let modules_for_js_and_obj_dir ~sctx ~dir_contents ~scope (mel : Melange_stanzas
       if Module.has x ~ml_kind:Impl then x :: acc else acc)
   in
   modules, modules_for_js, obj_dir
-;;
-
-let should_promote_in_source scope (mel : Melange_stanzas.Emit.t) =
-  Option.is_some mel.target && Melange.Cli.promotes_in_source (Scope.project scope)
 ;;
 
 let emit_mode ~sctx ~dir ~promote_in_source (mel : Melange_stanzas.Emit.t) =
@@ -1066,7 +1063,7 @@ let setup_js_rules_libraries_and_entries
 let setup_emit_js_rules ~dir_contents ~scope ~sctx mel =
   let dir = Dir_contents.dir dir_contents in
   let target_dir = output_root ~sctx ~dir mel in
-  let promote_in_source = should_promote_in_source scope mel in
+  let promote_in_source = Melange.Cli.promotes_in_source (Scope.project scope) in
   let* mode = emit_mode ~sctx ~dir ~promote_in_source mel in
   let* compile_info = compile_info ~scope mel in
   let* requires_link_resolve =
@@ -1239,6 +1236,72 @@ let node_modules_dir sctx =
   Path.Build.relative dir "node_modules"
 ;;
 
+let colocated_js_rule_targets sctx ~dir ~extensions (mel : Melange_stanzas.Emit.t) =
+  let target_dir = output_root ~sctx ~dir mel in
+  let rec source_dirs ~dir =
+    let* contents = Dir_contents.triage sctx ~dir in
+    match contents with
+    | Group_part dir -> source_dirs ~dir
+    | Standalone_or_root contents ->
+      Dir_contents.Standalone_or_root.source_directories contents
+  in
+  let local ~dir ~obj_dir ~output =
+    let generated dir =
+      let dir = Path.Build.relative dir Melange.Source.dir in
+      let dir = Output_kind.output_path output (Path.build dir) in
+      Target_mask.file_extensions_in_subtree ~dir extensions
+    in
+    let+ dirs = source_dirs ~dir in
+    (* Selected and root modules use the stanza's hidden source tree; qualified
+       entry aliases use the object directory's hidden source tree. *)
+    let init = Target_mask.union (generated dir) (generated (Obj_dir.obj_dir obj_dir)) in
+    List.fold_left
+      (Nonempty_list.to_list dirs)
+      ~init
+      ~f:(fun mask { Source_file_dir.dir; _ } ->
+        let dir = Output_kind.output_path output (Path.build dir) in
+        Target_mask.union mask (Target_mask.file_extensions ~dir extensions))
+  in
+  let library lib =
+    let output = output_of_lib ~target_dir lib in
+    match Lib.Local.of_lib lib with
+    | Some lib ->
+      local
+        ~dir:(Lib_info.src_dir (Lib.Local.info lib))
+        ~obj_dir:(Lib.Local.obj_dir lib)
+        ~output
+    | None ->
+      let dir = Output_kind.output_path output (Lib_info.src_dir (Lib.info lib)) in
+      Memo.return (Target_mask.file_extensions_in_subtree ~dir extensions)
+  in
+  let* entries =
+    local
+      ~dir
+      ~obj_dir:(Obj_dir.make_for_exe_target ~dir (Melange_stanzas.Emit.exe_target mel))
+      ~output:(Private_library_or_emit target_dir)
+  in
+  let* scope = Scope.DB.find_by_dir dir in
+  let* compile_info = compile_info ~scope mel in
+  let* requires_link = Lib.Compile.requires_link compile_info ~for_ |> Memo.Lazy.force in
+  match Resolve.to_result requires_link with
+  | Error _ -> Memo.return entries
+  | Ok requires_link ->
+    let+ libraries =
+      Memo.parallel_map requires_link ~f:(fun lib ->
+        let* mask = library lib in
+        match Lib.implements lib with
+        | None -> Memo.return mask
+        | Some vlib ->
+          let* vlib = vlib in
+          (match Resolve.to_result vlib with
+           | Error _ -> Memo.return mask
+           | Ok vlib ->
+             let+ vlib = library vlib in
+             Target_mask.union mask vlib))
+    in
+    List.fold_left libraries ~init:entries ~f:Target_mask.union
+;;
+
 let setup_colocated_js_rules sctx ~dir =
   let* emits = colocated_emits sctx in
   let build_dir_only_sub_dirs =
@@ -1271,8 +1334,15 @@ let setup_colocated_js_rules sctx ~dir =
           let* expander = Super_context.expander sctx ~dir:stanza_dir in
           let* enabled = Expander.eval_blang expander stanza.enabled_if in
           Memo.when_ enabled (fun () ->
-            let* _, rules = emit_rules (Memo.return sctx) emit in
-            Rules.produce rules))))
+            (* Discover output directories before modules: source globs outside
+               these directories must not force the emit's module discovery. *)
+            let* mask =
+              colocated_js_rule_targets sctx ~dir:stanza_dir ~extensions stanza
+            in
+            let mask = Target_mask.union mask (Target_mask.aliases aliases) in
+            Rules.narrow mask (fun () ->
+              let* _, rules = emit_rules (Memo.return sctx) emit in
+              Rules.produce rules)))))
   in
   Memo.return (Gen_rules.make ~build_dir_only_sub_dirs rules)
 ;;
@@ -1306,7 +1376,10 @@ let setup_colocated_runtime_rules sctx =
             match Resolve.to_result requires_link with
             | Error _ -> Memo.return Path.Build.Map.empty
             | Ok requires_link ->
-              let* mode = emit_mode ~sctx ~dir ~promote_in_source:false mel in
+              let promote_in_source =
+                Melange.Cli.promotes_in_source (Scope.project scope)
+              in
+              let* mode = emit_mode ~sctx ~dir ~promote_in_source mel in
               let target_dir = output_root ~sctx ~dir mel in
               let+ targets =
                 Memo.parallel_map requires_link ~f:(fun lib ->
@@ -1328,7 +1401,7 @@ let setup_colocated_runtime_rules sctx =
                         ~scope
                         ~dir
                         ~mode
-                        ~promote_in_source:false
+                        ~promote_in_source
                         ~output
                         ~loc:mel.loc
                         copy

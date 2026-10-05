@@ -275,8 +275,8 @@ An explicit target preserves the relative layout of nested sources.
   loaded
   promoted
 
-The targetless form currently interprets the destination relative to each
-output, splitting the modules between different directories.
+The targetless form uses the same stanza-relative destination and preserves
+the relative layout of nested sources.
 
   $ cat >relocated/app/dune <<EOF
   > (include_subdirs unqualified)
@@ -286,12 +286,11 @@ output, splitting the modules between different directories.
   > EOF
   $ (cd relocated && dune build @app/melange)
   $ find relocated/app relocated/targetless-dist -name '*.js' | sort
-  relocated/app/targetless-dist/other.js
   relocated/targetless-dist/main.js
-  $ node relocated/targetless-dist/main.js 2>relocated/node.stderr
-  [1]
-  $ grep 'Cannot find module' relocated/node.stderr
-  Error: Cannot find module './sub/other.js'
+  relocated/targetless-dist/sub/other.js
+  $ node relocated/targetless-dist/main.js
+  loaded
+  promoted
 
 A wildcard copy can supply the entry modules. The source directory has no
 JavaScript outputs, so discovering its files must not force the emit.
@@ -314,8 +313,8 @@ JavaScript outputs, so discovering its files must not force the emit.
   $ node copied/_build/default/app/dist/app/main.js
   copied
 
-The targetless producer currently claims JavaScript paths in the unrelated
-source directory too, introducing a cycle while discovering the copied modules.
+The targetless producer must not claim JavaScript paths in the unrelated
+source directory or introduce a cycle while discovering the copied modules.
 
   $ cat >copied/app/dune <<EOF
   > (copy_files ../shared/*)
@@ -323,14 +322,10 @@ source directory too, introducing a cycle while discovering the copied modules.
   >  (emit_stdlib false))
   > EOF
   $ (cd copied && dune build app/main.js)
-  Error: Dependency cycle between:
-     { dir = In_build_dir "default/shared"
-     ; predicate = Element (Glob "*")
-     ; only_generated_files = false
-     }
-  [1]
+  $ node copied/_build/default/app/main.js
+  copied
 
-Restricting the glob to OCaml sources avoids that accidental dependency.
+Restricting the glob to OCaml sources works too.
 
   $ cat >copied/app/dune <<EOF
   > (copy_files ../shared/*.ml)
