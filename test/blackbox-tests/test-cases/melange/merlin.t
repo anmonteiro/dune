@@ -701,3 +701,80 @@ Melange-only libraries have a default Melange configuration.
   $ (cd mixed && merlin_configurations \
   >   _build/default/.merlin-conf/lib-melange_only_lib melange_only.ml)
   melange_only.ml: melange true impl -
+
+A source copied through an intermediate file into both mode-specific
+implementations returns both modes.
+
+  $ mkdir fanout
+  $ cat > fanout/dune-project <<EOF
+  > (lang dune 3.16)
+  > (using melange 0.1)
+  > EOF
+  $ cat > fanout/dune <<EOF
+  > (library
+  >  (name fanout)
+  >  (modules target)
+  >  (modes :standard melange))
+  > (rule (action (copy# input.txt intermediate.txt)))
+  > (rule (action (copy# intermediate.txt target.ml)))
+  > (rule (action (copy# intermediate.txt target.melange.ml)))
+  > EOF
+  $ printf 'let value = 1\n' > fanout/input.txt
+  $ DUNE_SANDBOX=none dune build --root fanout target.ml
+  $ DUNE_SANDBOX=none dune build --root fanout target.melange.ml
+  $ DUNE_SANDBOX=none dune build --root fanout @check
+  $ (cd fanout && merlin_configurations \
+  >   _build/default/.merlin-conf/lib-fanout \
+  >   target.ml target.melange.ml input.txt intermediate.txt)
+  target.ml: ocaml true impl -
+  target.melange.ml: melange false impl -
+  input.txt: ocaml true impl -
+  input.txt: melange false impl -
+  intermediate.txt: ocaml true impl -
+  intermediate.txt: melange false impl -
+
+Sandboxed copies also resolve back to their original sources.
+
+  $ mkdir sandboxed
+  $ cp fanout/dune fanout/input.txt sandboxed/
+  $ cat > sandboxed/dune-project <<EOF
+  > (lang dune 3.25)
+  > (using melange 1.0)
+  > EOF
+  $ dune build --root sandboxed @check
+  $ (cd sandboxed && merlin_configurations \
+  >   _build/default/.merlin-conf/lib-fanout input.txt intermediate.txt)
+  input.txt: ocaml true impl -
+  input.txt: melange false impl -
+  intermediate.txt: ocaml true impl -
+  intermediate.txt: melange false impl -
+
+Rebuilding the destinations in the opposite order preserves both modes.
+
+  $ printf 'let value = 2\n' > fanout/input.txt
+  $ DUNE_SANDBOX=none dune build --root fanout target.melange.ml
+  $ DUNE_SANDBOX=none dune build --root fanout target.ml
+  $ DUNE_SANDBOX=none dune build --root fanout @check
+  $ (cd fanout && merlin_configurations \
+  >   _build/default/.merlin-conf/lib-fanout input.txt)
+  input.txt: ocaml true impl -
+  input.txt: melange false impl -
+
+Changing a destination's source replaces its old mapping. Only Melange uses
+the original input now.
+
+  $ printf 'let value = 3\n' > fanout/alternate.txt
+  $ cat > fanout/dune <<EOF
+  > (library
+  >  (name fanout)
+  >  (modules target)
+  >  (modes :standard melange))
+  > (rule (action (copy# input.txt intermediate.txt)))
+  > (rule (action (copy# alternate.txt target.ml)))
+  > (rule (action (copy# intermediate.txt target.melange.ml)))
+  > EOF
+  $ DUNE_SANDBOX=none dune build --root fanout @check
+  $ (cd fanout && merlin_configurations \
+  >   _build/default/.merlin-conf/lib-fanout input.txt alternate.txt)
+  input.txt: melange false impl -
+  alternate.txt: ocaml true impl -
