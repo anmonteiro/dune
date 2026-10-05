@@ -632,10 +632,19 @@ module T = struct
 
   and routing =
     { run : Memo.Run.t
-    ; mutable families : route_family list
-    ; mutable direct_families : direct_route_family list
+    ; mutable families : route_family route_families
+    ; mutable direct_families : direct_route_family route_families
     ; mutable visited : Id.Set.t
     }
+
+  and 'a route_families =
+    | No_families
+    | One_family of File_postings.t Lazy.t * 'a
+    | Indexed_families of (Path.Build.t, 'a directory_route_families) Table.t
+
+  and 'a directory_route_families =
+    | One_directory_family of (Filename.t, Id.t list) Table.t * 'a
+    | Indexed_directory_families of (Filename.t, ('a * Id.t) list) Table.t
 
   and watch_route =
     { family : direct_route_family
@@ -1742,6 +1751,41 @@ let load_requested t requested ~directory_only =
 ;;
 
 module Batch_routes = struct
+  (* This index only narrows candidate families. Selecting a route still checks
+     every atomic output against the family's original ownership frontier. *)
+  let index_names index names family =
+    Table.iteri names ~f:(fun name owners ->
+      match owners with
+      | [ id ] -> Table.Multi.cons index name (family, id)
+      | [] | _ :: _ :: _ -> ())
+  ;;
+
+  let index_family index postings family =
+    Path.Build.Map.iteri (Lazy.force postings) ~f:(fun dir { File_postings.names; _ } ->
+      match Table.find index dir with
+      | None -> Table.set index dir (One_directory_family (names, family))
+      | Some (One_directory_family (previous_names, previous)) ->
+        let candidates = Table.create (module Filename) 32 in
+        index_names candidates previous_names previous;
+        index_names candidates names family;
+        Table.set index dir (Indexed_directory_families candidates)
+      | Some (Indexed_directory_families candidates) ->
+        index_names candidates names family)
+  ;;
+
+  let add_family families postings family =
+    match families with
+    | No_families -> One_family (postings, family)
+    | One_family (previous_postings, previous) ->
+      let index = Table.create (module Path.Build) 16 in
+      index_family index previous_postings previous;
+      index_family index postings family;
+      Indexed_families index
+    | Indexed_families index ->
+      index_family index postings family;
+      families
+  ;;
+
   let prefix rules ancestors refinements : Direct.t list * route_prefix =
     let outside =
       List.concat_map (List.rev ancestors) ~f:(fun (partial : partial) ->
@@ -1770,7 +1814,7 @@ module Batch_routes = struct
        | Some postings ->
          let _, prefix = prefix rules ancestors refinements in
          let family = { group; postings; prefix; routes = Table.create (module Id) 32 } in
-         cache.families <- family :: cache.families)
+         cache.families <- add_family cache.families postings family)
   ;;
 
   let direct_family body ancestors refinements (producing_id, producer) index =
@@ -1806,7 +1850,7 @@ module Batch_routes = struct
     | Small _ | Indexed _ -> ()
     | Files index ->
       let family = direct_family body ancestors refinements producer index in
-      cache.direct_families <- family :: cache.direct_families
+      cache.direct_families <- add_family cache.direct_families index.postings family
   ;;
 
   let direct_selection (family : direct_route_family) postings ~dir id =
@@ -1855,19 +1899,39 @@ module Batch_routes = struct
       loaded
   ;;
 
-  let rec find_direct (families : direct_route_family list) ~dir name =
-    match families with
-    | [] -> None
-    | family :: rest ->
+  let find_direct_owner family owners ~dir =
+    match owners with
+    | [] | _ :: _ :: _ -> None
+    | [ id ] ->
       let postings = Lazy.force family.index.postings in
-      let loaded =
-        match File_postings.find postings ~dir name with
-        | [] | _ :: _ :: _ -> None
-        | [ id ] -> direct_selection family postings ~dir id
-      in
-      (match loaded with
-       | None -> find_direct rest ~dir name
+      (match direct_selection family postings ~dir id with
+       | None -> None
        | Some loaded -> Some (`Direct (family, loaded)))
+  ;;
+
+  let rec find_direct_candidates candidates ~dir =
+    match candidates with
+    | [] -> None
+    | (family, id) :: rest ->
+      let postings = Lazy.force family.index.postings in
+      (match direct_selection family postings ~dir id with
+       | None -> find_direct_candidates rest ~dir
+       | Some loaded -> Some (`Direct (family, loaded)))
+  ;;
+
+  let find_direct families ~dir name =
+    match families with
+    | No_families -> None
+    | One_family (postings, family) ->
+      let postings = Lazy.force postings in
+      find_direct_owner family (File_postings.find postings ~dir name) ~dir
+    | Indexed_families index ->
+      (match Table.find index dir with
+       | None -> None
+       | Some (One_directory_family (names, family)) ->
+         find_direct_owner family (Table.Multi.find names name) ~dir
+       | Some (Indexed_directory_families candidates) ->
+         find_direct_candidates (Table.Multi.find candidates name) ~dir)
   ;;
 
   let producer_route (family : route_family) postings id =
@@ -1909,19 +1973,39 @@ module Batch_routes = struct
       route
   ;;
 
-  let rec find_producer (families : route_family list) ~dir name =
-    match families with
-    | [] -> None
-    | family :: rest ->
+  let find_producer_owner family owners =
+    match owners with
+    | [] | _ :: _ :: _ -> None
+    | [ id ] ->
       let postings = Lazy.force family.postings in
-      let route =
-        match File_postings.find postings ~dir name with
-        | [] | _ :: _ :: _ -> None
-        | [ id ] -> producer_route family postings id
-      in
-      (match route with
-       | None -> find_producer rest ~dir name
+      (match producer_route family postings id with
+       | None -> None
        | Some route -> Some (`Producer route))
+  ;;
+
+  let rec find_producer_candidates candidates =
+    match candidates with
+    | [] -> None
+    | (family, id) :: rest ->
+      let postings = Lazy.force family.postings in
+      (match producer_route family postings id with
+       | None -> find_producer_candidates rest
+       | Some route -> Some (`Producer route))
+  ;;
+
+  let find_producer families ~dir name =
+    match families with
+    | No_families -> None
+    | One_family (postings, family) ->
+      let postings = Lazy.force postings in
+      find_producer_owner family (File_postings.find postings ~dir name)
+    | Indexed_families index ->
+      (match Table.find index dir with
+       | None -> None
+       | Some (One_directory_family (names, family)) ->
+         find_producer_owner family (Table.Multi.find names name)
+       | Some (Indexed_directory_families candidates) ->
+         find_producer_candidates (Table.Multi.find candidates name))
   ;;
 
   let find cache ~dir name =
@@ -1955,7 +2039,13 @@ module Batch_routes = struct
     match root.routing with
     | Some cache when cache.run == run -> cache
     | None | Some _ ->
-      let cache = { run; families = []; direct_families = []; visited = Id.Set.empty } in
+      let cache =
+        { run
+        ; families = No_families
+        ; direct_families = No_families
+        ; visited = Id.Set.empty
+        }
+      in
       register cache root [] [];
       root.routing <- Some cache;
       cache
