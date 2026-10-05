@@ -42,13 +42,12 @@ let () =
   require_iterations queue (checkpoint ()) 0;
   let worker = send_worker_event queue in
   require_iterations queue (Fiber.Ivar.read worker) 1;
-  (* Draining the queue currently leaves checkpoints yielding unnecessarily. *)
   require_iterations
     queue
     (let* () = checkpoint () in
      checkpoint ())
-    2;
-  require_iterations queue (checkpoint ()) 1;
+    0;
+  require_iterations queue (checkpoint ()) 0;
   (* A new event re-arms checkpoints and precedes the lower-priority yield. *)
   let worker = send_worker_event queue in
   require_iterations
@@ -56,7 +55,7 @@ let () =
     (let* () = checkpoint () in
      assert (Fiber.Ivar.peek worker = Some ());
      checkpoint ())
-    3;
+    2;
   (* Draining one event must retain the checkpoint while another remains. *)
   let first = send_worker_event queue in
   let second = send_worker_event queue in
@@ -66,7 +65,7 @@ let () =
     (let* () = checkpoint () in
      assert (Fiber.Ivar.peek second = Some ());
      checkpoint ())
-    3;
+    2;
   (* Parallel checkpoint readers share a single yield, and are all resumed. *)
   let worker = send_worker_event queue in
   require_iterations
@@ -74,8 +73,8 @@ let () =
     (let* () = Fiber.fork_and_join_unit checkpoint checkpoint in
      assert (Fiber.Ivar.peek worker = Some ());
      checkpoint ())
-    3;
-  require_iterations queue (checkpoint ()) 1;
+    2;
+  require_iterations queue (checkpoint ()) 0;
   (* A checkpoint still joins the shared yield after the last real event is
      consumed. It must not bypass readers that are already waiting. *)
   let worker = send_worker_event queue in
@@ -94,7 +93,7 @@ let () =
     (let* () = pending in
      assert (Fiber.Ivar.peek worker = Some ());
      checkpoint ())
-    3;
+    2;
   if Sys.win32
   then (
     let pid = Pid.of_int_exn 1 in
@@ -109,11 +108,11 @@ let () =
     in
     Event.Queue.send_job_completed queue job info;
     require_iterations queue (Fiber.Ivar.read ivar >>| ignore) 1;
-    require_iterations queue (checkpoint ()) 1)
+    require_iterations queue (checkpoint ()) 0)
   else (
     Event.Queue.send_job_completed_ready queue;
     (match Event.Queue.next queue with
      | Job_complete_ready -> ()
      | _ -> Code_error.raise "expected a completed job" []);
-    require_iterations queue (checkpoint ()) 1)
+    require_iterations queue (checkpoint ()) 0)
 ;;
