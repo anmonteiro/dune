@@ -1915,19 +1915,20 @@ end = struct
     ;;
   end
 
-  module Compiled_target = struct
+  module Compiled_request = struct
     type t =
       | Loaded of Loaded.t
       | Selected of
-          { target : Path.Build.t
+          { request : request
           ; prepared : Prepared_directory.state
           ; compiled : Compiled_selection.t
           ; cleanup_receipt : Cleanup.receipt
           }
 
-    let equal a b =
+    let equal_target a b =
       match a, b with
-      | Selected { target; compiled = a; _ }, Selected { compiled = b; _ } ->
+      | ( Selected { request = Target target; compiled = a; _ }
+        , Selected { request = Target _; compiled = b; _ } ) ->
         (* Only the requested rule and its kind escape this private lookup.
            Cleanup retains fresh metadata even when this cutoff holds.
            [Rule.set_action] preserves IDs, so compare the rules themselves. *)
@@ -1949,17 +1950,23 @@ end = struct
             , Build_under_directory_target { directory_target_ancestor = b } ) ->
             Path.Build.equal a b
           | _ -> false)
-      | Loaded _, Selected _ | Selected _, Loaded _ -> false
+      | Loaded _, Selected _ | Selected _, _ -> false
     ;;
 
-    let replay target = function
+    let replay _ = function
       | Loaded _ -> ()
-      | Selected { prepared; compiled; cleanup_receipt; _ } ->
+      | Selected { request; prepared; compiled; cleanup_receipt } ->
         (match prepared.current with
          | None ->
-           Code_error.raise
-             "Target cleanup replayed before directory preparation"
-             [ "target", Path.Build.to_dyn target ]
+           let details =
+             match request with
+             | Target target | Directory_target target ->
+               [ "target", Path.Build.to_dyn target ]
+             | Files selector -> [ "selector", File_selector.to_dyn selector ]
+             | Alias alias -> [ "alias", Alias.to_dyn alias ]
+             | Complete -> []
+           in
+           Code_error.raise "Rule cleanup replayed before directory preparation" details
          | Some { Initial_directory.cleanup; _ } ->
            (* A receipt belongs to this full payload, not just its selected
               rule. Skipped live entries remain safe: later views either
@@ -1981,8 +1988,8 @@ end = struct
       Memo.create_with_replay
         "compile-target-rules"
         ~input:(module Path.Build)
-        ~cutoff:Compiled_target.equal
-        ~replay:Compiled_target.replay
+        ~cutoff:Compiled_request.equal_target
+        ~replay:Compiled_request.replay
         (fun target ->
            let dir = Path.Build.parent_exn target in
            Dune_trace.emit Debug (fun () -> Dune_trace.Event.load_dir (Path.build dir));
@@ -1991,20 +1998,19 @@ end = struct
               stable cell carrying this run's mutable cleanup state. *)
            let* prepared = Prepared_directory.prepare dir in
            match prepared with
-           | Known loaded -> Memo.return (Compiled_target.Loaded loaded)
+           | Known loaded -> Memo.return (Compiled_request.Loaded loaded)
            | Under_directory_target { directory_target_ancestor } ->
              Memo.return
-               (Compiled_target.Loaded
+               (Compiled_request.Loaded
                   (Loaded.Build_under_directory_target { directory_target_ancestor }))
            | Normal { build_dir; state = prepared; info } ->
              let* selection = Rules.load_path_with_pending info.rules target in
-             let+ compiled =
-               compile_selection build_dir info ~request:(Target target) selection
-             in
-             Compiled_target.Selected
-               { target; prepared; compiled; cleanup_receipt = Cleanup.receipt () })
+             let request = Target target in
+             let+ compiled = compile_selection build_dir info ~request selection in
+             Compiled_request.Selected
+               { request; prepared; compiled; cleanup_receipt = Cleanup.receipt () })
     in
-    fun target -> Memo.exec memo target >>| Compiled_target.loaded
+    fun target -> Memo.exec memo target >>| Compiled_request.loaded
   ;;
 
   let finish_load
@@ -2135,43 +2141,13 @@ end = struct
               (Directory_target target)))
   ;;
 
-  module Compiled_file_selector = struct
-    type t =
-      | Loaded of Loaded.t
-      | Selected of
-          { prepared : Prepared_directory.state
-          ; compiled : Compiled_selection.t
-          ; cleanup_receipt : Cleanup.receipt
-          }
-
-    let replay selector = function
-      | Loaded _ -> ()
-      | Selected { prepared; compiled; cleanup_receipt } ->
-        (match prepared.current with
-         | None ->
-           Code_error.raise
-             "File selector cleanup replayed before directory preparation"
-             [ "selector", File_selector.to_dyn selector ]
-         | Some { Initial_directory.cleanup; _ } ->
-           if not (Cleanup.reuse cleanup cleanup_receipt)
-           then (
-             refine_cleanup cleanup compiled;
-             Cleanup.remember cleanup cleanup_receipt))
-    ;;
-
-    let loaded = function
-      | Loaded loaded -> loaded
-      | Selected { compiled; _ } -> Loaded.Build compiled.loaded
-    ;;
-  end
-
   let load_file_selector =
     let memo =
       Memo.create_with_replay
         "load-file-selector-rules"
         ~input:(module File_selector)
         ~cutoff:(fun _ _ -> false)
-        ~replay:Compiled_file_selector.replay
+        ~replay:Compiled_request.replay
         (fun selector ->
            let dir = File_selector.dir selector in
            match Memo.is_incremental (), Path.as_in_build_dir dir with
@@ -2179,10 +2155,10 @@ end = struct
              Dune_trace.emit Debug (fun () -> Dune_trace.Event.load_dir dir);
              let* prepared = Prepared_directory.prepare build_dir in
              (match prepared with
-              | Known loaded -> Memo.return (Compiled_file_selector.Loaded loaded)
+              | Known loaded -> Memo.return (Compiled_request.Loaded loaded)
               | Under_directory_target { directory_target_ancestor } ->
                 Memo.return
-                  (Compiled_file_selector.Loaded
+                  (Compiled_request.Loaded
                      (Loaded.Build_under_directory_target { directory_target_ancestor }))
               | Normal { build_dir; state = prepared; info } ->
                 let request = Files selector in
@@ -2192,13 +2168,13 @@ end = struct
                     (request_mask ~dir:build_dir.dir request)
                 in
                 let+ compiled = compile_selection build_dir info ~request selection in
-                Compiled_file_selector.Selected
-                  { prepared; compiled; cleanup_receipt = Cleanup.receipt () })
+                Compiled_request.Selected
+                  { request; prepared; compiled; cleanup_receipt = Cleanup.receipt () })
            | false, _ | true, None ->
              let+ loaded = load_request ~dir (Files selector) in
-             Compiled_file_selector.Loaded loaded)
+             Compiled_request.Loaded loaded)
     in
-    fun selector -> Memo.exec memo selector >>| Compiled_file_selector.loaded
+    fun selector -> Memo.exec memo selector >>| Compiled_request.loaded
   ;;
 
   let load_alias =
