@@ -64,6 +64,29 @@ undeclared entries, without losing the source copy that is still owned.
   $ test ! -e _build/default/stale-dir
   $ cat _build/default/input
   two
+
+Adding another source name preserves the existing copy. Re-adding a removed
+source with identical contents must recreate the copy deleted by cleanup.
+
+  $ echo new >new
+  $ with_timeout dune rpc flush-file-watcher --wait
+  $ build input new
+  Success
+  $ cat _build/default/input _build/default/new
+  two
+  new
+  $ rm input
+  $ with_timeout dune rpc flush-file-watcher --wait
+  $ build new
+  Success
+  $ test ! -e _build/default/input
+  $ echo two >input
+  $ with_timeout dune rpc flush-file-watcher --wait
+  $ build input new
+  Success
+  $ cat _build/default/input _build/default/new
+  two
+  new
   $ stop_dune_quiet
 
   $ echo recreated >_build/default/stale
