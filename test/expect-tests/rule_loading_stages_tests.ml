@@ -8089,6 +8089,194 @@ let same_rule_loading_views ~dirs ~paths (a : Rules.loaded) (b : Rules.loaded) =
        = Rules.Pending.intersects_directory b.pending path)
 ;;
 
+let%expect_test "many routed families preserve shared-directory and sibling views" =
+  List.iter [ false; true ] ~f:(fun producer ->
+    List.iter [ false; true ] ~f:(fun shared ->
+      let label =
+        (if producer then "producer" else "direct")
+        ^ "/"
+        ^ if shared then "shared" else "split"
+      in
+      let root = path ("default/many-route-families/" ^ label) in
+      let family_count = 20 in
+      let family_dirs =
+        Array.init family_count ~f:(fun family ->
+          if shared then root else Path.Build.relative root (Int.to_string family))
+      in
+      let output family index suffix =
+        Path.Build.relative
+          family_dirs.(family)
+          (sprintf "family-%d-rule-%d%s" family index suffix)
+      in
+      let atomic =
+        Array.init family_count ~f:(fun family ->
+          Array.init 16 ~f:(fun index ->
+            file_rule [ output family index ".cmo"; output family index ".cmi" ]))
+      in
+      let body rules =
+        if producer
+        then
+          run
+            (Rules.collect_unit (fun () ->
+               Memo.List.iter rules ~f:(fun rule ->
+                 Rules.narrow (Target_mask.of_targets rule.Rule.targets) (fun () ->
+                   Rules.Produce.rule rule))))
+        else Rules.of_rules rules
+      in
+      let bodies = Array.map atomic ~f:(fun rules -> body (Array.to_list rules)) in
+      let first_body = Memo.Var.create ~name:"many-route-family-body" bodies.(0) in
+      let runs = Array.make family_count 0 in
+      let tree =
+        run
+          (Rules.collect_unit (fun () ->
+             Memo.List.iter (List.init family_count ~f:Fun.id) ~f:(fun family ->
+               let mask =
+                 if shared
+                 then
+                   Target_mask.files_matching
+                     ~dir:root
+                     (Predicate_lang.Glob.of_string (sprintf "family-%d-*" family))
+                 else Target_mask.subtree family_dirs.(family)
+               in
+               Rules.narrow mask (fun () ->
+                 runs.(family) <- runs.(family) + 1;
+                 let open Memo.O in
+                 let* body =
+                   if family = 0
+                   then Memo.Var.read first_body
+                   else Memo.return bodies.(family)
+                 in
+                 Rules.produce body))))
+      in
+      let dirs =
+        List.sort_uniq (root :: Array.to_list family_dirs) ~compare:Path.Build.compare
+      in
+      let paths =
+        List.concat_map (List.init family_count ~f:Fun.id) ~f:(fun family ->
+          [ output family 0 ".cmo"
+          ; output family 0 ".cmi"
+          ; output family 15 ".cmo"
+          ; output family 15 ".missing"
+          ])
+      in
+      let same = same_rule_loading_views ~dirs ~paths in
+      let load tree target =
+        run_rule_loading_mode
+          ~incremental:false
+          (Rules.load_path_with_pending tree target)
+      in
+      let check tree target =
+        same (load tree target) (run (load_generic_rule_path tree target))
+      in
+      let track_mutable_family () =
+        (* Batch mode does not record dependencies. Track the mutable input in
+           watch mode without populating the batch route cache. *)
+        ignore
+          (run_rule_loading_mode
+             ~incremental:true
+             (Rules.load_path_with_pending tree (output 0 0 ".cmo"))
+           : Rules.loaded)
+      in
+      track_mutable_family ();
+      let cold =
+        List.init family_count ~f:(fun family ->
+          family, load tree (output family 0 ".cmo"))
+      in
+      printfn
+        "%s: cold first wave matches generic selection: %b"
+        label
+        (List.for_all cold ~f:(fun (family, loaded) ->
+           same loaded (run (load_generic_rule_path tree (output family 0 ".cmo"))))
+         && Array.for_all runs ~f:(Int.equal 1));
+      printfn
+        "%s: round-robin hits and misses preserve full views: %b"
+        label
+        (List.for_all [ ".cmo"; ".cmi"; ".missing" ] ~f:(fun suffix ->
+           List.for_all (List.init family_count ~f:Fun.id) ~f:(fun family ->
+             check tree (output (family_count - family - 1) 15 suffix))));
+      let sibling = output 0 0 ".cmi" in
+      let competitor = file_rule [ sibling ] in
+      let other_targets =
+        List.init 16 ~f:(fun index -> Path.Build.relative root (sprintf "other-%d" index))
+      in
+      let other_body =
+        body (competitor :: List.map other_targets ~f:(fun p -> file_rule [ p ]))
+      in
+      let competing =
+        run
+          (Rules.collect_unit (fun () ->
+             let mask =
+               Target_mask.union
+                 (Target_mask.files [ sibling ])
+                 (Target_mask.files_matching
+                    ~dir:root
+                    (Predicate_lang.Glob.of_string "other-*"))
+             in
+             Rules.narrow mask (fun () -> Rules.produce other_body)))
+        |> Rules.union tree
+      in
+      ignore (load competing (output 1 0 ".cmo") : Rules.loaded);
+      ignore (load competing (List.hd other_targets) : Rules.loaded);
+      let conflict = load competing (output 0 0 ".cmo") in
+      printfn
+        "%s: indexed families retain cross-family sibling collisions: %b"
+        label
+        (List.length (rules_in ~dir:family_dirs.(0) conflict.selected) = 2
+         && same conflict (run (load_generic_rule_path competing (output 0 0 ".cmo")))
+         && check competing sibling);
+      let reset first =
+        Memo.reset
+          (Memo.Invalidation.combine
+             (Memo.Var.set first_body first)
+             (Memo.Invalidation.invalidate_caches ~reason:Test));
+        track_mutable_family ()
+      in
+      reset (body (competitor :: Array.to_list atomic.(0)));
+      ignore (load tree (output 1 0 ".cmo") : Rules.loaded);
+      ignore (load tree (output 2 0 ".cmo") : Rules.loaded);
+      let duplicate = load tree (output 0 0 ".cmo") in
+      printfn
+        "%s: a new epoch retains within-family sibling collisions: %b"
+        label
+        (List.length (rules_in ~dir:family_dirs.(0) duplicate.selected) = 2
+         && same duplicate (run (load_generic_rule_path tree (output 0 0 ".cmo")))
+         && check tree sibling);
+      let replacement = file_rule [ output 0 0 ".cmo"; sibling ] in
+      reset (body (replacement :: List.init 15 ~f:(fun index -> atomic.(0).(index + 1))));
+      let recovered = load tree sibling in
+      printfn
+        "%s: epoch replacement cannot return an old cached selection: %b"
+        label
+        (List.equal
+           ( == )
+           (rules_in ~dir:family_dirs.(0) recovered.selected)
+           [ replacement ]
+         && same recovered (run (load_generic_rule_path tree sibling)))));
+  [%expect
+    {|
+    direct/split: cold first wave matches generic selection: true
+    direct/split: round-robin hits and misses preserve full views: true
+    direct/split: indexed families retain cross-family sibling collisions: true
+    direct/split: a new epoch retains within-family sibling collisions: true
+    direct/split: epoch replacement cannot return an old cached selection: true
+    direct/shared: cold first wave matches generic selection: true
+    direct/shared: round-robin hits and misses preserve full views: true
+    direct/shared: indexed families retain cross-family sibling collisions: true
+    direct/shared: a new epoch retains within-family sibling collisions: true
+    direct/shared: epoch replacement cannot return an old cached selection: true
+    producer/split: cold first wave matches generic selection: true
+    producer/split: round-robin hits and misses preserve full views: true
+    producer/split: indexed families retain cross-family sibling collisions: true
+    producer/split: a new epoch retains within-family sibling collisions: true
+    producer/split: epoch replacement cannot return an old cached selection: true
+    producer/shared: cold first wave matches generic selection: true
+    producer/shared: round-robin hits and misses preserve full views: true
+    producer/shared: indexed families retain cross-family sibling collisions: true
+    producer/shared: a new epoch retains within-family sibling collisions: true
+    producer/shared: epoch replacement cannot return an old cached selection: true
+    |}]
+;;
+
 let%expect_test "large routed families preserve concurrent point provenance" =
   let dir = path "default/routed-family-first-wave" in
   let file = Path.Build.relative dir in
@@ -8921,6 +9109,24 @@ let%expect_test "relative file targets preserve validation and enumeration" =
        List.for_all cases ~f:(fun (b, legacy_b) ->
          same (Targets.combine a b, Targets.combine legacy_a legacy_b))));
   let invalid, _ = make ~dir [] in
+  printfn
+    "empty compact targets have no targets: %b"
+    (match Targets.validate invalid with
+     | No_targets -> true
+     | _ -> false);
+  let child, _ = make ~dir:(Path.Build.relative dir "child") [ "a" ] in
+  printfn
+    "combining different roots reports inconsistent parents: %b"
+    (match Targets.validate (Targets.combine relative child) with
+     | Inconsistent_parent_dir -> true
+     | _ -> false);
+  let directory, _ = generic ~files:[] ~dirs:[ "a" ] in
+  printfn
+    "file/directory collision identifies the shared path: %b"
+    (match Targets.validate (Targets.combine relative directory) with
+     | File_and_directory_target_with_the_same_name target ->
+       Path.Build.equal target (Path.Build.relative dir "a")
+     | _ -> false);
   expect_code_error "empty rules remain invalid" (fun () ->
     ignore (rule invalid : Rule.t));
   [%expect
@@ -8929,6 +9135,9 @@ let%expect_test "relative file targets preserve validation and enumeration" =
     validation retains the declared filenames: true
     empty and identical combinations retain identity: true
     mixed kinds, roots and combination orders agree: true
+    empty compact targets have no targets: true
+    combining different roots reports inconsistent parents: true
+    file/directory collision identifies the shared path: true
     empty rules remain invalid: code error
     |}]
 ;;
