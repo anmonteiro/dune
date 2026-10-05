@@ -337,6 +337,7 @@ module Cache_validity = struct
   let rec check = function
     | [] -> true
     | Node (since, Dep_node.T node) :: rest ->
+      Counter.incr Metrics.Cache_validity.nodes;
       (match node.state, node.value with
        | Cached, Ok _ ->
          if Run.compare (Dep_node.last_changed_at node) since = Gt
@@ -347,7 +348,9 @@ module Cache_validity = struct
          then reject rest
          else (
            match Id.Table.find cache node.id with
-           | Some Proven -> check rest
+           | Some Proven ->
+             Counter.incr Metrics.Cache_validity.cache_hits;
+             check rest
            | Some Checking -> reject rest
            | None ->
              Id.Table.set cache node.id Checking;
@@ -360,7 +363,9 @@ module Cache_validity = struct
     | Dependencies (since, deps) :: rest ->
       (match deps with
        | Empty -> check rest
-       | Singleton node -> check (Node (since, node) :: rest)
+       | Singleton node ->
+         Counter.incr Metrics.Cache_validity.edges;
+         check (Node (since, node) :: rest)
        | Seq sections | Par sections -> check (Sections (since, sections, 0) :: rest))
     | Sections (since, sections, index) :: rest ->
       if index = Array.Immutable.length sections
@@ -376,6 +381,7 @@ module Cache_validity = struct
   ;;
 
   let is_unchanged node ~since =
+    Counter.incr Metrics.Cache_validity.queries;
     if not (Run.is_current !cached_run) then clear ();
     Run.compare since (Run.current ()) <> Gt && check [ Node (since, Dep_node.T node) ]
   ;;

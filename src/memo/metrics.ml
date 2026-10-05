@@ -14,6 +14,14 @@ module Compute = struct
   let reset () = List.iter [ nodes; edges; blocked ] ~f:Counter.reset
 end
 
+module Cache_validity = struct
+  let queries = Counter.create ()
+  let nodes = Counter.create ()
+  let edges = Counter.create ()
+  let cache_hits = Counter.create ()
+  let reset () = List.iter [ queries; nodes; edges; cache_hits ] ~f:Counter.reset
+end
+
 module Cycle_detection = struct
   let nodes = Counter.create ()
   let edges = Counter.create ()
@@ -23,6 +31,7 @@ end
 let reset () =
   Restore.reset ();
   Compute.reset ();
+  Cache_validity.reset ();
   Cycle_detection.reset ()
 ;;
 
@@ -45,8 +54,20 @@ let report ~reset_after_reporting =
       (Counter.read Cycle_detection.edges)
       (Counter.read Restore.blocked + Counter.read Compute.blocked)
   in
+  let cache_validity =
+    match Counter.read Cache_validity.queries with
+    | 0 -> []
+    | queries ->
+      [ sprintf
+          "Memo cache validity: %d/%d/%d/%d queries/nodes/edges/cache-hits"
+          queries
+          (Counter.read Cache_validity.nodes)
+          (Counter.read Cache_validity.edges)
+          (Counter.read Cache_validity.cache_hits)
+      ]
+  in
   if reset_after_reporting then reset ();
-  String.concat ~sep:"\n" [ memo; cycle_detection ]
+  String.concat ~sep:"\n" (memo :: cycle_detection :: cache_validity)
 ;;
 
 let assert_invariants () =

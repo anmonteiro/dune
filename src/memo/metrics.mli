@@ -27,6 +27,23 @@ module Compute : sig
   val blocked : Counter.t
 end
 
+(** Read-only proofs that cached nodes are unchanged. These counters are separate
+    from [Restore] and [Compute]: a proof neither validates nor evaluates nodes. *)
+module Cache_validity : sig
+  (** Number of [Node.is_unchanged] queries, including rejected queries. *)
+  val queries : Counter.t
+
+  (** Number of node visits, including repeated visits and rejected nodes. *)
+  val nodes : Counter.t
+
+  (** Number of dependency edges examined before a proof succeeds or is rejected. *)
+  val edges : Counter.t
+
+  (** Number of completed per-run proofs reused without traversing dependencies.
+      Current-run timestamp checks are not proof-cache hits. *)
+  val cache_hits : Counter.t
+end
+
 (** Counters related to Memo checking for dependency cycles between nodes. *)
 module Cycle_detection : sig
   (** Number of nodes added to the cycle detection DAG.

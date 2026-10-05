@@ -93,6 +93,7 @@ let%expect_test "unchanged probes do not evaluate or validate old dependencies" 
     validated: false; computations: 1
     Memo graph: 0/0/0 nodes/edges/blocked (restore), 0/0/0 nodes/edges/blocked (compute)
     Memo cycle detection graph: 0/0/0 nodes/edges/paths
+    Memo cache validity: 2/5/3/3 queries/nodes/edges/cache-hits
     probe dependencies: empty
     future: false
     |}]
@@ -319,5 +320,72 @@ let%expect_test "deep shared graphs have bounded traversal stack and work" =
     deep graph: true, repeated: true
     Memo graph: 0/0/0 nodes/edges/blocked (restore), 0/0/0 nodes/edges/blocked (compute)
     Memo cycle detection graph: 0/0/0 nodes/edges/paths
+    Memo cache validity: 2/20002/20000/10001 queries/nodes/edges/cache-hits
+    |}]
+;;
+
+let%expect_test "cache validity metrics are separate from restoration" =
+  let leaf = Memo.lazy_node ~name:"proof metrics leaf" Memo.return in
+  let parent =
+    Memo.lazy_node ~name:"proof metrics parent" (fun () -> Memo.Node.read leaf)
+  in
+  run (Memo.Node.read parent);
+  let since = current () in
+  Memo.Metrics.reset ();
+  print_metrics ();
+  let probe label since =
+    printfn "%s: %b" label (unchanged parent since);
+    print_metrics ()
+  in
+  probe "current" since;
+  let future = Memo.Run.For_tests.of_int (Memo.Run.For_tests.to_int since + 1) in
+  probe "future" future;
+  Memo.reset Memo.Invalidation.empty;
+  probe "old" since;
+  probe "cached proof" since;
+  (* A successful proof did not restore these nodes. Reading them still does. *)
+  run (Memo.Node.read parent);
+  print_metrics ();
+  Memo.reset (Memo.Node.invalidate leaf ~reason:Test);
+  probe "invalid dependency" since;
+  probe "repeated failure" since;
+  let open Memo.Metrics.Cache_validity in
+  printfn
+    "reset counters: %d/%d/%d/%d"
+    (Counter.read queries)
+    (Counter.read nodes)
+    (Counter.read edges)
+    (Counter.read cache_hits);
+  [%expect
+    {|
+    Memo graph: 0/0/0 nodes/edges/blocked (restore), 0/0/0 nodes/edges/blocked (compute)
+    Memo cycle detection graph: 0/0/0 nodes/edges/paths
+    current: true
+    Memo graph: 0/0/0 nodes/edges/blocked (restore), 0/0/0 nodes/edges/blocked (compute)
+    Memo cycle detection graph: 0/0/0 nodes/edges/paths
+    Memo cache validity: 1/1/0/0 queries/nodes/edges/cache-hits
+    future: false
+    Memo graph: 0/0/0 nodes/edges/blocked (restore), 0/0/0 nodes/edges/blocked (compute)
+    Memo cycle detection graph: 0/0/0 nodes/edges/paths
+    Memo cache validity: 1/0/0/0 queries/nodes/edges/cache-hits
+    old: true
+    Memo graph: 0/0/0 nodes/edges/blocked (restore), 0/0/0 nodes/edges/blocked (compute)
+    Memo cycle detection graph: 0/0/0 nodes/edges/paths
+    Memo cache validity: 1/2/1/0 queries/nodes/edges/cache-hits
+    cached proof: true
+    Memo graph: 0/0/0 nodes/edges/blocked (restore), 0/0/0 nodes/edges/blocked (compute)
+    Memo cycle detection graph: 0/0/0 nodes/edges/paths
+    Memo cache validity: 1/1/0/1 queries/nodes/edges/cache-hits
+    Memo graph: 2/1/0 nodes/edges/blocked (restore), 0/0/0 nodes/edges/blocked (compute)
+    Memo cycle detection graph: 0/0/0 nodes/edges/paths
+    invalid dependency: false
+    Memo graph: 0/0/0 nodes/edges/blocked (restore), 0/0/0 nodes/edges/blocked (compute)
+    Memo cycle detection graph: 0/0/0 nodes/edges/paths
+    Memo cache validity: 1/2/1/0 queries/nodes/edges/cache-hits
+    repeated failure: false
+    Memo graph: 0/0/0 nodes/edges/blocked (restore), 0/0/0 nodes/edges/blocked (compute)
+    Memo cycle detection graph: 0/0/0 nodes/edges/paths
+    Memo cache validity: 1/2/1/0 queries/nodes/edges/cache-hits
+    reset counters: 0/0/0/0
     |}]
 ;;

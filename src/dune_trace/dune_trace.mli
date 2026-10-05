@@ -155,6 +155,10 @@ module Event : sig
     ; compute_blocked : int
     ; cycle_detection_nodes : int
     ; cycle_detection_edges : int
+    ; cache_validity_queries : int
+    ; cache_validity_nodes : int
+    ; cache_validity_edges : int
+    ; cache_validity_cache_hits : int
     }
 
   val watch_build_finish

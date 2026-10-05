@@ -1304,6 +1304,11 @@ let run_with_error_collection ?restart_started_at ~build_started_at ~build colle
              ; compute_blocked = Counter.read Memo.Metrics.Compute.blocked
              ; cycle_detection_nodes = Counter.read Memo.Metrics.Cycle_detection.nodes
              ; cycle_detection_edges = Counter.read Memo.Metrics.Cycle_detection.edges
+             ; cache_validity_queries = Counter.read Memo.Metrics.Cache_validity.queries
+             ; cache_validity_nodes = Counter.read Memo.Metrics.Cache_validity.nodes
+             ; cache_validity_edges = Counter.read Memo.Metrics.Cache_validity.edges
+             ; cache_validity_cache_hits =
+                 Counter.read Memo.Metrics.Cache_validity.cache_hits
              }
            in
            Dune_trace.Event.watch_build_finish
