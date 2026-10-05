@@ -353,9 +353,15 @@ and exec_fiber : type a. context -> a t -> a continuation -> Jobs.t -> step' =
     exec_fiber_thunk ctx body (Unwind_to k) jobs
   | Get_apply_t (key, f, x) -> exec ctx (Apply (f, x, k)) (Var_map.get ctx.vars key) jobs
   | Get_apply_map_t (key, f, x) ->
-    exec ctx (Apply_map (f, x, k)) (Var_map.get ctx.vars key) jobs
+    let value = Var_map.get ctx.vars key in
+    (match f value x with
+     | exception exn -> handle_exception ctx exn jobs
+     | result -> exec ctx k result jobs)
   | Get_apply_map2_t (key, f, x, y) ->
-    exec ctx (Apply_map2 (f, x, y, k)) (Var_map.get ctx.vars key) jobs
+    let value = Var_map.get ctx.vars key in
+    (match f value x y with
+     | exception exn -> handle_exception ctx exn jobs
+     | result -> exec ctx k result jobs)
   | Set_apply_t (key, value, f, x) ->
     let ctx = { ctx with parent = ctx; vars = Var_map.set ctx.vars key value } in
     exec_fiber_apply ctx f x (Unwind_to k) jobs
