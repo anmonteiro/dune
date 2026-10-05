@@ -701,9 +701,11 @@ Exact conditional sources only return the mode in which they apply.
 
 When an exact source does not match, lookup by filename without extension can
 return multiple modes while preserving the source kind selected by the query's
-final extension.
+final extension. An untracked synthetic filename containing `.melange` does not
+by itself select the Melange mode.
 
-  $ for file in platform.pp.ml iface.pp.mli; do
+  $ for file in platform.pp.ml iface.pp.mli \
+  >   platform.melange.pp.ml iface.melange.pp.mli; do
   >   printf '%s:\n' "$file"
   >   query_ocaml_merlin_configurations_pp "$PWD/mixed/$file" --root mixed \
   >     | grep -E 'MODE|KIND'
@@ -714,6 +716,16 @@ final extension.
      (MODE melange)
      (KIND implementation)
   iface.pp.mli:
+     (MODE ocaml)
+     (KIND interface)
+     (MODE melange)
+     (KIND interface)
+  platform.melange.pp.ml:
+     (MODE ocaml)
+     (KIND implementation)
+     (MODE melange)
+     (KIND implementation)
+  iface.melange.pp.mli:
      (MODE ocaml)
      (KIND interface)
      (MODE melange)
@@ -811,11 +823,19 @@ fallback lookup by filename without extension.
   melange_only.ml: pp_melange
 
 The lookup by filename without extension remains a last-resort fallback for
-preprocessed filenames.
+preprocessed filenames. The legacy request selects the default OCaml mode even
+when an untracked synthetic filename contains `.melange`.
 
-  $ query_ocaml_merlin_pp "$PWD/mixed/platform.pp.ml" --root mixed \
-  >   | grep -Eo 'pp_(ocaml|melange)' | sort -u
-  pp_ocaml
+  $ for file in platform.pp.ml iface.pp.mli \
+  >   platform.melange.pp.ml iface.melange.pp.mli; do
+  >   printf '%s: ' "$file"
+  >   query_ocaml_merlin_pp "$PWD/mixed/$file" --root mixed \
+  >     | grep -Eo 'pp_(ocaml|melange)' | sort -u
+  > done
+  platform.pp.ml: pp_ocaml
+  iface.pp.mli: pp_ocaml
+  platform.melange.pp.ml: pp_ocaml
+  iface.melange.pp.mli: pp_ocaml
 
 Dump-dot-merlin continues to use only the default OCaml configuration.
 
@@ -858,3 +878,67 @@ The mixed library should also expose its Melange configuration.
   $ dune ocaml merlin dump-config --root mixed --format=json "$PWD/mixed" | jq_dune -e '
   > [merlinEntry("Foo") | .config[] | select(.[0] == "B") | .[1]]
   > | any(contains(".mixed.objs/melange"))' >/dev/null
+
+Copy-line mappings also select only the owning mode of a conditional source,
+even through multiple copies and with preprocessing enabled.
+
+Run the `copy_files#` actions without sandboxing so the copy-line database
+records workspace paths.
+
+  $ mkdir mixed/original mixed/intermediate
+  $ mv mixed/platform.melange.ml mixed/iface.melange.mli mixed/original/
+  $ cat > mixed/intermediate/dune <<'EOF'
+  > (copy_files# ../original/*.melange.*)
+  > EOF
+  $ cat >> mixed/dune <<'EOF'
+  > (copy_files# intermediate/*.melange.*)
+  > EOF
+  $ DUNE_SANDBOX=none dune build --root mixed @check \
+  >   platform.melange.ml iface.melange.mli
+
+The plural response preserves the source kind, counterpart and preprocessing
+directives of the mapped source.
+
+  $ for file in original/platform.melange.ml intermediate/platform.melange.ml \
+  >   original/iface.melange.mli intermediate/iface.melange.mli; do
+  >   printf '%s:\n' "$file"
+  >   query_ocaml_merlin_configurations_pp "$PWD/mixed/$file" --root mixed \
+  >     | grep -E 'MODE|DEFAULT|KIND|COUNTERPART|pp_(ocaml|melange)' \
+  >     | sed -E 's#-pp "[^"]*/sh #-pp "$SHELL #'
+  > done
+  original/platform.melange.ml:
+     (MODE melange)
+     (DEFAULT false)
+     (KIND implementation)
+        (-pp "$SHELL ./pp_melange.sh"))
+  intermediate/platform.melange.ml:
+     (MODE melange)
+     (DEFAULT false)
+     (KIND implementation)
+        (-pp "$SHELL ./pp_melange.sh"))
+  original/iface.melange.mli:
+     (MODE melange)
+     (DEFAULT false)
+     (KIND interface)
+     (COUNTERPART $TESTCASE_ROOT/mixed/iface.ml)
+        (-pp "$SHELL ./pp_melange.sh"))
+  intermediate/iface.melange.mli:
+     (MODE melange)
+     (DEFAULT false)
+     (KIND interface)
+     (COUNTERPART $TESTCASE_ROOT/mixed/iface.ml)
+        (-pp "$SHELL ./pp_melange.sh"))
+
+The legacy request also follows these mappings instead of returning the default
+OCaml configuration.
+
+  $ for file in original/platform.melange.ml intermediate/platform.melange.ml \
+  >   original/iface.melange.mli intermediate/iface.melange.mli; do
+  >   printf '%s: ' "$file"
+  >   query_ocaml_merlin_pp "$PWD/mixed/$file" --root mixed \
+  >     | grep -Eo 'pp_(ocaml|melange)' | sort -u
+  > done
+  original/platform.melange.ml: pp_melange
+  intermediate/platform.melange.ml: pp_melange
+  original/iface.melange.mli: pp_melange
+  intermediate/iface.melange.mli: pp_melange
