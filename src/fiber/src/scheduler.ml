@@ -231,14 +231,22 @@ and exec_effect ctx eff jobs =
     exec ctx k () (Jobs.concat jobs (Job (suspended.ctx, suspended.run, x, Empty)))
   | Get_var (key, k) -> exec ctx k (Var_map.get ctx.vars key) jobs
   | Set_var (key, x, f, k) ->
-    let ctx = { ctx with parent = ctx; vars = Var_map.set ctx.vars key x } in
-    exec_fiber_thunk ctx f (Unwind_to k) jobs
+    let vars = Var_map.set ctx.vars key x in
+    if vars == ctx.vars
+    then exec_fiber_thunk ctx f k jobs
+    else (
+      let ctx = { ctx with parent = ctx; vars } in
+      exec_fiber_thunk ctx f (Unwind_to k) jobs)
   | Update_var (key, f, body, k) ->
     let ctx = update_var ctx key f in
     exec_fiber_thunk ctx body (Unwind_to k) jobs
   | Set_var_apply (key, x, f, y, k) ->
-    let ctx = { ctx with parent = ctx; vars = Var_map.set ctx.vars key x } in
-    exec_fiber_apply ctx f y (Unwind_to k) jobs
+    let vars = Var_map.set ctx.vars key x in
+    if vars == ctx.vars
+    then exec_fiber_apply ctx f y k jobs
+    else (
+      let ctx = { ctx with parent = ctx; vars } in
+      exec_fiber_apply ctx f y (Unwind_to k) jobs)
   | Update_var_apply (key, f, body, x, k) ->
     let ctx = update_var ctx key f in
     exec_fiber_apply ctx body x (Unwind_to k) jobs
@@ -346,8 +354,12 @@ and exec_fiber : type a. context -> a t -> a continuation -> Jobs.t -> step' =
   | Ivar_fill_t (ivar, x) -> fill_ivar ctx ivar x k jobs
   | Get_var_t key -> exec ctx k (Var_map.get ctx.vars key) jobs
   | Set_var_t (key, x, f) ->
-    let ctx = { ctx with parent = ctx; vars = Var_map.set ctx.vars key x } in
-    exec_fiber_thunk ctx f (Unwind_to k) jobs
+    let vars = Var_map.set ctx.vars key x in
+    if vars == ctx.vars
+    then exec_fiber_thunk ctx f k jobs
+    else (
+      let ctx = { ctx with parent = ctx; vars } in
+      exec_fiber_thunk ctx f (Unwind_to k) jobs)
   | Update_var_t (key, f, body) ->
     let ctx = update_var ctx key f in
     exec_fiber_thunk ctx body (Unwind_to k) jobs
@@ -357,8 +369,12 @@ and exec_fiber : type a. context -> a t -> a continuation -> Jobs.t -> step' =
   | Get_apply_map2_t (key, f, x, y) ->
     exec ctx (Apply_map2 (f, x, y, k)) (Var_map.get ctx.vars key) jobs
   | Set_apply_t (key, value, f, x) ->
-    let ctx = { ctx with parent = ctx; vars = Var_map.set ctx.vars key value } in
-    exec_fiber_apply ctx f x (Unwind_to k) jobs
+    let vars = Var_map.set ctx.vars key value in
+    if vars == ctx.vars
+    then exec_fiber_apply ctx f x k jobs
+    else (
+      let ctx = { ctx with parent = ctx; vars } in
+      exec_fiber_apply ctx f x (Unwind_to k) jobs)
   | Update_apply_t (key, f, body, x) ->
     let ctx = update_var ctx key f in
     exec_fiber_apply ctx body x (Unwind_to k) jobs
