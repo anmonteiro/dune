@@ -283,3 +283,106 @@ let%expect_test "nested par-seq-par: eagerness re-enables under a Par" =
     Memo cycle detection graph: 3/2/1 nodes/edges/paths
     |}]
 ;;
+
+let%expect_test "concurrent readers share successful restoration results" =
+  Memo.reset Memo.Invalidation.empty;
+  let input = Memo.Var.create ~name:"input" 0 in
+  let prefix = Memo.lazy_node ~name:"ready prefix" (fun () -> Memo.return ()) in
+  let suffix = Memo.lazy_node ~name:"ready suffix" (fun () -> Memo.return ()) in
+  let leaf =
+    Memo.lazy_node ~name:"leaf" ~cutoff:Int.equal (fun () ->
+      let* value = Memo.Var.read input in
+      let+ () = Memo.of_reproducible_fiber (Scheduler.yield ()) in
+      value / 2)
+  in
+  let computes = ref 0 in
+  let shared =
+    Memo.lazy_node ~name:"shared" (fun () ->
+      incr computes;
+      let* () = Memo.Node.read prefix in
+      let* () = Memo.Node.read prefix in
+      let* value = Memo.Node.read leaf in
+      let* () = Memo.Node.read suffix in
+      let* () = Memo.Node.read suffix in
+      let+ () = Memo.of_reproducible_fiber (Scheduler.yield ()) in
+      ref value)
+  in
+  let read = Memo.Node.read shared in
+  let original = run read in
+  List.iter
+    [ "equal", 1; "changed", 2 ]
+    ~f:(fun (label, value) ->
+      Memo.reset (Memo.Var.set input value);
+      run (Memo.Node.read prefix);
+      run (Memo.Node.read suffix);
+      Memo.Metrics.reset ();
+      let a, (b, c) =
+        run
+          (Memo.fork_and_join
+             (fun () -> read)
+             (fun () -> Memo.fork_and_join (fun () -> read) (fun () -> read)))
+      in
+      assert (a == c);
+      assert (Counter.read Memo.Metrics.Restore.blocked >= 2);
+      assert (Counter.read Memo.Metrics.Restore.edges = if value = 1 then 6 else 4);
+      (* A changed leaf blocks readers during both restoration and computation.
+         The two phases must use independent cycle-detection frames. *)
+      if value = 2 then assert (Counter.read Memo.Metrics.Compute.blocked >= 2);
+      printf
+        "%s: value=%d shared=%b original=%b computes=%d blocked=%b\n"
+        label
+        !a
+        (a == b)
+        (a == original)
+        !computes
+        (Counter.read Memo.Metrics.Restore.blocked > 0));
+  Memo.reset Memo.Invalidation.empty;
+  [%expect
+    {|
+    equal: value=0 shared=true original=true computes=1 blocked=true
+    changed: value=1 shared=true original=false computes=2 blocked=true
+    |}]
+;;
+
+let%expect_test "concurrent readers share a failed computation and recover" =
+  Memo.reset Memo.Invalidation.empty;
+  let failing = Memo.Var.create ~name:"shared computation fails" true in
+  let computes = ref 0 in
+  let shared =
+    Memo.lazy_node ~name:"shared failure" (fun () ->
+      incr computes;
+      let* failing = Memo.Var.read failing in
+      let+ () = Memo.of_reproducible_fiber (Scheduler.yield ()) in
+      if failing then failwith "shared failure" else 7)
+  in
+  let check () =
+    Memo.Metrics.reset ();
+    let results =
+      run
+        (Memo.parallel_map [ (); (); () ] ~f:(fun () ->
+           run_collect_errors (fun () -> Memo.Node.read shared)
+           |> Memo.of_reproducible_fiber))
+    in
+    let outcomes =
+      List.map results ~f:(function
+        | Ok value -> Int.to_string value
+        | Error [ { Exn_with_backtrace.exn = Failure message; _ } ]
+          when String.equal message "shared failure" -> "error"
+        | Error _ -> Code_error.raise "Expected the shared computation's error" [])
+    in
+    printfn
+      "results=%s computes=%d waiting=%b"
+      (String.concat ~sep:"," outcomes)
+      !computes
+      (Counter.read Memo.Metrics.Compute.blocked >= 2)
+  in
+  check ();
+  Memo.reset (Memo.Var.set failing false);
+  check ();
+  Memo.reset Memo.Invalidation.empty;
+  [%expect
+    {|
+    results=error,error,error computes=1 waiting=true
+    results=7,7,7 computes=2 waiting=true
+    |}]
+;;

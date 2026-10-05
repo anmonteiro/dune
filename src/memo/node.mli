@@ -76,14 +76,17 @@ module M : sig
 
   and Dag : (Import.Dag.S with type value := Dep_node.packed)
 
-  and Lazy_dag_node : sig
-    type t = Dag.node Option.Unboxed.t ref
-  end
-
   and Computation0 : sig
+    type 'a state =
+      | Uncontended
+      | Waiting of ('a, Cycle_error.t) result Fiber.Ivar.t
+      | Finished of 'a
+
     type 'a t =
-      { ivar : 'a Fiber.Ivar.t
-      ; dag_node : Lazy_dag_node.t
+      { mutable state : 'a state
+      ; dep_node : Dep_node.packed
+      ; mutable dag_node : Dag.node Option.Unboxed.t
+      ; mutable children_added_to_dag : Dag.Id.Set.t
       }
   end
 end
@@ -164,25 +167,16 @@ module Exn_set = Value.Exn_set
 module Collect_errors_monoid = Value.Collect_errors_monoid
 module Dag = M.Dag
 
-(** This is similar to [type t = Dag.node Lazy.t] but avoids creating a closure with a
-    [dep_node]; the latter is available when we need to [force] a [t]. *)
-module Lazy_dag_node : sig
-  type t = Dag.node Option.Unboxed.t ref
-
-  val create : unit -> 'a Option.Unboxed.t ref
-  val force : Dag.node Option.Unboxed.t ref -> dep_node:Dep_node.packed -> Dag.node
-end
-
-(** A "computation" is represented by an [ivar], filled when the computation is finished,
-    and a [dag_node], used for cycle detection before getting blocked on reading the
-    [ivar]. *)
+(** A computation and its stack frame share one record. *)
 module Computation0 : sig
   type 'a t = 'a M.Computation0.t =
-    { ivar : 'a Fiber.Ivar.t
-    ; dag_node : M.Lazy_dag_node.t
+    { mutable state : 'a M.Computation0.state
+    ; dep_node : M.Dep_node.packed
+    ; mutable dag_node : M.Dag.node Option.Unboxed.t
+    ; mutable children_added_to_dag : M.Dag.Id.Set.t
     }
 
-  val create : unit -> 'a t
+  val create : dep_node:('i, 'o) Dep_node.t -> 'a t
 end
 
 val _print_dep_node : ?prefix:string -> ('a, 'b) Dep_node.t -> unit
@@ -233,10 +227,6 @@ module Stack_frame_with_state : sig
   type t
 
   val to_dyn : t -> Dyn.t
-
-  (** Create a new stack frame related to restoring or computing a [dep_node]. *)
-  val create : dag_node:Lazy_dag_node.t -> dep_node:('a, 'b) Dep_node.t -> t
-
   val dep_node : t -> Dep_node.packed
   val dag_node : t -> Dag.node
   val children_added_to_dag : t -> Dag.Id.Set.t
@@ -260,26 +250,23 @@ end
 
 module Computation : sig
   type 'a t = 'a Computation0.t =
-    { ivar : 'a Fiber.Ivar.t
-    ; dag_node : M.Lazy_dag_node.t
+    { mutable state : 'a M.Computation0.state
+    ; dep_node : M.Dep_node.packed
+    ; mutable dag_node : M.Dag.node Option.Unboxed.t
+    ; mutable children_added_to_dag : M.Dag.Id.Set.t
     }
 
-  val create : unit -> 'a t
+  (** Create a fresh computation and stack frame for [dep_node]. *)
+  val create : dep_node:('i, 'o) Dep_node.t -> 'a t
 
-  (** Force the computation exactly once, running [fiber] with a fresh stack frame for
-      [dep_node]. Forcing it twice raises (the [ivar] is already filled); not forcing it
-      leads to a deadlock. *)
-  val force
-    :  'a t
-    -> dep_node:('b, 'c) Dep_node.t
-    -> (Stack_frame_with_state.t -> 'a Fiber.t)
-    -> 'a Fiber.t
+  (** Run [fiber] with the computation's stack frame. This should be called
+      exactly once; readers remain blocked while the computation is unforced. *)
+  val force : 'a t -> (unit -> 'a Fiber.t) -> 'a Fiber.t
 
   (** Read the result of a running computation, first checking for a dependency cycle
       (returning [Error] with the cycle if one is found). *)
   val read_but_first_check_for_cycles
     :  'a t
     -> phase:Stack_frame_with_state.phase
-    -> dep_node:('b, 'c) Dep_node.t
     -> ('a, Cycle_error.t) result Fiber.t
 end

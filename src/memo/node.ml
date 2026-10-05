@@ -106,24 +106,29 @@ module M = struct
       end)
       ()
 
-  (* This is similar to [type t = Dag.node Lazy.t] but avoids creating a closure
-     with a [dep_node]; the latter is available when we need to [force] a [t]. *)
-  and Lazy_dag_node : sig
-    type t = Dag.node Option.Unboxed.t ref
-  end =
-    Lazy_dag_node
-
-  (* A "computation" is represented by an [ivar], filled when the computation is
-     finished, and a [dag_node], used for cycle detection before getting blocked
-     on reading the [ivar]. When a run completes, all computations are garbage
-     collected because we no longer hold any references to them. *)
+  (* A computation contains its stack-frame state. Its first unfinished reader
+     creates the shared [ivar], filled when the computation finishes.
+     Its DAG node is created on demand before blocking on a read.
+     Restoring and computing a dependency node use distinct computations,
+     which are no longer referenced after the run completes. *)
   and Computation0 : sig
+    type 'a state =
+      | Uncontended
+      | Waiting of ('a, Cycle_error.t) result Fiber.Ivar.t
+      | Finished of 'a
+
     type 'a t =
-      { ivar : 'a Fiber.Ivar.t
-      ; dag_node : Lazy_dag_node.t
+      { mutable state : 'a state
+      ; dep_node : Dep_node.packed
+      ; mutable dag_node : Dag.node Option.Unboxed.t
+      ; mutable children_added_to_dag : Dag.Id.Set.t
       }
   end =
     Computation0
+
+  module Stack_frame_with_state = struct
+    type t = T : _ Computation0.t -> t [@@unboxed]
+  end
 end
 
 module Dep_node = struct
@@ -246,31 +251,16 @@ module Exn_set = Value.Exn_set
 module Collect_errors_monoid = Value.Collect_errors_monoid
 module Dag = M.Dag
 
-(* This is similar to [type t = Dag.node Lazy.t] but avoids creating a closure
-   with a [dep_node]; the latter is available when we need to [force] a [t]. *)
-module Lazy_dag_node = struct
-  include M.Lazy_dag_node
-
-  let create () = ref Option.Unboxed.none
-
-  let force t ~(dep_node : Dep_node.Packed.t) =
-    Option.Unboxed.match_
-      !t
-      ~some:(fun (dag_node : Dag.node) -> dag_node)
-      ~none:(fun () ->
-        let (dag_node : Dag.node) =
-          Counter.incr Metrics.Cycle_detection.nodes;
-          Dag.create_node dep_node
-        in
-        t := Option.Unboxed.some dag_node;
-        dag_node)
-  ;;
-end
-
 module Computation0 = struct
   include M.Computation0
 
-  let create () = { ivar = Fiber.Ivar.create (); dag_node = Lazy_dag_node.create () }
+  let create ~dep_node =
+    { state = Uncontended
+    ; dep_node = Dep_node.T dep_node
+    ; dag_node = Option.Unboxed.none
+    ; children_added_to_dag = Dag.Id.Set.empty
+    }
+  ;;
 end
 
 (* For debugging *)
@@ -392,12 +382,9 @@ module Stack_frame_with_state : sig
     | Restore_from_cache
     | Compute
 
-  type t
+  type t = M.Stack_frame_with_state.t
 
   val to_dyn : t -> Dyn.t
-
-  (* Create a new stack frame related to restoring or computing a [dep_node]. *)
-  val create : dag_node:Lazy_dag_node.t -> dep_node:_ Dep_node.t -> t
   val dep_node : t -> Dep_node.packed
   val dag_node : t -> Dag.node
   val children_added_to_dag : t -> Dag.Id.Set.t
@@ -407,42 +394,46 @@ end = struct
     | Restore_from_cache
     | Compute
 
-  type t =
-    { dep_node : Dep_node.packed
-    ; dag_node : Lazy_dag_node.t
-    ; (* This [children_added_to_dag] table serves dual purpose:
+  include M.Stack_frame_with_state
 
-         (1) guarantee that we never add the same edge twice to the cycle
-         detection graph;
+  (* This [children_added_to_dag] table serves dual purpose:
 
-         (2) to mark the "forcing" stacks in the computation graph that were
-         already added to the cycle detection graph.
+     (1) guarantee that we never add the same edge twice to the cycle
+     detection graph;
 
-         For the purpose (2) a simple [bool] could suffice instead, but we can't
-         ensure (1) without an explicit set representation.
+     (2) to mark the "forcing" stacks in the computation graph that were
+     already added to the cycle detection graph.
 
-         Implementation note: We use [Dag.Id.Set.t] instead of [Dag.Id.Table.t]
-         for two reasons: (i) the new cycle detection algorithm reduces the size
-         of the DAG, so [children_added_to_dag] will often be empty or small,
-         and in these cases [Set] is fast enough; (ii) we don't have hash sets
-         in Stdune and using [unit] hash maps is disturbing. *)
-      mutable children_added_to_dag : Dag.Id.Set.t
-    }
+     For the purpose (2) a simple [bool] could suffice instead, but we can't
+     ensure (1) without an explicit set representation.
 
-  let to_dyn t = Dep_node.Packed.to_dyn_without_state t.dep_node
+     Implementation note: We use [Dag.Id.Set.t] instead of [Dag.Id.Table.t]
+     for two reasons: (i) the new cycle detection algorithm reduces the size
+     of the DAG, so [children_added_to_dag] will often be empty or small,
+     and in these cases [Set] is fast enough; (ii) we don't have hash sets
+     in Stdune and using [unit] hash maps is disturbing. *)
 
-  let create ~dag_node ~dep_node =
-    { dep_node = Dep_node.T dep_node; dag_node; children_added_to_dag = Dag.Id.Set.empty }
+  let to_dyn (T t) = Dep_node.Packed.to_dyn_without_state t.dep_node
+  let dep_node (T t) = t.dep_node
+
+  let dag_node (T t) =
+    let value = t.dag_node in
+    if Option.Unboxed.is_some value
+    then Option.Unboxed.value_exn value
+    else (
+      let (dag_node : Dag.node) =
+        Counter.incr Metrics.Cycle_detection.nodes;
+        Dag.create_node t.dep_node
+      in
+      t.dag_node <- Option.Unboxed.some dag_node;
+      dag_node)
   ;;
 
-  let dep_node t = t.dep_node
-  let dag_node t = Lazy_dag_node.force t.dag_node ~dep_node:t.dep_node
-
-  let record_child_added_to_dag t ~dag_node_id =
+  let record_child_added_to_dag (T t) ~dag_node_id =
     t.children_added_to_dag <- Dag.Id.Set.add t.children_added_to_dag dag_node_id
   ;;
 
-  let children_added_to_dag t = t.children_added_to_dag
+  let children_added_to_dag (T t) = t.children_added_to_dag
 end
 
 module Call_stack = struct
@@ -594,33 +585,45 @@ end
 module Computation = struct
   include Computation0
 
-  (* Each computation should be forced exactly once. Not forcing it will lead to
-     a deadlock. Forcing it twice will lead to [Fiber.Ivar.fill] raising. *)
-  let force { ivar; dag_node } ~dep_node fiber =
-    let frame = Stack_frame_with_state.create ~dag_node ~dep_node in
-    let* result =
-      (* The only reason we make the stack [frame] available to the [fiber] is
-         to let the latter get the discovered dependencies [deps_rev]. *)
-      Call_stack.push_frame frame (fun () -> fiber frame)
-    in
-    match Fiber.Ivar.peek ivar with
-    | Some _ -> Fiber.return result
-    | None ->
-      let+ () = Fiber.Ivar.fill ivar result in
-      result
+  let finish result (t : _ t) =
+    match t.state with
+    | Uncontended ->
+      t.state <- Finished result;
+      Fiber.return result
+    | Finished _ -> Fiber.return result
+    | Waiting ivar ->
+      (match Fiber.Ivar.peek ivar with
+       | Some _ -> Fiber.return result
+       | None ->
+         let+ () = Fiber.Ivar.fill ivar (Ok result) in
+         result)
   ;;
 
-  let read_but_first_check_for_cycles { ivar; dag_node } ~phase ~dep_node =
-    match Fiber.Ivar.peek ivar with
-    | Some res -> Fiber.return (Ok res)
-    | None ->
-      (match (phase : Stack_frame_with_state.phase) with
-       | Restore_from_cache -> Counter.incr Metrics.Restore.blocked
-       | Compute -> Counter.incr Metrics.Compute.blocked);
-      let dag_node = Lazy_dag_node.force dag_node ~dep_node:(Dep_node.T dep_node) in
-      Call_stack.add_path_to ~dag_node
-      >>= (function
-       | Ok () -> Fiber.Ivar.read ivar >>| Result.ok
-       | Error _ as cycle_error -> Fiber.return cycle_error)
+  (* Each computation should be forced exactly once. Readers remain blocked
+     while the computation is unforced. *)
+  let force (t : _ t) fiber =
+    let frame = M.Stack_frame_with_state.T t in
+    Fiber.bind_apply (Call_stack.push_frame frame fiber) finish t
+  ;;
+
+  let rec read_but_first_check_for_cycles (t : _ t) ~phase =
+    match t.state with
+    | Finished result -> Fiber.return (Ok result)
+    | Uncontended ->
+      t.state <- Waiting (Fiber.Ivar.create ());
+      read_but_first_check_for_cycles t ~phase
+    | Waiting ivar ->
+      (match Fiber.Ivar.peek ivar with
+       | Some res -> Fiber.return res
+       | None ->
+         (match (phase : Stack_frame_with_state.phase) with
+          | Restore_from_cache -> Counter.incr Metrics.Restore.blocked
+          | Compute -> Counter.incr Metrics.Compute.blocked);
+         let frame = M.Stack_frame_with_state.T t in
+         let dag_node = Stack_frame_with_state.dag_node frame in
+         Call_stack.add_path_to ~dag_node
+         >>= (function
+          | Ok () -> Fiber.Ivar.read ivar
+          | Error _ as cycle_error -> Fiber.return cycle_error))
   ;;
 end
