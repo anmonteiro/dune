@@ -36,6 +36,15 @@ module Readdir_result = struct
   type t =
     | End_of_directory
     | Entry of Filename.t * File_kind.Option.t
+
+  module Batch = struct
+    type entries = (Filename.t * File_kind.t) list
+
+    type t =
+      | Continue of entries
+      | End_of_directory of entries
+      | Unknown of Filename.t * entries
+  end
 end
 
 external readdir_with_kind_if_available_unix
@@ -77,7 +86,7 @@ let with_directory dir_path ~f =
     (fun () -> f dir)
 ;;
 
-let read_directory_with_kinds_exn dir_path =
+let read_directory_with_kinds_portable dir_path =
   with_directory dir_path ~f:(fun dir ->
     let rec loop acc =
       match readdir_with_kind_if_available dir with
@@ -97,6 +106,30 @@ let read_directory_with_kinds_exn dir_path =
           ~some:k
     in
     loop [])
+;;
+
+external readdir_batch
+  :  Unix.dir_handle
+  -> Readdir_result.Batch.entries
+  -> Readdir_result.Batch.t
+  = "caml__dune_filesystem_stubs__readdir_batch"
+
+let read_directory_with_kinds_exn =
+  if Stdlib.Sys.win32
+  then read_directory_with_kinds_portable
+  else
+    fun dir_path ->
+      with_directory dir_path ~f:(fun dir ->
+        let rec loop acc =
+          match readdir_batch dir acc with
+          | Continue acc -> loop acc
+          | End_of_directory acc -> acc
+          | Unknown (base, acc) ->
+            (match Unix.lstat (Filename.append dir_path base) with
+             | exception Unix.Unix_error _ -> loop acc
+             | stat -> loop ((base, stat.st_kind) :: acc))
+        in
+        loop [])
 ;;
 
 let read_directory_with_kinds dir_path =
