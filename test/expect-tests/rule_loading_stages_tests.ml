@@ -5467,7 +5467,9 @@ let%expect_test "revealed chunks share IDs and retain unselected metadata" =
     "shared rules retain identity and order: %b"
     (List.equal Rule.equal rules (rules_in ~dir (Rules.union shared direct)));
   let alias_spec = Alias.Name.Map.find_exn aliases (Alias.name alias) in
-  printfn "shared alias expansions: %d" (Appendable_list.length alias_spec.expansions);
+  printfn
+    "shared alias expansions: %d"
+    (List.length (Rules.Dir_rules.Alias_spec.to_list alias_spec));
   printfn
     "missing directory empty: %b"
     (Rules.Revealed.find loaded.revealed ~dir:(Path.Build.relative dir "missing")
@@ -6207,10 +6209,8 @@ let%expect_test "selected metadata preserves original owners and alias items" =
     (match rules with
      | [ older; newer ] -> older == older_rule && newer == newer_rule
      | _ -> false);
-  let { Rules.Dir_rules.Alias_spec.expansions } =
-    Alias.Name.Map.find aliases (Alias.name alias) |> Option.value_exn
-  in
-  let expansions = Appendable_list.to_list expansions in
+  let alias_spec = Alias.Name.Map.find aliases (Alias.name alias) |> Option.value_exn in
+  let expansions = Rules.Dir_rules.Alias_spec.to_list alias_spec |> List.rev in
   printfn
     "alias item order: %s"
     (List.map expansions ~f:(fun (loc, _) -> (Loc.start loc).pos_fname)
@@ -8027,6 +8027,19 @@ let run_rule_loading_mode ~incremental memo =
   Exn.protect ~f:(fun () -> run memo) ~finally:(fun () -> Memo.set_incremental previous)
 ;;
 
+let load_generic_rule_path tree target =
+  (* A second, unowned point prevents point routing without changing this tree's
+     selected rules, pending ownership, or refinements. Both execution modes then
+     enter [load_requested] instead of sharing batch/watch route shortcuts. *)
+  let sentinel = Target_mask.path (path "default/rule-loading-reference-sentinel") in
+  if Target_mask.intersects (Rules.targets tree) sentinel
+  then Code_error.raise "The generic reference sentinel must be unowned" [];
+  let requested = Target_mask.union (Target_mask.path target) sentinel in
+  if Option.is_some (Target_mask.single_path requested)
+  then Code_error.raise "The generic reference must not be a point request" [];
+  Rules.load_with_pending tree requested
+;;
+
 let same_rule_loading_views ~dirs ~paths (a : Rules.loaded) (b : Rules.loaded) =
   let same_rules a b =
     let a = Rules.Dir_rules.consume a in
@@ -8035,8 +8048,8 @@ let same_rule_loading_views ~dirs ~paths (a : Rules.loaded) (b : Rules.loaded) =
     && Alias.Name.Map.equal a.aliases b.aliases ~equal:(fun a b ->
       List.equal
         (fun (a_loc, a) (b_loc, b) -> Loc.equal a_loc b_loc && a == b)
-        (Appendable_list.to_list a.Rules.Dir_rules.Alias_spec.expansions)
-        (Appendable_list.to_list b.Rules.Dir_rules.Alias_spec.expansions))
+        (Rules.Dir_rules.Alias_spec.to_list a)
+        (Rules.Dir_rules.Alias_spec.to_list b))
   in
   List.for_all dirs ~f:(fun dir ->
     same_rules
@@ -8156,8 +8169,13 @@ let%expect_test "large routed families preserve concurrent point provenance" =
     :: List.concat_map (List.init 32 ~f:Fun.id) ~f:declared
   in
   let same = same_rule_loading_views ~dirs:[ dir; alias_dir ] ~paths in
-  let expected = List.map expressions ~f:(run_rule_loading_mode ~incremental:true) in
-  printfn "first-wave views match the watch oracle: %b" (List.equal same actual expected);
+  let watch = List.map expressions ~f:(run_rule_loading_mode ~incremental:true) in
+  let expected =
+    List.map targets ~f:(fun target -> run (load_generic_rule_path tree target))
+  in
+  printfn
+    "first-wave batch and watch views match the generic loader: %b"
+    (List.equal same actual expected && List.equal same watch expected);
   let expected_rules =
     [ [ byte_rules.(0) ]
     ; [ byte_rules.(0) ]
@@ -8192,9 +8210,7 @@ let%expect_test "large routed families preserve concurrent point provenance" =
        && Rules.Pending.mem_file other.pending (output 0 ".cmo")
      | _ -> false);
   let negative = run_rule_loading_mode ~incremental:false (load (output 2 ".missing")) in
-  let negative_oracle =
-    run_rule_loading_mode ~incremental:true (load (output 2 ".missing"))
-  in
+  let negative_oracle = run (load_generic_rule_path tree (output 2 ".missing")) in
   let files, _ = Rules.Revealed.target_names negative.revealed ~dir in
   printfn
     "a cold negative name still reveals its producer: %b"
@@ -8206,12 +8222,12 @@ let%expect_test "large routed families preserve concurrent point provenance" =
   let warm = run_rule_loading_mode ~incremental:false (load (output 1 ".cmx")) in
   printfn
     "a warm route preserves another atomic group: %b"
-    (same warm (run_rule_loading_mode ~incremental:true (load (output 1 ".cmx")))
+    (same warm (run (load_generic_rule_path tree (output 1 ".cmx")))
      && List.equal ( == ) (rules_in ~dir warm.selected) [ native_rules.(1) ]
      && runs.(1) = 1);
   [%expect
     {|
-    first-wave views match the watch oracle: true
+    first-wave batch and watch views match the generic loader: true
     atomic groups and negative declarations stay separate: true
     the gated parent and requested leaves run once: true
     concurrent sibling declarations remain query-local: true
@@ -8292,12 +8308,8 @@ let%expect_test "large routed families retain full-mask ancestor ownership" =
   in
   printfn
     "shared children retain each root's original provenance: %b"
-    (same
-       first
-       (run_rule_loading_mode ~incremental:true (load first_root (output 0 ".cmo")))
-     && same
-          second
-          (run_rule_loading_mode ~incremental:true (load second_root (output 0 ".cmo")))
+    (same first (run (load_generic_rule_path first_root (output 0 ".cmo")))
+     && same second (run (load_generic_rule_path second_root (output 0 ".cmo")))
      &&
      let first_files, _ = Rules.Revealed.target_names first.revealed ~dir in
      let second_files, _ = Rules.Revealed.target_names second.revealed ~dir in
@@ -8373,6 +8385,13 @@ let%expect_test "large routed families respect epochs and execution modes" =
            Rules.produce rules)))
   in
   let load target = Rules.load_with_pending tree (Target_mask.path target) in
+  let same =
+    same_rule_loading_views
+      ~dirs:[ dir ]
+      ~paths:
+        (List.concat_map (List.init 32 ~f:Fun.id) ~f:(fun index ->
+           [ output index ".cmo"; output index ".cmi" ]))
+  in
   (* Prime producer dependencies in watch mode before warming batch routes. *)
   ignore (run_rule_loading_mode ~incremental:true (load (output 0 ".cmo")) : Rules.loaded);
   let preconstructed =
@@ -8390,11 +8409,14 @@ let%expect_test "large routed families respect epochs and execution modes" =
   printfn
     "a batch-constructed expression executes with watch provenance: %b"
     (List.equal ( == ) (rules_in ~dir selected.selected) [ atomic ]
-     && List.length selected.refinements = 2);
+     && List.length selected.refinements = 2
+     && same selected (run (load_generic_rule_path tree (output 0 ".cmi"))));
   Memo.reset (Memo.Var.set unrelated true);
-  ignore
-    (run_rule_loading_mode ~incremental:true (Memo.Lazy.force consumer) : Rules.loaded);
-  printfn "an unrelated epoch restores the watch consumer: %b" (!consumer_runs = 1);
+  let restored = run_rule_loading_mode ~incremental:true (Memo.Lazy.force consumer) in
+  printfn
+    "an unrelated epoch restores the watch consumer: %b"
+    (!consumer_runs = 1
+     && same restored (run (load_generic_rule_path tree (output 0 ".cmi"))));
   let overlap =
     run
       (Rules.collect_unit (fun () ->
@@ -8409,18 +8431,22 @@ let%expect_test "large routed families respect epochs and execution modes" =
   expect_code_error "batch discards the earlier epoch's route" (fun () ->
     ignore
       (run_rule_loading_mode ~incremental:false (load (output 0 ".cmo")) : Rules.loaded));
+  expect_code_error "generic loading detects the changed ownership" (fun () ->
+    ignore (run (load_generic_rule_path tree (output 0 ".cmo")) : Rules.loaded));
   Memo.reset (Memo.Var.set intermediate family);
   let recovered = run_rule_loading_mode ~incremental:false (load (output 0 ".cmi")) in
   printfn
     "the unchanged root and leaf recover after another epoch: %b"
     (List.equal ( == ) (rules_in ~dir recovered.selected) [ atomic ]
-     && List.length recovered.refinements = 2);
+     && List.length recovered.refinements = 2
+     && same recovered (run (load_generic_rule_path tree (output 0 ".cmi"))));
   [%expect
     {|
     a batch-constructed expression executes with watch provenance: true
     an unrelated epoch restores the watch consumer: true
     watch detects changed intermediate ownership: code error
     batch discards the earlier epoch's route: code error
+    generic loading detects the changed ownership: code error
     the unchanged root and leaf recover after another epoch: true
     |}]
 ;;
@@ -8996,15 +9022,19 @@ let%expect_test "ready direct families preserve concurrent point provenance" =
       ~dirs:[ dir; byte; native; alias_dir ]
       ~paths:(marker :: pending_file :: pending_dir :: alias_dir :: targets)
   in
-  let expected =
+  let watch =
     List.map targets ~f:(fun target ->
-      run_rule_loading_mode
-        ~incremental:true
-        (Rules.load_with_pending tree (Target_mask.path target)))
+      run_rule_loading_mode ~incremental:true (load target))
+  in
+  let expected =
+    List.map targets ~f:(fun target -> run (load_generic_rule_path tree target))
   in
   printfn
-    "first-wave byte, native and negative views match: %b"
-    (List.equal same actual expected && !released && !body_runs = 1);
+    "first-wave batch and watch views match the generic loader: %b"
+    (List.equal same actual expected
+     && List.equal same watch expected
+     && !released
+     && !body_runs = 1);
   printfn
     "all requests retain the exact ancestor and body frontier: %b"
     (List.for_all actual ~f:(fun (loaded : Rules.loaded) ->
@@ -9017,11 +9047,7 @@ let%expect_test "ready direct families preserve concurrent point provenance" =
   let warm = run_rule_loading_mode ~incremental:false (load (output native 1 ".o")) in
   printfn
     "a warm route keeps its original rule and collection identity: %b"
-    (same
-       warm
-       (run_rule_loading_mode
-          ~incremental:true
-          (Rules.load_with_pending tree (Target_mask.path (output native 1 ".o"))))
+    (same warm (run (load_generic_rule_path tree (output native 1 ".o")))
      && List.equal
           ( == )
           (rules_in ~dir:native warm.selected)
@@ -9041,7 +9067,7 @@ let%expect_test "ready direct families preserve concurrent point provenance" =
        : Rules.loaded));
   [%expect
     {|
-    first-wave byte, native and negative views match: true
+    first-wave batch and watch views match the generic loader: true
     all requests retain the exact ancestor and body frontier: true
     a warm route keeps its original rule and collection identity: true
     broad requests keep the ordinary selection path: true
@@ -9127,16 +9153,8 @@ let%expect_test "ready direct routes reject atomic and ancestor competitors" =
   let second_view = run_rule_loading_mode ~incremental:false (load second 0) in
   printfn
     "shared bodies keep root-specific directory closure and provenance: %b"
-    (same
-       first_view
-       (run_rule_loading_mode
-          ~incremental:true
-          (Rules.load_with_pending first (Target_mask.path (output 0 ".cmo"))))
-     && same
-          second_view
-          (run_rule_loading_mode
-             ~incremental:true
-             (Rules.load_with_pending second (Target_mask.path (output 0 ".cmo"))))
+    (same first_view (run (load_generic_rule_path first (output 0 ".cmo")))
+     && same second_view (run (load_generic_rule_path second (output 0 ".cmo")))
      && List.length (rules_in ~dir first_view.selected) = 1
      && List.length (rules_in ~dir second_view.selected) = 2
      && List.length (rules_in ~dir:(output 0 ".cmi") second_view.selected) = 1);
@@ -9147,11 +9165,7 @@ let%expect_test "ready direct routes reject atomic and ancestor competitors" =
   in
   printfn
     "path lookup keeps competing kinds and the directory's descendant closure: %b"
-    (same
-       directory_view
-       (run_rule_loading_mode
-          ~incremental:true
-          (Rules.load_with_pending second (Target_mask.path (output 0 ".cmi"))))
+    (same directory_view (run (load_generic_rule_path second (output 0 ".cmi")))
      && List.length (rules_in ~dir directory_view.selected) = 2
      && List.length (rules_in ~dir:(output 0 ".cmi") directory_view.selected) = 1);
   [%expect
@@ -9199,6 +9213,11 @@ let%expect_test "ready direct routes retain execution mode and epoch guards" =
            Rules.produce body)))
   in
   let load suffix = Rules.load_path_with_pending tree (output 0 suffix) in
+  let same =
+    same_rule_loading_views
+      ~dirs:[ dir ]
+      ~paths:(output 0 ".cmi" :: List.init 16 ~f:(fun index -> output index ".cmo"))
+  in
   ignore (run_rule_loading_mode ~incremental:true (load ".cmo") : Rules.loaded);
   let expression =
     with_batch_rule_loading ~f:(fun () ->
@@ -9212,12 +9231,16 @@ let%expect_test "ready direct routes retain execution mode and epoch guards" =
       expression)
   in
   let selected = run_rule_loading_mode ~incremental:true (Memo.Lazy.force consumer) in
+  printfn
+    "the warm watch view matches the generic loader: %b"
+    (same selected (run (load_generic_rule_path tree (output 0 ".cmi"))));
   Memo.reset (Memo.Var.set unrelated true);
-  ignore
-    (run_rule_loading_mode ~incremental:true (Memo.Lazy.force consumer) : Rules.loaded);
+  let restored = run_rule_loading_mode ~incremental:true (Memo.Lazy.force consumer) in
   printfn
     "batch construction does not hide watch dependencies: %b"
-    (!runs = 1 && List.equal ( == ) (rules_in ~dir selected.selected) [ atomic ]);
+    (!runs = 1
+     && List.equal ( == ) (rules_in ~dir selected.selected) [ atomic ]
+     && same restored (run (load_generic_rule_path tree (output 0 ".cmi"))));
   let competitor =
     run
       (Rules.collect_unit (fun () ->
@@ -9231,35 +9254,40 @@ let%expect_test "ready direct routes retain execution mode and epoch guards" =
       (run_rule_loading_mode ~incremental:true (Memo.Lazy.force consumer) : Rules.loaded));
   expect_code_error "batch cannot reuse the previous epoch's singleton" (fun () ->
     ignore (run_rule_loading_mode ~incremental:false (load ".cmo") : Rules.loaded));
+  expect_code_error "generic loading detects the changed ancestor" (fun () ->
+    ignore (run (load_generic_rule_path tree (output 0 ".cmo")) : Rules.loaded));
   Memo.reset (Memo.Var.set body leaf);
   let recovered = run_rule_loading_mode ~incremental:false (load ".cmi") in
   printfn
     "the same root recovers with its original collection ID: %b"
     (List.equal ( == ) (rules_in ~dir recovered.selected) [ atomic ]
-     && List.length (rules_in ~dir (Rules.union recovered.selected direct)) = 16);
+     && List.length (rules_in ~dir (Rules.union recovered.selected direct)) = 16
+     && same recovered (run (load_generic_rule_path tree (output 0 ".cmi"))));
   Memo.reset (Memo.Var.set fail true);
   expect_code_error "watch awaits the failing original producer" (fun () ->
     ignore (run_rule_loading_mode ~incremental:true (load ".cmo") : Rules.loaded));
   expect_code_error "batch awaits the failing original producer" (fun () ->
     ignore (run_rule_loading_mode ~incremental:false (load ".cmi") : Rules.loaded));
+  expect_code_error "generic loading awaits the failing original producer" (fun () ->
+    ignore (run (load_generic_rule_path tree (output 0 ".cmi")) : Rules.loaded));
   Memo.reset (Memo.Var.set fail false);
   let watch = run_rule_loading_mode ~incremental:true (load ".cmo") in
   let batch = run_rule_loading_mode ~incremental:false (load ".cmi") in
+  let expected = run (load_generic_rule_path tree (output 0 ".cmi")) in
   printfn
     "the original producer and unchanged direct body recover: %b"
-    (same_rule_loading_views
-       ~dirs:[ dir ]
-       ~paths:[ output 0 ".cmo"; output 0 ".cmi" ]
-       watch
-       batch);
+    (same watch expected && same batch expected);
   [%expect
     {|
+    the warm watch view matches the generic loader: true
     batch construction does not hide watch dependencies: true
     watch checks the changed ancestor: code error
     batch cannot reuse the previous epoch's singleton: code error
+    generic loading detects the changed ancestor: code error
     the same root recovers with its original collection ID: true
     watch awaits the failing original producer: code error
     batch awaits the failing original producer: code error
+    generic loading awaits the failing original producer: code error
     the original producer and unchanged direct body recover: true
     |}]
 ;;
@@ -9327,12 +9355,18 @@ let%expect_test "point routes validate ancestors before obsolete children" =
       if replace
       then (
         let current = query () in
+        let expected = run (load_generic_rule_path tree (output 0 ".cmi")) in
         printfn
           "%s: replacement bypasses the poisoned child: %b"
           mode
           (!child_entries = 1
            && List.equal ( == ) (rules_in ~dir current.selected) [ replacement ]
-           && List.equal ( == ) (rules_in ~dir initial.selected) [ original ]))
+           && List.equal ( == ) (rules_in ~dir initial.selected) [ original ]
+           && same_rule_loading_views
+                ~dirs:[ dir ]
+                ~paths:(output 0 ".cmi" :: List.init 16 ~f:(fun i -> output i ".cmo"))
+                current
+                expected))
       else (
         let ancestor_failed =
           try
@@ -10173,11 +10207,9 @@ let%expect_test "direct unions preserve collection IDs and alias order" =
   printfn
     "aliases retain each original expansion exactly once and in order: %b"
     (List.for_all views ~f:(fun { Rules.Dir_rules.aliases; _ } ->
-       let { Rules.Dir_rules.Alias_spec.expansions } =
-         Alias.Name.Map.find aliases alias_name |> Option.value_exn
-       in
-       let locations = Appendable_list.to_list expansions |> List.map ~f:fst in
-       List.equal ( == ) locations [ third_loc; second_loc; first_loc ]));
+       let alias_spec = Alias.Name.Map.find aliases alias_name |> Option.value_exn in
+       let locations = Rules.Dir_rules.Alias_spec.to_list alias_spec |> List.map ~f:fst in
+       List.equal ( == ) locations [ first_loc; second_loc; third_loc ]));
   printfn
     "empty and identical operands retain the original map: %b"
     (Rules.Dir_rules.union Rules.Dir_rules.empty forward == forward

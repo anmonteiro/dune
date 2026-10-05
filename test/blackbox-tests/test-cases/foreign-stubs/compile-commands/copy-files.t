@@ -99,8 +99,8 @@ Adding a source must invalidate the deferred discovery as well.
     "stub.c"
   ]
 
-Even with only_sources, evaluating a foreign stanza's enabled_if during root
-rule registration can create a cycle when it queries root build files.
+Evaluating a foreign stanza's enabled_if must not create a cycle when it
+queries root build files, even with only_sources.
 
   $ cat > foo/dune <<'EOF'
   > (copy_files (only_sources true) (files ../stub.c))
