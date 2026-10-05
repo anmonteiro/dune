@@ -240,7 +240,6 @@ module Stack_frame_with_state : sig
   val dep_node : t -> Dep_node.packed
   val dag_node : t -> Dag.node
   val children_added_to_dag : t -> Dag.Id.Set.t
-  val record_child_added_to_dag : t -> dag_node_id:Dag.Id.t -> unit
 end
 
 module Call_stack : sig

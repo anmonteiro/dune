@@ -401,7 +401,7 @@ module Stack_frame_with_state : sig
   val dep_node : t -> Dep_node.packed
   val dag_node : t -> Dag.node
   val children_added_to_dag : t -> Dag.Id.Set.t
-  val record_child_added_to_dag : t -> dag_node_id:Dag.Id.t -> unit
+  val set_children_added_to_dag : t -> Dag.Id.Set.t -> unit
 end = struct
   type phase =
     | Restore_from_cache
@@ -437,11 +437,7 @@ end = struct
 
   let dep_node t = t.dep_node
   let dag_node t = Lazy_dag_node.force t.dag_node ~dep_node:t.dep_node
-
-  let record_child_added_to_dag t ~dag_node_id =
-    t.children_added_to_dag <- Dag.Id.Set.add t.children_added_to_dag dag_node_id
-  ;;
-
+  let set_children_added_to_dag t set = t.children_added_to_dag <- set
   let children_added_to_dag t = t.children_added_to_dag
 end
 
@@ -476,8 +472,7 @@ module Call_stack = struct
 
   (* Add all edges leading from the root of the call stack to [dag_node] to the cycle
      detection DAG. *)
-  let add_path_to ~dag_node : (unit, Cycle_error.t) result Fiber.t =
-    let+ stack = get_call_stack () in
+  let add_path_from_stack stack dag_node : (unit, Cycle_error.t) result =
     (match !cycle_error_in_the_current_run with
      | Some _ ->
        (* We already hit a cycle in this run, so we must not touch the DAG again (see the
@@ -486,42 +481,49 @@ module Call_stack = struct
      | None ->
        let rec add_path_impl stack dag_node edges_added =
          match stack with
-         | [] -> Ok (), edges_added
+         | [] -> edges_added
          | frame :: stack ->
            let dag_node_id = Dag.node_id dag_node in
            let children_added_to_dag =
              Stack_frame_with_state.children_added_to_dag frame
            in
-           (match Dag.Id.Set.mem children_added_to_dag dag_node_id with
+           (* [Set.add] preserves physical identity for an existing child.
+              Only commit the new set once the graph accepts the edge. *)
+           let updated = Dag.Id.Set.add children_added_to_dag dag_node_id in
+           (match updated == children_added_to_dag with
             | true ->
               (* Here we know that the current [frame] has already been traversed in a
                  previous [add_path_to] call. Therefore, the DAG already contains all the
                  edges that we will discover by continuing the recursive traversal. We
                  might as well stop here and save time. *)
-              Ok (), edges_added
+              edges_added
             | false ->
               let caller_dag_node = Stack_frame_with_state.dag_node frame in
               (match Dag.add_assuming_missing caller_dag_node dag_node with
                | exception Dag.Cycle cycle ->
-                 Error (List.map cycle ~f:Dag.value), edges_added
+                 let cycle_error = List.map cycle ~f:Dag.value in
+                 Counter.add Metrics.Cycle_detection.edges edges_added;
+                 cycle_error_in_the_current_run := Some cycle_error;
+                 0
                | () ->
                  let edges_added = edges_added + 1 in
                  let not_traversed_before = Dag.Id.Set.is_empty children_added_to_dag in
-                 Stack_frame_with_state.record_child_added_to_dag frame ~dag_node_id;
+                 Stack_frame_with_state.set_children_added_to_dag frame updated;
                  (match not_traversed_before with
                   | true -> add_path_impl stack caller_dag_node edges_added
                   | false ->
                     (* Same optimisation as above: no need to traverse again. *)
-                    Ok (), edges_added)))
+                    edges_added)))
        in
-       let result, edges_added = add_path_impl stack dag_node 0 in
-       Counter.add Metrics.Cycle_detection.edges edges_added;
-       (match result with
-        | Ok () -> ()
-        | Error cycle_error -> cycle_error_in_the_current_run := Some cycle_error));
+       let edges_added = add_path_impl stack dag_node 0 in
+       Counter.add Metrics.Cycle_detection.edges edges_added);
     match !cycle_error_in_the_current_run with
     | None -> Ok ()
     | Some cycle_error -> Error cycle_error
+  ;;
+
+  let add_path_to ~dag_node =
+    Fiber.Var.get_apply_map call_stack_var add_path_from_stack dag_node
   ;;
 end
 
