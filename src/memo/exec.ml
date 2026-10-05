@@ -182,7 +182,13 @@ and consider_and_restore_from_cache_without_adding_dep
   match node.state with
   | Cached ->
     Spec.notify node.spec node.input Live;
-    start_restoring node
+    (match node.value with
+     | (Ok _ | Error { reproducible = true; _ })
+       when Deps.is_empty node.deps && not (Spec.has_on_event node.spec) ->
+       Counter.incr Metrics.Restore.nodes;
+       validate_value node;
+       Fiber.return Changed_or_not.Unchanged
+     | Uninitialized | Ok _ | Error _ -> start_restoring node)
   | Restoring { restore_from_cache } ->
     Computation.read_but_first_check_for_cycles
       ~phase:Restore_from_cache
@@ -266,11 +272,14 @@ let exec_dep_node_now : type i o. (i, o) Dep_node.t -> o Fiber.t =
      [consider_and_restore_from_cache_without_adding_dep], is a measurable win. *)
   if Run.is_current (Dep_node.last_validated_at node)
   then add_dep_from_caller_and_get_value node
-  else
-    Fiber.bind_apply
-      (consider_and_restore_from_cache_without_adding_dep node)
-      after_restore
-      node
+  else (
+    match node.state with
+    | Not_cached -> after_restore Changed node
+    | Cached | Out_of_date | Restoring _ | Computing _ ->
+      Fiber.bind_apply
+        (consider_and_restore_from_cache_without_adding_dep node)
+        after_restore
+        node)
 ;;
 
 let exec_dep_node node = Fiber.of_thunk_apply exec_dep_node_now node
