@@ -15,19 +15,25 @@ module Static = struct
     | Seq of 'node t Array.Immutable.t
     | Par of 'node t Array.Immutable.t
 
-  (* Flatten a chronological list of sections into a sequence, flattening nested [Seq]s:
-     (x ; (y ; z)) = (x ; y ; z). *)
-  let flatten_seqs (sections : 'node t list) : 'node t =
-    let flat =
-      List.concat_map sections ~f:(function
-        | Empty -> []
-        | Seq arr -> Array.Immutable.to_list arr
-        | (Singleton _ | Par _) as t -> [ t ])
+  (* Restore chronological order from most-recent-first sections while
+     flattening nested [Seq]s. *)
+  let flatten_rev_seqs =
+    let rec loop acc = function
+      | [] -> acc
+      | section :: rest ->
+        let acc =
+          match section with
+          | Empty -> acc
+          | Seq arr -> Array.Immutable.fold_right arr ~init:acc ~f:List.cons
+          | (Singleton _ | Par _) as t -> t :: acc
+        in
+        loop acc rest
     in
-    match flat with
-    | [] -> Empty
-    | [ t ] -> t
-    | _ :: _ :: _ -> Seq (Array.Immutable.of_list flat)
+    fun (sections : 'node t list) ->
+      match loop [] sections with
+      | [] -> Empty
+      | [ t ] -> t
+      | _ :: _ :: _ as flat -> Seq (Array.Immutable.of_list flat)
   ;;
 
   (* Flatten a parallel section of [num_threads] threads, where thread [i]'s section is
@@ -38,13 +44,13 @@ module Static = struct
       if i < 0
       then acc
       else (
-        let elements =
+        let acc =
           match f i with
-          | Empty -> []
-          | Par arr -> Array.Immutable.to_list arr
-          | (Singleton _ | Seq _) as t -> [ t ]
+          | Empty -> acc
+          | Par arr -> Array.Immutable.fold_right arr ~init:acc ~f:List.cons
+          | (Singleton _ | Seq _) as t -> t :: acc
         in
-        loop (i - 1) (elements @ acc))
+        loop (i - 1) acc)
     in
     match loop (num_threads - 1) [] with
     | [] -> Empty
@@ -79,9 +85,7 @@ module Dynamic = struct
     | section -> section :: t
   ;;
 
-  (* The list is most-recent-first, so reverse it to chronological order before flattening
-     the sequence. *)
-  let to_static (t : 'node t) : 'node Static.t = Static.flatten_seqs (List.rev t)
+  let to_static (t : 'node t) : 'node Static.t = Static.flatten_rev_seqs t
 end
 
 (* Note that dependencies should be checked in the order in which they were depended on to
