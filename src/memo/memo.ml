@@ -209,7 +209,10 @@ module Current_run = struct
   let invalidate ~reason = Invalidation.invalidate_node ~reason (dep_node memo ())
 end
 
-let current_run () = Current_run.exec ()
+let current_run =
+  let read = Current_run.exec () in
+  fun () -> read
+;;
 
 let of_non_reproducible_fiber fiber =
   let* (_ : Run.t) = current_run () in
