@@ -82,8 +82,7 @@ module Standalone_or_root = struct
     }
 
   type nonrec t =
-    { physical : (Source_file_dir.t * Source_files.t) Nonempty_list.t Memo.Lazy.t
-    ; source_dirs : Source_file_dir.t Nonempty_list.t Memo.Lazy.t
+    { source_dirs : Source_file_dir.t Nonempty_list.t Memo.Lazy.t
     ; rules : Rules.t Memo.Lazy.t
     ; contents : standalone_or_root Memo.Lazy.t
     }
@@ -102,13 +101,8 @@ module Standalone_or_root = struct
           }
         ]
     in
-    let physical_dirs =
-      Nonempty_list.map dirs ~f:(fun source ->
-        source, { Source_files.dir; known = source.files; generated = [] })
-    in
     { source_dirs = Memo.Lazy.of_val dirs
     ; rules = Memo.Lazy.of_val Rules.empty
-    ; physical = Memo.Lazy.of_val physical_dirs
     ; contents =
         Memo.Lazy.create ~name:"empty-dir-contents" (fun () ->
           Memo.return
@@ -128,15 +122,6 @@ module Standalone_or_root = struct
 
   let rules t = Memo.Lazy.force t.rules
   let source_directories t = Memo.Lazy.force t.source_dirs
-
-  let source_files t =
-    let* dirs = Memo.Lazy.force t.physical in
-    Memo.parallel_map
-      (Nonempty_list.to_list dirs)
-      ~f:(fun ({ Source_file_dir.dir; _ }, files) ->
-        let+ files = Source_files.get files ~mask:(Target_mask.files_in_directory dir) in
-        dir, files)
-  ;;
 end
 
 type triage =
@@ -436,8 +421,7 @@ end = struct
           ])
     in
     let physical, rules = prepare_sources sctx source_dirs in
-    { Standalone_or_root.physical
-    ; source_dirs
+    { Standalone_or_root.source_dirs
     ; rules
     ; contents =
         Memo.lazy_ ~name:"standalone-dir-contents" ~human_readable_description (fun () ->
@@ -760,7 +744,7 @@ end = struct
            ; subdirs = Path.Build.Map.of_list_map_exn subdirs ~f:(fun x -> x.dir, x)
            })
     in
-    { Standalone_or_root.physical; source_dirs; rules; contents }
+    { Standalone_or_root.source_dirs; rules; contents }
   ;;
 
   let get0_impl (sctx, dir) : triage Memo.t =
