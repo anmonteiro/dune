@@ -188,15 +188,93 @@ let report_rule_conflict fn (rule' : Rule.t) (rule : Rule.t) =
        | _ -> [])
 ;;
 
-let remove_subdir_if_stale ~dir ~subdirs_to_keep fn =
-  if not (Subdir_set.mem subdirs_to_keep fn)
-  then (
-    let path = Path.Build.relative_fname dir fn in
-    let () = Rule_cache.Workspace_local.remove_subtree path in
-    Path.rm_rf (Path.build path))
+module Source_copy_rules = struct
+  (* Ancestor entries link cached descendants even when they have no copies
+     of their own. Empty leaves are removed when their rules are retired. *)
+  type node =
+    { mutable rules : (Filename.t, Rule.t) Table.t option
+    ; mutable children : Path.Build.Set.t
+    }
+
+  type t = node Path.Build.Table.t
+
+  let cache : t Memo.Lazy.t =
+    Memo.lazy_ ~name:"source-copy-rules" (fun () ->
+      Memo.return (Path.Build.Table.create 16))
+  ;;
+
+  let rec find_or_create_node t dir =
+    Path.Build.Table.find_or_add t dir ~f:(fun dir ->
+      Option.iter (Path.Build.parent dir) ~f:(fun parent ->
+        let parent = find_or_create_node t parent in
+        parent.children <- Path.Build.Set.add parent.children dir);
+      { rules = None; children = Path.Build.Set.empty })
+  ;;
+
+  let rec unlink t dir =
+    match Path.Build.parent dir with
+    | None -> ()
+    | Some parent_dir ->
+      let parent = Path.Build.Table.find_exn t parent_dir in
+      parent.children <- Path.Build.Set.remove parent.children dir;
+      if Option.is_none parent.rules && Path.Build.Set.is_empty parent.children
+      then (
+        Path.Build.Table.remove t parent_dir;
+        unlink t parent_dir)
+  ;;
+
+  let forget_rules t dir =
+    match Path.Build.Table.find t dir with
+    | None -> ()
+    | Some node ->
+      node.rules <- None;
+      if Path.Build.Set.is_empty node.children
+      then (
+        Path.Build.Table.remove t dir;
+        unlink t dir)
+  ;;
+
+  let prepare t dir ~filenames =
+    if Filename.Array.Set.is_empty filenames
+    then (
+      forget_rules t dir;
+      None)
+    else (
+      let node = find_or_create_node t dir in
+      match node.rules with
+      | None ->
+        let rules = Table.create (module Filename) 16 in
+        node.rules <- Some rules;
+        Some rules
+      | Some rules as result ->
+        Table.filteri_inplace rules ~f:(fun ~key:filename ~data:_ ->
+          Filename.Array.Set.mem filenames filename);
+        result)
+  ;;
+
+  (* A different owner or cleanup can replace copies without changing their
+     sources. The child index lets us retire only the affected identities. *)
+  let forget_subtree t dir =
+    match Path.Build.Table.find t dir with
+    | None -> ()
+    | Some node ->
+      let rec remove dir node =
+        Path.Build.Set.iter node.children ~f:(fun child ->
+          remove child (Path.Build.Table.find_exn t child));
+        Path.Build.Table.remove t dir
+      in
+      remove dir node;
+      unlink t dir
+  ;;
+end
+
+let remove_subdir path =
+  let () = Rule_cache.Workspace_local.remove_subtree path in
+  Path.rm_rf (Path.build path)
 ;;
 
 let remove_old_artifacts
+      ~source_copy_rules
       ~dir
       ~(rules_here : Loaded.rules_here)
       ~(subdirs_to_keep : Subdir_set.t)
@@ -213,7 +291,11 @@ let remove_old_artifacts
       if not path_is_a_target
       then (
         match kind with
-        | Unix.S_DIR -> remove_subdir_if_stale ~dir ~subdirs_to_keep fn
+        | Unix.S_DIR ->
+          if not (Subdir_set.mem subdirs_to_keep fn)
+          then (
+            Source_copy_rules.forget_subtree source_copy_rules path;
+            remove_subdir path)
         | _ ->
           let () = Rule_cache.Workspace_local.remove_target path in
           Fpath.unlink_exn (Path.Build.to_string path)))
@@ -227,7 +309,9 @@ let remove_old_sub_dirs_in_anonymous_actions_dir ~dir ~(subdirs_to_keep : Subdir
   | Ok files ->
     List.iter files ~f:(fun (fn, kind) ->
       match kind with
-      | Unix.S_DIR -> remove_subdir_if_stale ~dir ~subdirs_to_keep fn
+      | Unix.S_DIR ->
+        if not (Subdir_set.mem subdirs_to_keep fn)
+        then remove_subdir (Path.Build.relative_fname dir fn)
       | _ -> ())
 ;;
 
@@ -300,14 +384,24 @@ end = struct
       src_path
   ;;
 
-  let create_copy_rules ~dir ~ctx_dir ~non_target_source_filenames =
-    Filename.Array.Set.to_list_map non_target_source_filenames ~f:(fun filename ->
-      let src_path = Path.Source.relative_fname dir filename in
-      let build_path = Path.Build.append_source ctx_dir src_path in
-      Rule.make
-        ~info:(Source_file_copy src_path)
-        ~targets:(Targets.File.create build_path)
-        (copy_source_action ~src_path ~build_path))
+  let create_copy_rules source_copy_rules ~dir ~ctx_dir ~non_target_source_filenames =
+    let build_dir = Path.Build.append_source ctx_dir dir in
+    match
+      Source_copy_rules.prepare
+        source_copy_rules
+        build_dir
+        ~filenames:non_target_source_filenames
+    with
+    | None -> []
+    | Some rules ->
+      Filename.Array.Set.to_list_map non_target_source_filenames ~f:(fun filename ->
+        Table.find_or_add rules filename ~f:(fun filename ->
+          let src_path = Path.Source.relative_fname dir filename in
+          let build_path = Path.Build.relative_fname build_dir filename in
+          Rule.make
+            ~info:(Source_file_copy src_path)
+            ~targets:(Targets.File.create build_path)
+            (copy_source_action ~src_path ~build_path)))
   ;;
 
   let compile_rules ~dir ~source_dirs rules =
@@ -854,9 +948,11 @@ end = struct
           in
           source_files_and_dirs source_paths_to_ignore sub_dir
       in
+      let* source_copy_rules = Memo.Lazy.force Source_copy_rules.cache in
       let copy_rules =
         let ctx_dir = Context_name.build_dir context_name in
         create_copy_rules
+          source_copy_rules
           ~dir:sub_dir
           ~ctx_dir
           ~non_target_source_filenames:source_filenames
@@ -879,8 +975,10 @@ end = struct
         ~dir
         ~real_directory_targets:(Rules.directory_targets rules_produced)
         ~directory_targets;
+      Path.Build.Map.iteri rules_here.by_directory_targets ~f:(fun target _ ->
+        Source_copy_rules.forget_subtree source_copy_rules target);
       (let subdirs_to_keep = Subdir_set.of_dir_set descendants_to_keep in
-       remove_old_artifacts ~dir ~rules_here ~subdirs_to_keep;
+       remove_old_artifacts ~source_copy_rules ~dir ~rules_here ~subdirs_to_keep;
        remove_old_sub_dirs_in_anonymous_actions_dir
          ~dir:
            (Path.Build.append_local
