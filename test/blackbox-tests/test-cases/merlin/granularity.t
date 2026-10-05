@@ -333,3 +333,25 @@ the typed lookup.
   $ dune build --root copied @check
   $ (cd copied && merlin_configurations _build/default/.merlin-conf/lib-copied input.txt)
   input.txt: ocaml true impl actual.mli
+
+Copying one input to different modules in the same mode silently selects one.
+
+  $ mkdir branched
+  $ cat > branched/dune-project <<EOF
+  > (lang dune 3.16)
+  > EOF
+  $ cat > branched/dune <<EOF
+  > (library (name branched) (modules left right))
+  > (rule (action (copy# input.txt left.ml)))
+  > (rule (action (copy# input.txt right.ml)))
+  > EOF
+  $ printf 'let value = 1\n' > branched/input.txt
+  $ DUNE_SANDBOX=none dune build --root branched left.ml
+  $ DUNE_SANDBOX=none dune build --root branched right.ml
+  $ DUNE_SANDBOX=none dune build --root branched @check
+  $ (cd branched && merlin_configurations \
+  >   _build/default/.merlin-conf/lib-branched input.txt)
+  input.txt: ocaml true impl -
+  $ query_ocaml_merlin_pp "$PWD/branched/input.txt" --root branched \
+  >   | grep -Eo '\(UNIT_NAME [^)]*\)'
+  (UNIT_NAME branched__Right)
