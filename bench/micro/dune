@@ -55,3 +55,8 @@
  (allow_overlapping_dependencies)
  (modules path_bench_main)
  (libraries path_bench core_bench.inline_benchmarks))
+
+(executable
+ (name rules_route_bench)
+ (modules rules_route_bench)
+ (libraries stdune dune_engine targets predicate_lang memo fiber unix))
