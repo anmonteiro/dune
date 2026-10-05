@@ -147,9 +147,9 @@ and compute : 'i 'o. ('i, 'o) Dep_node.t -> unit Fiber.t =
 and start_restoring : 'i 'o. ('i, 'o) Dep_node.t -> Cycle_error.t Changed_or_not.t Fiber.t
   =
   fun node ->
-  let computation = Computation.create () in
+  let computation = Computation.create ~dep_node:node in
   node.state <- Restoring { restore_from_cache = computation };
-  Computation.force computation ~dep_node:node (fun _stack_frame ->
+  Computation.force computation (fun () ->
     let* restore_result = restore_from_cache node in
     let+ () =
       match restore_result with
@@ -169,9 +169,9 @@ and start_restoring : 'i 'o. ('i, 'o) Dep_node.t -> Cycle_error.t Changed_or_not
    finished, the node's state is [Cached] with an up to date [last_validated_at]. *)
 and start_computing : 'i 'o. ('i, 'o) Dep_node.t -> unit Fiber.t =
   fun node ->
-  let computation = Computation.create () in
+  let computation = Computation.create ~dep_node:node in
   node.state <- Computing { compute = computation };
-  Computation.force computation ~dep_node:node (fun _stack_frame -> compute node)
+  Computation.force computation (fun () -> compute node)
 
 (* Try to validate a [Cached] node without recomputing it. Once done, the node's state is
    either [Cached] with an up to date [last_validated_at] or [Out_of_date]. *)
@@ -187,7 +187,6 @@ and consider_and_restore_from_cache_without_adding_dep
     Computation.read_but_first_check_for_cycles
       ~phase:Restore_from_cache
       restore_from_cache
-      ~dep_node:node
     >>| (function
      | Ok res -> res
      | Error dependency_cycle -> Cancelled { dependency_cycle })
@@ -220,7 +219,7 @@ and consider_and_compute_without_adding_dep
     start_computing node >>| Result.ok
   | Out_of_date -> start_computing node >>| Result.ok
   | Computing { compute } ->
-    Computation.read_but_first_check_for_cycles ~phase:Compute compute ~dep_node:node
+    Computation.read_but_first_check_for_cycles ~phase:Compute compute
 ;;
 
 let add_dep_from_caller_and_get_value : type i o. (i, o) Dep_node.t -> o Fiber.t =
