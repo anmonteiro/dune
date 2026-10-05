@@ -103,3 +103,140 @@ without an explicit target directory.
   generated asset
   $ node consumer/_build/default/main.js
   PUBLIC
+
+Public workspace libraries may already live in node_modules. Their runtime
+assets then occupy the targetless output location and must not be copied onto
+themselves. An explicit target still needs to copy these assets.
+
+  $ mkdir -p in-place/node_modules/pkg
+  $ cat >in-place/dune-project <<EOF
+  > (lang dune 3.25)
+  > (using melange 1.0)
+  > (package (name pkg))
+  > EOF
+  $ cat >in-place/node_modules/pkg/dune <<EOF
+  > (library
+  >  (public_name pkg)
+  >  (modes melange)
+  >  (melange.runtime_deps asset.txt))
+  > EOF
+  $ cat >in-place/node_modules/pkg/pkg.ml <<EOF
+  > let message = "package"
+  > EOF
+  $ cat >in-place/node_modules/pkg/asset.txt <<EOF
+  > source asset
+  > EOF
+  $ cat >in-place/main.ml <<EOF
+  > let () = Js.log Pkg.message
+  > EOF
+  $ cat >in-place/dune <<EOF
+  > (subdir node_modules (dirs pkg))
+  > (melange.emit
+  >  (target dist)
+  >  (libraries pkg)
+  >  (emit_stdlib false))
+  > EOF
+  $ (cd in-place && dune build @melange)
+  $ node in-place/_build/default/dist/main.js
+  package
+  $ cat in-place/_build/default/dist/node_modules/pkg/asset.txt
+  source asset
+
+The targetless form currently conflicts with the ordinary source-file copy.
+
+  $ cat >in-place/dune <<EOF
+  > (subdir node_modules (dirs pkg))
+  > (melange.emit
+  >  (libraries pkg)
+  >  (emit_stdlib false))
+  > EOF
+  $ (cd in-place && dune build @melange)
+  Error: Multiple rules generated for
+  _build/default/node_modules/pkg/asset.txt:
+  - dune:2
+  - file present in source tree
+  -> required by alias melange
+  Hint: rm -f node_modules/pkg/asset.txt
+  [1]
+  $ cat in-place/node_modules/pkg/asset.txt
+  source asset
+
+A generated directory asset already at its destination must keep its original
+producer too. Test it separately so the file conflict cannot hide this case.
+
+  $ cat >in-place/node_modules/pkg/dune <<EOF
+  > (library
+  >  (public_name pkg)
+  >  (modes melange)
+  >  (melange.runtime_deps assets))
+  > (rule
+  >  (target (dir assets))
+  >  (action
+  >   (progn
+  >    (run mkdir %{target})
+  >    (no-infer
+  >     (write-file %{target}/generated.txt "generated asset\n")))))
+  > EOF
+  $ cat >in-place/dune <<EOF
+  > (subdir node_modules (dirs pkg))
+  > (melange.emit
+  >  (target dist)
+  >  (libraries pkg)
+  >  (emit_stdlib false))
+  > EOF
+  $ (cd in-place && dune build @melange)
+  $ cat in-place/_build/default/dist/node_modules/pkg/assets/generated.txt
+  generated asset
+  $ cat >in-place/dune <<EOF
+  > (subdir node_modules (dirs pkg))
+  > (melange.emit
+  >  (libraries pkg)
+  >  (emit_stdlib false))
+  > EOF
+  $ (cd in-place && dune build @melange) >in-place/directory.log 2>&1
+  [1]
+  $ grep -q assets in-place/directory.log
+
+Relocating a targetless emit must also preserve imports from private libraries
+outside the emit directory. First check their unpromoted layout.
+
+  $ mkdir -p private-promotion/app private-promotion/lib
+  $ cat >private-promotion/dune-project <<EOF
+  > (lang dune 3.25)
+  > (using melange 1.0)
+  > EOF
+  $ cat >private-promotion/lib/dune <<EOF
+  > (library
+  >  (name helper)
+  >  (modes melange))
+  > EOF
+  $ cat >private-promotion/lib/helper.ml <<EOF
+  > let message () = "private"
+  > let () = Js.log "loaded private"
+  > EOF
+  $ cat >private-promotion/app/main.ml <<EOF
+  > let () = Js.log (Helper.message ())
+  > EOF
+  $ cat >private-promotion/app/dune <<EOF
+  > (melange.emit
+  >  (libraries helper)
+  >  (emit_stdlib false))
+  > EOF
+  $ (cd private-promotion && dune build @app/melange)
+  $ node private-promotion/_build/default/app/main.js
+  loaded private
+  private
+  $ cat >private-promotion/app/dune <<EOF
+  > (melange.emit
+  >  (libraries helper)
+  >  (emit_stdlib false)
+  >  (promote (into ../relocated/app)))
+  > EOF
+  $ (cd private-promotion && dune build @app/melange)
+  $ find private-promotion/relocated -name '*.js' | sort
+  private-promotion/relocated/app/helper.js
+  private-promotion/relocated/app/main.js
+  $ node private-promotion/relocated/app/main.js 2>private-promotion/node.stderr
+  [1]
+  $ grep 'Cannot find module' private-promotion/node.stderr
+  Error: Cannot find module '../lib/helper.js'

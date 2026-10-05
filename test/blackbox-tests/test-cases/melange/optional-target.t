@@ -247,3 +247,96 @@ Omitting the target in a dynamic include is rejected with an explicit diagnostic
   Error: Dynamically generated melange.emit stanzas require a target field.
   Hint: Declare the stanza in a dune file instead of using dynamic_include.
   [1]
+
+Promotion into another directory should preserve imports between entry modules.
+An explicit target preserves the relative layout of nested sources.
+
+  $ mkdir -p relocated/app/sub
+  $ cat >relocated/dune-project <<EOF
+  > (lang dune 3.25)
+  > (using melange 1.0)
+  > EOF
+  $ cat >relocated/app/main.ml <<EOF
+  > let () = Js.log (Other.message ())
+  > EOF
+  $ cat >relocated/app/sub/other.ml <<EOF
+  > let message () = "promoted"
+  > let () = Js.log "loaded"
+  > EOF
+  $ cat >relocated/app/dune <<EOF
+  > (include_subdirs unqualified)
+  > (melange.emit
+  >  (target output)
+  >  (emit_stdlib false)
+  >  (promote (into ../dist)))
+  > EOF
+  $ (cd relocated && dune build @app/melange)
+  $ node relocated/dist/main.js
+  loaded
+  promoted
+
+The targetless form currently interprets the destination relative to each
+output, splitting the modules between different directories.
+
+  $ cat >relocated/app/dune <<EOF
+  > (include_subdirs unqualified)
+  > (melange.emit
+  >  (emit_stdlib false)
+  >  (promote (into ../targetless-dist)))
+  > EOF
+  $ (cd relocated && dune build @app/melange)
+  $ find relocated/app relocated/targetless-dist -name '*.js' | sort
+  relocated/app/targetless-dist/other.js
+  relocated/targetless-dist/main.js
+  $ node relocated/targetless-dist/main.js 2>relocated/node.stderr
+  [1]
+  $ grep 'Cannot find module' relocated/node.stderr
+  Error: Cannot find module './sub/other.js'
+
+A wildcard copy can supply the entry modules. The source directory has no
+JavaScript outputs, so discovering its files must not force the emit.
+
+  $ mkdir -p copied/app copied/shared
+  $ cat >copied/dune-project <<EOF
+  > (lang dune 3.25)
+  > (using melange 1.0)
+  > EOF
+  $ cat >copied/shared/main.ml <<EOF
+  > let () = Js.log "copied"
+  > EOF
+  $ cat >copied/app/dune <<EOF
+  > (copy_files ../shared/*)
+  > (melange.emit
+  >  (target dist)
+  >  (emit_stdlib false))
+  > EOF
+  $ (cd copied && dune build app/dist/app/main.js)
+  $ node copied/_build/default/app/dist/app/main.js
+  copied
+
+The targetless producer currently claims JavaScript paths in the unrelated
+source directory too, introducing a cycle while discovering the copied modules.
+
+  $ cat >copied/app/dune <<EOF
+  > (copy_files ../shared/*)
+  > (melange.emit
+  >  (emit_stdlib false))
+  > EOF
+  $ (cd copied && dune build app/main.js)
+  Error: Dependency cycle between:
+     { dir = In_build_dir "default/shared"
+     ; predicate = Element (Glob "*")
+     ; only_generated_files = false
+     }
+  [1]
+
+Restricting the glob to OCaml sources avoids that accidental dependency.
+
+  $ cat >copied/app/dune <<EOF
+  > (copy_files ../shared/*.ml)
+  > (melange.emit
+  >  (emit_stdlib false))
+  > EOF
+  $ (cd copied && dune build app/main.js)
+  $ node copied/_build/default/app/main.js
+  copied
