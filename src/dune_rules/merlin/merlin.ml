@@ -12,6 +12,18 @@ let remove_extension file =
   Path.Build.relative dir basename
 ;;
 
+let source_extension ~for_ file =
+  match String.lsplit2 (Path.basename file |> Filename.to_string) ~on:'.' with
+  | None -> ""
+  | Some (_, extension) ->
+    let extension =
+      match for_, String.lsplit2 extension ~on:'.' with
+      | Compilation_mode.Melange, Some ("melange", extension) -> extension
+      | (Ocaml | Melange), (Some _ | None) -> extension
+    in
+    "." ^ extension
+;;
+
 module Processed = struct
   (* The actual content of the merlin file as built by the [Unprocessed.process]
      function from the unprocessed info gathered through [gen_rules]. The first
@@ -408,7 +420,7 @@ module Processed = struct
     }
 
   let get_configuration
-        { per_file_config; pp_config; config; for_ = _ }
+        { per_file_config; pp_config; config; for_ }
         ~file
         ~allow_ambiguous
     =
@@ -436,15 +448,36 @@ module Processed = struct
            let+ ({ module_; _ } as fallback) =
              Path.Build.Map.find per_file_config (remove_extension file)
            in
-           let extension =
-             Path.Build.extension file |> Filename.Extension.Or_empty.to_string
+           let sources = Module.sources_without_pp module_ in
+           let basename = Path.Build.basename file |> Filename.to_string in
+           let _, matching_sources =
+             List.fold_left
+               sources
+               ~init:(0, [])
+               ~f:(fun ((length, matches) as acc) source ->
+                 let extension = source_extension ~for_ source in
+                 if
+                   String.is_empty extension
+                   || not (String.ends_with basename ~suffix:extension)
+                 then acc
+                 else (
+                   let source_length = String.length extension in
+                   match Int.compare source_length length with
+                   | Lt -> acc
+                   | Eq -> length, source :: matches
+                   | Gt -> source_length, [ source ]))
            in
            let matching_sources =
-             Module.sources_without_pp module_
-             |> List.filter ~f:(fun source ->
-               String.equal
-                 extension
-                 (Path.extension source |> Filename.Extension.Or_empty.to_string))
+             match matching_sources with
+             | _ :: _ -> matching_sources
+             | [] ->
+               let extension =
+                 Path.Build.extension file |> Filename.Extension.Or_empty.to_string
+               in
+               List.filter sources ~f:(fun source ->
+                 String.equal
+                   extension
+                   (Path.extension source |> Filename.Extension.Or_empty.to_string))
            in
            let config =
              match matching_sources with
@@ -981,10 +1014,7 @@ module Unprocessed = struct
           let config =
             { Processed.module_ = Module.set_pp m None
             ; opens = Modules.With_vlib.local_open modules m
-            ; reader =
-                String.Map.find
-                  readers
-                  (Filename.Extension.Or_empty.to_string (Path.Build.extension src))
+            ; reader = String.Map.find readers (source_extension ~for_ (Path.build src))
             ; kind = Some kind
             }
           in
