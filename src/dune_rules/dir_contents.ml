@@ -81,13 +81,8 @@ module Standalone_or_root = struct
     ; subdirs : t Path.Build.Map.t
     }
 
-  type physical =
-    { dirs : (Source_file_dir.t * Source_files.t) Nonempty_list.t
-    ; rules : Rules.t
-    }
-
   type nonrec t =
-    { physical : physical Memo.Lazy.t
+    { physical : (Source_file_dir.t * Source_files.t) Nonempty_list.t Memo.Lazy.t
     ; source_dirs : Source_file_dir.t Nonempty_list.t Memo.Lazy.t
     ; rules : Rules.t Memo.Lazy.t
     ; contents : standalone_or_root Memo.Lazy.t
@@ -113,7 +108,7 @@ module Standalone_or_root = struct
     in
     { source_dirs = Memo.Lazy.of_val dirs
     ; rules = Memo.Lazy.of_val Rules.empty
-    ; physical = Memo.Lazy.of_val { dirs = physical_dirs; rules = Rules.empty }
+    ; physical = Memo.Lazy.of_val physical_dirs
     ; contents =
         Memo.Lazy.create ~name:"empty-dir-contents" (fun () ->
           Memo.return
@@ -135,9 +130,9 @@ module Standalone_or_root = struct
   let source_directories t = Memo.Lazy.force t.source_dirs
 
   let source_files t =
-    let* physical = Memo.Lazy.force t.physical in
+    let* dirs = Memo.Lazy.force t.physical in
     Memo.parallel_map
-      (Nonempty_list.to_list physical.dirs)
+      (Nonempty_list.to_list dirs)
       ~f:(fun ({ Source_file_dir.dir; _ }, files) ->
         let+ files = Source_files.get files ~mask:(Target_mask.files_in_directory dir) in
         dir, files)
@@ -315,13 +310,9 @@ end = struct
     in
     let physical =
       Memo.lazy_ ~name:"physical-contents" (fun () ->
-        let+ prepared = Memo.Lazy.force prepared
-        and+ rules = Memo.Lazy.force rules in
-        let dirs =
-          List.map prepared ~f:(fun (source, files, _) -> source, files)
-          |> Nonempty_list.of_list_exn
-        in
-        { Standalone_or_root.dirs; rules })
+        let+ prepared = Memo.Lazy.force prepared in
+        List.map prepared ~f:(fun (source, files, _) -> source, files)
+        |> Nonempty_list.of_list_exn)
     in
     physical, rules
   ;;
@@ -457,7 +448,7 @@ end = struct
             ocaml.lib_config
           in
           let project = Dune_file.project d in
-          let+ { Standalone_or_root.dirs; rules = _ } = Memo.Lazy.force physical in
+          let+ dirs = Memo.Lazy.force physical in
           let _, files = Nonempty_list.hd dirs in
           let loc = loc_of_dune_file st_dir in
           let ml, melange =
@@ -681,9 +672,7 @@ end = struct
         (fun () ->
            let ctx = Super_context.context sctx in
            let project = Dune_file.project dune_file in
-           let* { Standalone_or_root.dirs = (root, files) :: subdirs; rules = _ } =
-             Memo.Lazy.force physical
-           in
+           let* Nonempty_list.((root, files) :: subdirs) = Memo.Lazy.force physical in
            let+ dir_renames =
              match snd qualification with
              | Unqualified | Qualified { dirs = [] } -> Memo.return Dir_renames.empty
