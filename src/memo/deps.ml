@@ -88,14 +88,14 @@ end
    avoid recomputations of dependencies that are no longer relevant, and to eliminate
    spurious dependency cycles. This is why [changed_or_not] checks sequential sections in
    order rather than in parallel. *)
-let changed_or_not (t : 'node t) ~f =
-  let rec loop ~ok_to_recompute_eagerly (t : 'node Static.t) =
+let changed_or_not =
+  let rec loop ~f ~ok_to_recompute_eagerly (t : 'node Static.t) =
     match t with
     | Empty -> Fiber.return Changed_or_not.Unchanged
     | Singleton node ->
       Counter.add Metrics.Restore.edges 1;
       f ~ok_to_recompute_eagerly node
-    | Seq arr -> seq arr 0
+    | Seq arr -> seq ~f arr 0
     | Par arr ->
       Fiber.map_reduce_array
         (Array.Immutable.to_array_unsafe arr)
@@ -106,17 +106,24 @@ let changed_or_not (t : 'node t) ~f =
           | Static.Singleton node ->
             Counter.add Metrics.Restore.edges 1;
             f ~ok_to_recompute_eagerly:true node
-          | other -> loop ~ok_to_recompute_eagerly:false other)
-  and seq arr index =
-    if index < Array.Immutable.length arr
-    then
-      loop ~ok_to_recompute_eagerly:false (Array.Immutable.get arr index)
-      >>= function
-      | Changed_or_not.Unchanged -> seq arr (index + 1)
-      | (Changed | Cancelled _) as res -> Fiber.return res
+          | other -> loop ~f ~ok_to_recompute_eagerly:false other)
+  and seq ~f arr index =
+    let length = Array.Immutable.length arr in
+    if index < length
+    then (
+      let result =
+        loop ~f ~ok_to_recompute_eagerly:false (Array.Immutable.get arr index)
+      in
+      if index + 1 = length
+      then result
+      else
+        result
+        >>= function
+        | Changed_or_not.Unchanged -> seq ~f arr (index + 1)
+        | (Changed | Cancelled _) as res -> Fiber.return res)
     else Fiber.return Changed_or_not.Unchanged
   in
-  loop ~ok_to_recompute_eagerly:false t
+  fun (t : 'node t) ~f -> loop ~f ~ok_to_recompute_eagerly:false t
 ;;
 
 module For_debugging = struct

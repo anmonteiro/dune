@@ -283,3 +283,125 @@ let%expect_test "nested par-seq-par: eagerness re-enables under a Par" =
     Memo cycle detection graph: 3/2/1 nodes/edges/paths
     |}]
 ;;
+
+let%expect_test "last sequential dependency forwards cancellation" =
+  Memo.reset Memo.Invalidation.empty;
+  let cyclic = Memo.Var.create ~name:"last-section cyclic" false in
+  let prefix = Memo.lazy_node ~name:"prefix" (fun () -> Memo.return ()) in
+  let a_ref = Fdecl.create (fun _ -> Dyn.Opaque) in
+  let a_computes = ref 0 in
+  let b =
+    Memo.lazy_node ~name:"B" ~cutoff:Int.equal (fun () ->
+      let* cyclic = Memo.Var.read cyclic in
+      if cyclic then Memo.Node.read (Fdecl.get a_ref) else Memo.return 0)
+  in
+  let a =
+    Memo.lazy_node ~name:"A" (fun () ->
+      incr a_computes;
+      let* () = Memo.Node.read prefix in
+      Memo.Node.read b)
+  in
+  Fdecl.set a_ref a;
+  printfn "warm: %d" (run (Memo.Node.read a));
+  Memo.reset (Memo.Var.set cyclic true);
+  run (Memo.Node.read prefix);
+  (* B computes while A restores its final B edge. Cancellation must not
+     recompute A. *)
+  (match Scheduler.run (run_collect_errors (fun () -> Memo.Node.read b)) with
+   | Ok _ -> Code_error.raise "Expected the final dependency cycle" []
+   | Error errors ->
+     assert (not (List.is_empty errors));
+     assert (
+       List.for_all errors ~f:(fun { Exn_with_backtrace.exn; _ } ->
+         match exn with
+         | Memo.Cycle_error.E _ -> true
+         | _ -> false)));
+  assert (!a_computes = 1);
+  print_endline "cancelled without recomputing A";
+  Memo.reset (Memo.Var.set cyclic false);
+  printfn "recovered: %d" (run (Memo.Node.read a));
+  assert (!a_computes = 2);
+  Memo.reset Memo.Invalidation.empty;
+  [%expect
+    {|
+    warm: 0
+    cancelled without recomputing A
+    recovered: 0
+    |}]
+;;
+
+let%expect_test "current sequential duplicates preserve the cached object" =
+  Memo.reset Memo.Invalidation.empty;
+  let leaf = Memo.lazy_node ~name:"sequence leaf" (fun () -> Memo.return ()) in
+  let computes = ref 0 in
+  let parent =
+    Memo.lazy_node ~name:"sequence parent" (fun () ->
+      incr computes;
+      let* () = Memo.Node.read leaf in
+      let* () = Memo.Node.read leaf in
+      let+ () = Memo.Node.read leaf in
+      ref 7)
+  in
+  let read = Memo.Node.read parent in
+  let original = run read in
+  Memo.reset Memo.Invalidation.empty;
+  run (Memo.Node.read leaf);
+  Memo.Metrics.reset ();
+  let restored = run read in
+  assert (restored == original);
+  assert (run read == original);
+  assert (!computes = 1);
+  assert (Counter.read Memo.Metrics.Restore.nodes = 1);
+  assert (Counter.read Memo.Metrics.Restore.edges = 3);
+  assert (Counter.read Memo.Metrics.Compute.nodes = 0);
+  print_endline "same object; three restored duplicate edges";
+  Memo.reset Memo.Invalidation.empty;
+  [%expect {| same object; three restored duplicate edges |}]
+;;
+
+let%expect_test "a changed current sequence stops before its unused tail" =
+  Memo.reset Memo.Invalidation.empty;
+  let input = Memo.Var.create ~name:"sequence input" 0 in
+  let prefix = Memo.lazy_node ~name:"sequence prefix" (fun () -> Memo.return ()) in
+  let child =
+    Memo.lazy_node ~name:"sequence child" ~cutoff:Int.equal (fun () ->
+      Memo.Var.read input)
+  in
+  let tail_live = ref 0 in
+  let tail =
+    Memo.lazy_node
+      ~name:"unused sequence tail"
+      ~on_event:(function
+        | Live -> incr tail_live
+        | Validated -> ())
+      (fun () -> Memo.return ())
+  in
+  let computes = ref 0 in
+  let parent =
+    Memo.lazy_node ~name:"skipped sequence parent" (fun () ->
+      incr computes;
+      let* () = Memo.Node.read prefix in
+      let* () = Memo.Node.read prefix in
+      let* value = Memo.Node.read child in
+      if value = 0
+      then
+        let+ () = Memo.Node.read tail in
+        value
+      else Memo.return value)
+  in
+  assert (run (Memo.Node.read parent) = 0);
+  Memo.reset (Memo.Var.set input 1);
+  assert (run (Memo.Node.read child) = 1);
+  Memo.reset Memo.Invalidation.empty;
+  run (Memo.Node.read prefix);
+  assert (run (Memo.Node.read child) = 1);
+  Memo.Metrics.reset ();
+  assert (run (Memo.Node.read parent) = 1);
+  assert (!computes = 2);
+  assert (!tail_live = 1);
+  assert (Counter.read Memo.Metrics.Restore.nodes = 1);
+  assert (Counter.read Memo.Metrics.Restore.edges = 3);
+  print_endline "changed child; three restored edges; tail untouched";
+  Memo.reset Memo.Invalidation.empty;
+  [%expect {| changed child; three restored edges; tail untouched |}]
+;;
