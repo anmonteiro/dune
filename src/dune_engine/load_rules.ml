@@ -853,33 +853,25 @@ end = struct
       (Memo.create
          "source-copy-rules"
          ~input:(module Path.Build)
-         (fun dir ->
-            let module Source_tree = (val (Build_config.get ()).source_tree) in
-            let src_dir = Path.Build.drop_build_context_exn dir in
-            let+ source_dir = Source_tree.find_dir src_dir in
-            match source_dir with
-            | None -> Filename.Array.Map.empty
-            | Some source_dir ->
-              Filename.Array.Map.of_set
-                (Source_tree.Dir.filenames source_dir)
-                ~f:(fun filename ->
-                  let src_path = Path.Source.relative_fname src_dir filename in
-                  let build_path = Path.Build.relative_fname dir filename in
-                  Rule.make
-                    ~info:(Source_file_copy src_path)
-                    ~targets:(Targets.File.create build_path)
-                    (copy_source_action ~src_path ~build_path))))
+         (fun _ -> Memo.return (Table.create (module Filename) 16)))
   ;;
 
   let create_copy_rules ~dir ~ctx_dir ~non_target_source_filenames =
     if Filename.Array.Set.is_empty non_target_source_filenames
     then Memo.return []
-    else
-      (* Cache unfiltered copies: the source and complete views can ignore
-         different source files but must share the same copy-rule identities. *)
-      let+ rules = source_copy_rules (Path.Build.append_source ctx_dir dir) in
+    else (
+      (* Source inventory is checked by the caller. Cache only requested copies,
+         sharing their identity across views and unrelated source-name changes. *)
+      let build_dir = Path.Build.append_source ctx_dir dir in
+      let+ rules = source_copy_rules build_dir in
       Filename.Array.Set.to_list_map non_target_source_filenames ~f:(fun filename ->
-        Filename.Array.Map.find rules filename |> Option.value_exn)
+        Table.find_or_add rules filename ~f:(fun filename ->
+          let src_path = Path.Source.relative_fname dir filename in
+          let build_path = Path.Build.relative_fname build_dir filename in
+          Rule.make
+            ~info:(Source_file_copy src_path)
+            ~targets:(Targets.File.create build_path)
+            (copy_source_action ~src_path ~build_path))))
   ;;
 
   let compile_rules ~dir ~source_dirs rules =
