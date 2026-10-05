@@ -23,6 +23,10 @@ end
 module Files : sig
   (** A set of file targets. *)
   val create : Path.Build.Set.t -> t
+
+  (** File targets with known names in [dir], without constructing full paths.
+      An empty set remains invalid as the targets of a rule. *)
+  val create_in_dir : dir:Path.Build.t -> Filename.Set.t -> t
 end
 
 (** A set of file and directory targets. *)

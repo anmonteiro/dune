@@ -187,6 +187,19 @@ let print_toplevel_init_file { include_paths; files_to_load; uses; pp; ppx; code
 ;;
 
 module Stanza = struct
+  let symlink ~dir (source : Source.t) =
+    Path.Build.relative
+      dir
+      (source.name ^ Filename.Extension.to_string Filename.Extension.exe)
+  ;;
+
+  let rule_targets ~dir toplevel =
+    let source = Source.of_stanza ~dir ~toplevel in
+    Target_mask.union
+      (Target_mask.subtree source.dir)
+      (Target_mask.files [ symlink ~dir source ])
+  ;;
+
   let setup ~sctx ~dir ~(toplevel : Toplevel_stanza.t) =
     let source = Source.of_stanza ~dir ~toplevel in
     let* exe =
@@ -258,7 +271,7 @@ module Stanza = struct
       let resolved = make ~cctx ~source ~preprocess:toplevel.pps expander in
       setup_rules_and_return_exe_path resolved ~linkage
     in
-    let symlink = Path.Build.relative_fname dir (Path.Build.basename exe) in
+    let symlink = symlink ~dir source in
     Super_context.add_rule
       sctx
       ~dir

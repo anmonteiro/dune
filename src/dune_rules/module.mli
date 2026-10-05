@@ -10,6 +10,8 @@ module File : sig
   val original_path : t -> Path.t
   val make : ?original_path:Path.t -> Dialect.t -> Path.t -> t
   val set_path : t -> Path.t -> t
+  val pped : t -> t
+  val ml_source : t -> ml_kind:Ml_kind.t -> t
 end
 
 module Kind : sig
@@ -80,6 +82,7 @@ val set_source : t -> ml_kind:Ml_kind.t -> File.t option -> t
 val set_pp : t -> (string list Action_builder.t * Sandbox_config.t) option -> t
 
 val wrapped_compat : t -> t
+val wrapped_compat_dir : Path.t -> Path.t
 
 module Name_map : sig
   type module_ := t

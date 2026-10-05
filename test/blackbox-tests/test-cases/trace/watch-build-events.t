@@ -68,6 +68,12 @@ rusage snapshots on build trace events.
         "cycle_detection": [
           "edges",
           "nodes"
+        ],
+        "cache_validity": [
+          "cache_hits",
+          "edges",
+          "nodes",
+          "queries"
         ]
       },
       "rusage": [
@@ -151,6 +157,12 @@ active build is interrupted.
         "cycle_detection": [
           "edges",
           "nodes"
+        ],
+        "cache_validity": [
+          "cache_hits",
+          "edges",
+          "nodes",
+          "queries"
         ]
       },
       "rusage": [
@@ -215,6 +227,12 @@ active build is interrupted.
         "cycle_detection": [
           "edges",
           "nodes"
+        ],
+        "cache_validity": [
+          "cache_hits",
+          "edges",
+          "nodes",
+          "queries"
         ]
       },
       "rusage": [

@@ -1,6 +1,6 @@
 Rejects excluding modules that do not exist.
 
-  $ dune build
+  $ dune build foo.cma
   File "dune", line 3, characters 22-26:
   3 |  (modules :standard \ fake))
                             ^^^^

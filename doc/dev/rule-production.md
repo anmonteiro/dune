@@ -1,10 +1,10 @@
 # Rule production
 
-This document describes how rule production works in Dune. It was originally
-written by Jérémie Dimino as part of the
+This document describes Dune's historical eager rule-production design. It was
+originally written by Jérémie Dimino as part of the
 [streaming RFC](https://github.com/ocaml/dune/pull/5251), but moved
-into the dev documentation as it provides a great overview on how this part of
-Dune works at present.
+into the dev documentation. See [rule streaming](./rule-streaming.md) for the
+recursive, pull-based design that replaces it.
 
 ## How does rule production works?
 

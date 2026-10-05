@@ -66,6 +66,8 @@ module Event : sig
     ; dirs : Filename.Set.t
     }
 
+  val rule_generated : targets -> t
+
   val process_start
     :  extra_args:(string * Sexp.t) list
     -> pid:Pid.t
@@ -153,6 +155,10 @@ module Event : sig
     ; compute_blocked : int
     ; cycle_detection_nodes : int
     ; cycle_detection_edges : int
+    ; cache_validity_queries : int
+    ; cache_validity_nodes : int
+    ; cache_validity_edges : int
+    ; cache_validity_cache_hits : int
     }
 
   val watch_build_finish

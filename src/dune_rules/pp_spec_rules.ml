@@ -1,6 +1,102 @@
 open Import
 open Memo.O
 
+let source_files ~dialects paths =
+  List.filter_map paths ~f:(fun path ->
+    let open Option.O in
+    let* _, extension =
+      Path.Build.basename path |> Filename.to_string |> String.lsplit2 ~on:'.'
+    in
+    let* extension = Filename.Extension.of_string ("." ^ extension) in
+    let+ dialect, ml_kind = Dialect.DB.find_by_extension dialects extension in
+    ml_kind, Module.File.make dialect (Path.build path))
+;;
+
+let has_preprocessing preprocess =
+  Module_reference.Per_item.exists preprocess ~f:(function
+    | Preprocess.No_preprocessing | Pps { staged = true; _ } -> false
+    | Action _ | Pps { staged = false; _ } | Future_syntax _ -> true)
+;;
+
+let lint_rule_targets ~dir lint =
+  if
+    Module_reference.Per_item.exists lint ~f:(function
+      | Preprocess.No_preprocessing -> false
+      | Action _ | Pps _ | Future_syntax _ -> true)
+  then Target_mask.aliases [ Alias.make Alias0.lint ~dir ]
+  else Target_mask.empty
+;;
+
+let possible_files file ~ml_kind ~preprocess =
+  let ml_source = Module.File.ml_source file ~ml_kind in
+  if not preprocess
+  then [ ml_source ]
+  else
+    [ ml_source
+    ; Module.File.pped file
+    ; Module.File.pped ml_source
+    ; Module.File.ml_source (Module.File.pped file) ~ml_kind
+    ]
+;;
+
+let rule_targets ~dialects ~preprocess paths =
+  let preprocess = has_preprocessing preprocess in
+  source_files ~dialects paths
+  |> List.concat_map ~f:(fun (ml_kind, file) ->
+    possible_files file ~ml_kind ~preprocess
+    |> List.filter_map ~f:(fun generated ->
+      let path = Module.File.path generated in
+      Option.some_if
+        (not (Path.equal path (Module.File.path file)))
+        (Path.as_in_build_dir_exn path)))
+  |> Target_mask.files
+;;
+
+let rule_target_families ~dir ~dialects ~preprocess ~empty_intf =
+  let preprocess = has_preprocessing preprocess in
+  let generated =
+    Dialect.DB.fold dialects ~init:[] ~f:(fun dialect acc ->
+      List.fold_left Ml_kind.all ~init:acc ~f:(fun acc ml_kind ->
+        match Dialect.extension dialect ml_kind with
+        | None -> acc
+        | Some extension ->
+          (* Apply the same filename transformations to a wildcard basename. *)
+          let source =
+            Path.Build.relative dir ("*" ^ Filename.Extension.to_string extension)
+          in
+          let file = Module.File.make dialect (Path.build source) in
+          let _, generated =
+            possible_files file ~ml_kind ~preprocess
+            |> List.fold_left ~init:([], []) ~f:(fun (seen, acc) generated ->
+              let path = Module.File.path generated in
+              if Path.equal path (Path.build source)
+              then seen, acc
+              else (
+                let pattern = Path.basename path |> Filename.to_string in
+                if List.mem seen pattern ~equal:String.equal
+                then seen, acc
+                else (
+                  let suffix = String.drop pattern 1 |> Glob.escape in
+                  let mask =
+                    "*" ^ suffix
+                    |> Predicate_lang.Glob.of_string
+                    |> Target_mask.files_matching ~dir
+                  in
+                  pattern :: seen, mask :: acc)))
+          in
+          List.rev_append generated acc))
+  in
+  let empty_intf =
+    if empty_intf
+    then
+      Target_mask.file_extensions
+        ~dir
+        (Filename.Extension.Set.singleton Filename.Extension.mli)
+    else Target_mask.empty
+  in
+  List.fold_left generated ~init:empty_intf ~f:Target_mask.union
+;;
+
 let pped_module m ~f =
   let pped = Module.pped m in
   let+ () =

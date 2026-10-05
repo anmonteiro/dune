@@ -3,6 +3,77 @@ open Memo.O
 
 let first_exe (exes : Executables.t) = snd (Nonempty_list.hd exes.names)
 
+let output_files ~dir ~lib_config (exes : Executables.t) =
+  let extensions =
+    Executables.Link_mode.Map.to_list_map exes.modes ~f:(fun mode loc ->
+      Executables.Link_mode.extension
+        mode
+        ~loc
+        ~ext_obj:lib_config.Lib_config.ext_obj
+        ~ext_dll:lib_config.ext_dll)
+    @ [ Filename.Extension.exe; Filename.Extension.of_string_exn ".bc-for-jsoo" ]
+    @ List.map Js_of_ocaml.Mode.all ~f:(fun mode -> Js_of_ocaml.Ext.exe ~mode)
+  in
+  Nonempty_list.to_list exes.names
+  |> List.concat_map ~f:(fun (_, name) ->
+    List.map extensions ~f:(fun extension ->
+      Path.Build.relative dir (name ^ Filename.Extension.to_string extension)))
+;;
+
+let implicit_intf_targets ~source_files ~project =
+  if not (Dune_project.executables_implicit_empty_intf project)
+  then Target_mask.empty
+  else
+    List.fold_left source_files ~init:Target_mask.empty ~f:(fun targets (dir, _) ->
+      Target_mask.union
+        targets
+        (Target_mask.file_extensions
+           ~dir
+           (Filename.Extension.Set.singleton Filename.Extension.mli)))
+;;
+
+let rule_targets ~dir ~source_files ~lib_config ~dialects ~project (exes : Executables.t) =
+  let outputs = output_files ~dir ~lib_config exes in
+  let obj_dir = Executables.obj_dir exes ~dir in
+  let modules =
+    List.fold_left source_files ~init:Target_mask.empty ~f:(fun acc (dir, _) ->
+      Target_mask.union acc (Module_compilation.rule_targets ~dir ~obj_dir))
+  in
+  let wasm =
+    Nonempty_list.to_list exes.names
+    |> List.fold_left ~init:Target_mask.empty ~f:(fun acc (_, name) ->
+      Target_mask.union
+        acc
+        (Target_mask.subtree
+           (Path.Build.relative
+              dir
+              (name ^ Filename.Extension.to_string Js_of_ocaml.Ext.wasm_dir))))
+  in
+  List.fold_left
+    [ modules
+    ; wasm
+    ; Target_mask.files
+        (outputs
+         @ List.map outputs ~f:(fun path ->
+           Path.Build.set_extension path ~ext:Filename.Extension.map))
+    ; Target_mask.files
+        (Option.to_list exes.bootstrap_info |> List.map ~f:(Path.Build.relative dir))
+    ; Buildable_rules.rule_targets ~dir ~source_files ~lib_config ~dialects exes.buildable
+    ; implicit_intf_targets ~source_files ~project
+    ; Target_mask.aliases
+        (List.map
+           (Alias0.check
+            :: Alias0.unused_libs
+            ::
+            (match exes.install_conf with
+             | None -> []
+             | Some _ -> [ Alias0.all ]))
+           ~f:(Alias.make ~dir))
+    ]
+    ~init:Target_mask.empty
+    ~f:Target_mask.union
+;;
+
 let linkages
       ~dynamically_linked_foreign_archives
       (ocaml : Ocaml_toolchain.t)

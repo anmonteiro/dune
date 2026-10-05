@@ -1,5 +1,53 @@
 open Import
 
+let possible_basenames ~dir ~source_files ~source_extension ~modules =
+  let physical =
+    List.concat_map source_files ~f:(fun (source_dir, files) ->
+      if not (Path.Build.equal dir source_dir)
+      then []
+      else
+        Filename.Array.Set.to_list files
+        |> List.filter_map ~f:(fun filename ->
+          Option.some_if
+            (Filename.Extension.Or_empty.check
+               (Filename.extension filename)
+               source_extension)
+            (Filename.remove_extension filename |> Filename.to_string)))
+  in
+  Ordered_set_lang.Unexpanded.fold_strings modules ~init:physical ~f:(fun _pos sw acc ->
+    match String_with_vars.text_only sw with
+    | None -> acc
+    | Some name -> name :: acc)
+;;
+
+let source_files ~dir ~source_files ~for_ =
+  let { Parser_generators.modules; _ }, source_extension, target_extensions =
+    match for_ with
+    | Parser_generators.Ocamllex s -> s, Filename.Extension.mll, [ Filename.Extension.ml ]
+    | Ocamlyacc s ->
+      s, Filename.Extension.mly, [ Filename.Extension.ml; Filename.Extension.mli ]
+  in
+  possible_basenames ~dir ~source_files ~source_extension ~modules
+  |> List.concat_map ~f:(fun name ->
+    let path = Path.Build.relative dir name in
+    List.map target_extensions ~f:(fun ext -> Path.Build.set_extension path ~ext))
+;;
+
+let rule_targets ~dir ~source_files:files ~for_ =
+  let modules, extensions =
+    match for_ with
+    | Parser_generators.Ocamllex s -> s.modules, [ Filename.Extension.ml ]
+    | Ocamlyacc s -> s.modules, [ Filename.Extension.ml; Filename.Extension.mli ]
+  in
+  let known = Target_mask.files (source_files ~dir ~source_files:files ~for_) in
+  if Ordered_set_lang.Unexpanded.is_expanded modules
+  then known
+  else
+    Target_mask.union
+      known
+      (Target_mask.file_extensions ~dir (Filename.Extension.Set.of_list extensions))
+;;
+
 let tool =
   let tool_bin sctx ~loc ~dir ~for_ =
     Super_context.resolve_program
@@ -59,5 +107,12 @@ let gen_rules sctx ~dir_contents ~dir ~for_ =
     Expander.expand_and_eval_set expander flags ~standard
   in
   Module_trie.to_list targets
-  |> Memo.parallel_iter ~f:(add_rule sctx ~dir ~mode ~flags ~expander ~for_)
+  |> Memo.parallel_iter ~f:(fun ((_, source) as module_) ->
+    let targets =
+      Module.Source.files source
+      |> List.map ~f:(fun file -> Module.File.path file |> Path.as_in_build_dir_exn)
+      |> Target_mask.files
+    in
+    Rules.narrow targets (fun () ->
+      add_rule sctx ~dir ~mode ~flags ~expander module_ ~for_))
 ;;
