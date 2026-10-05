@@ -696,6 +696,63 @@ Exact matches exclude fallback configurations from other modes.
   iface.pp.mli: melange false intf iface.ml
   iface: none
 
+Compound dialect suffixes retain their readers and distinguish source kinds in
+both modes. Exact conditional source paths select one mode; untracked filenames
+use the fallback in both modes, even when their names contain `.melange`.
+
+  $ mkdir compound
+  $ cat > compound/dune-project <<EOF
+  > (lang dune 3.25)
+  > (using melange 1.0)
+  > (dialect
+  >  (name compound)
+  >  (implementation
+  >   (extension impl.ml)
+  >   (preprocess (run cat %{input-file}))
+  >   (merlin_reader implementation))
+  >  (interface
+  >   (extension intf.ml)
+  >   (preprocess (run cat %{input-file}))
+  >   (merlin_reader interface)))
+  > EOF
+  $ cat > compound/dune <<EOF
+  > (library
+  >  (name compound)
+  >  (modules sample)
+  >  (modes :standard melange))
+  > EOF
+  $ touch compound/sample.impl.ml compound/sample.intf.ml \
+  >   compound/sample.melange.impl.ml compound/sample.melange.intf.ml
+  $ dune build --root compound @check
+  $ (cd compound && merlin_configurations \
+  >   _build/default/.merlin-conf/lib-compound \
+  >   sample.impl.ml sample.intf.ml \
+  >   sample.melange.impl.ml sample.melange.intf.ml \
+  >   sample.pp.impl.ml sample.pp.intf.ml \
+  >   sample.melange.pp.impl.ml sample.melange.pp.intf.ml)
+  sample.impl.ml: ocaml true impl sample.intf.ml
+  sample.intf.ml: ocaml true intf sample.impl.ml
+  sample.melange.impl.ml: melange false impl sample.melange.intf.ml
+  sample.melange.intf.ml: melange false intf sample.melange.impl.ml
+  sample.pp.impl.ml: ocaml true impl sample.intf.ml
+  sample.pp.impl.ml: melange false impl sample.melange.intf.ml
+  sample.pp.intf.ml: ocaml true intf sample.impl.ml
+  sample.pp.intf.ml: melange false intf sample.melange.impl.ml
+  sample.melange.pp.impl.ml: ocaml true impl sample.intf.ml
+  sample.melange.pp.impl.ml: melange false impl sample.melange.intf.ml
+  sample.melange.pp.intf.ml: ocaml true intf sample.impl.ml
+  sample.melange.pp.intf.ml: melange false intf sample.melange.impl.ml
+  $ for file in sample.impl.ml sample.intf.ml \
+  >   sample.melange.impl.ml sample.melange.intf.ml; do
+  >   printf '%s: ' "$file"
+  >   query_ocaml_merlin_pp "$PWD/compound/$file" --root compound \
+  >     | grep -Eo '\(READER \([^)]*\)\)' || echo no-reader
+  > done
+  sample.impl.ml: (READER (implementation))
+  sample.intf.ml: (READER (interface))
+  sample.melange.impl.ml: (READER (implementation))
+  sample.melange.intf.ml: (READER (interface))
+
 Melange-only libraries have a default Melange configuration.
 
   $ (cd mixed && merlin_configurations \
