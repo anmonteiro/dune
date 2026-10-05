@@ -23,6 +23,8 @@ module Node_kind : sig
       [true] for any pair of values. *)
   val has_cutoff : _ t -> bool
 
+  val has_on_event : _ t -> bool
+
   (** Notify the node about an event. *)
   val notify : ('i, _) t -> 'i -> Event.t -> unit
 end = struct
@@ -63,6 +65,11 @@ end = struct
     | With_event_tracker { on_event }
     | With_cutoff_and_event_tracker { on_event; equal = _ } -> on_event input event
   ;;
+
+  let has_on_event = function
+    | Vanilla | With_cutoff _ -> false
+    | With_event_tracker _ | With_cutoff_and_event_tracker _ -> true
+  ;;
 end
 
 type ('i, 'o) t =
@@ -102,4 +109,5 @@ let output_changed t ~old_value ~new_value =
 ;;
 
 let has_cutoff t = Node_kind.has_cutoff t.node_kind
+let has_on_event t = Node_kind.has_on_event t.node_kind
 let notify t input event = Node_kind.notify t.node_kind input event

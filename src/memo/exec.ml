@@ -182,7 +182,22 @@ and consider_and_restore_from_cache_without_adding_dep
   match node.state with
   | Cached ->
     Spec.notify node.spec node.input Live;
-    start_restoring node
+    (match node.value with
+     | (Ok _ | Error { reproducible = true; _ }) when not (Spec.has_on_event node.spec) ->
+       (match node.deps with
+        | Deps.Static.Singleton (Dep_node.T dep)
+          when Run.is_current (Dep_node.last_validated_at dep) ->
+          (match
+             Run.compare (Dep_node.last_changed_at dep) (Dep_node.last_validated_at node)
+           with
+           | Gt -> start_restoring node
+           | Eq | Lt ->
+             Counter.incr Metrics.Restore.nodes;
+             Counter.incr Metrics.Restore.edges;
+             validate_value node;
+             Fiber.return Changed_or_not.Unchanged)
+        | Empty | Singleton _ | Seq _ | Par _ -> start_restoring node)
+     | Uninitialized | Ok _ | Error _ -> start_restoring node)
   | Restoring { restore_from_cache } ->
     Computation.read_but_first_check_for_cycles
       ~phase:Restore_from_cache

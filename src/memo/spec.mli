@@ -48,5 +48,8 @@ val output_changed : (_, 'o) t -> old_value:'o -> new_value:'o -> bool
     guaranteed to return [true] for any pair of values. *)
 val has_cutoff : _ t -> bool
 
+(** Whether the node has an event callback. *)
+val has_on_event : _ t -> bool
+
 (** [notify spec input event] runs [spec]'s [on_event] callback, if it has one. *)
 val notify : ('i, _) t -> 'i -> Event.t -> unit

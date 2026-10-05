@@ -283,3 +283,136 @@ let%expect_test "nested par-seq-par: eagerness re-enables under a Par" =
     Memo cycle detection graph: 3/2/1 nodes/edges/paths
     |}]
 ;;
+
+let%expect_test "current unchanged singleton preserves the cached object" =
+  Memo.reset Memo.Invalidation.empty;
+  let leaf = Memo.lazy_node ~name:"singleton leaf" (fun () -> Memo.return ()) in
+  let computes = ref 0 in
+  let parent =
+    Memo.lazy_node ~name:"singleton parent" (fun () ->
+      incr computes;
+      let+ () = Memo.Node.read leaf in
+      ref 7)
+  in
+  let original = run (Memo.Node.read parent) in
+  Memo.reset Memo.Invalidation.empty;
+  run (Memo.Node.read leaf);
+  Memo.Metrics.reset ();
+  let restored = run (Memo.Node.read parent) in
+  assert (run (Memo.Node.read parent) == restored);
+  printfn "same=%b computes=%d" (original == restored) !computes;
+  print_metrics ();
+  Memo.reset Memo.Invalidation.empty;
+  [%expect
+    {|
+    same=true computes=1
+    Memo graph: 1/1/0 nodes/edges/blocked (restore), 0/0/0 nodes/edges/blocked (compute)
+    Memo cycle detection graph: 0/0/0 nodes/edges/paths
+    |}]
+;;
+
+let%expect_test "current singleton changed while its parent was unreachable" =
+  Memo.reset Memo.Invalidation.empty;
+  let input = Memo.Var.create ~name:"singleton input" 0 in
+  let child =
+    Memo.lazy_node ~name:"singleton child" ~cutoff:Int.equal (fun () ->
+      Memo.Var.read input)
+  in
+  let computes = ref 0 in
+  let parent =
+    Memo.lazy_node ~name:"skipped singleton parent" (fun () ->
+      incr computes;
+      Memo.Node.read child)
+  in
+  assert (run (Memo.Node.read parent) = 0);
+  Memo.reset (Memo.Var.set input 1);
+  assert (run (Memo.Node.read child) = 1);
+  Memo.reset Memo.Invalidation.empty;
+  assert (run (Memo.Node.read child) = 1);
+  Memo.Metrics.reset ();
+  let value = run (Memo.Node.read parent) in
+  printfn "value=%d computes=%d" value !computes;
+  print_metrics ();
+  Memo.reset Memo.Invalidation.empty;
+  [%expect
+    {|
+    value=1 computes=2
+    Memo graph: 1/1/0 nodes/edges/blocked (restore), 1/1/0 nodes/edges/blocked (compute)
+    Memo cycle detection graph: 0/0/0 nodes/edges/paths
+    |}]
+;;
+
+let%expect_test "current singleton preserves a cached error stack" =
+  Memo.reset Memo.Invalidation.empty;
+  let leaf = Memo.lazy_node ~name:"singleton error leaf" (fun () -> Memo.return ()) in
+  let computes = ref 0 in
+  let parent =
+    Memo.lazy_node ~name:"singleton failing parent" (fun () ->
+      incr computes;
+      let+ () = Memo.Node.read leaf in
+      failwith "singleton failure")
+  in
+  let read = Memo.Node.read parent in
+  let check () =
+    match Scheduler.run (Fiber.collect_errors (fun () -> Memo.run read)) with
+    | Error [ { Exn_with_backtrace.exn = Memo.Error.E error; _ } ] ->
+      assert (
+        match Memo.Error.get error with
+        | Failure message -> String.equal message "singleton failure"
+        | _ -> false);
+      let names =
+        List.map (Memo.Error.stack error) ~f:(fun frame ->
+          Option.value_exn (Memo.Stack_frame.name frame))
+      in
+      printfn "stack=%s computes=%d" (String.concat ~sep:" -> " names) !computes
+    | Ok _ | Error _ -> Code_error.raise "Expected a named Memo error" []
+  in
+  check ();
+  Memo.reset Memo.Invalidation.empty;
+  run (Memo.Node.read leaf);
+  Memo.Metrics.reset ();
+  check ();
+  print_metrics ();
+  Memo.reset Memo.Invalidation.empty;
+  [%expect
+    {|
+    stack=singleton failing parent computes=1
+    stack=singleton failing parent computes=1
+    Memo graph: 1/1/0 nodes/edges/blocked (restore), 0/0/0 nodes/edges/blocked (compute)
+    Memo cycle detection graph: 0/0/0 nodes/edges/paths
+    |}]
+;;
+
+let%expect_test "current singleton preserves event notifications" =
+  Memo.reset Memo.Invalidation.empty;
+  let leaf = Memo.lazy_node ~name:"observed singleton leaf" (fun () -> Memo.return 7) in
+  let live = ref 0 in
+  let validated = ref 0 in
+  let computes = ref 0 in
+  let parent =
+    Memo.lazy_node
+      ~name:"observed singleton parent"
+      ~on_event:(function
+        | Live -> incr live
+        | Validated -> incr validated)
+      (fun () ->
+         incr computes;
+         Memo.Node.read leaf)
+  in
+  let first = run (Memo.Node.read parent) in
+  Memo.reset Memo.Invalidation.empty;
+  let leaf_value = run (Memo.Node.read leaf) in
+  Memo.Metrics.reset ();
+  let second = run (Memo.Node.read parent) in
+  printfn "values=%d/%d/%d" first leaf_value second;
+  printfn "live=%d validated=%d computes=%d" !live !validated !computes;
+  print_metrics ();
+  Memo.reset Memo.Invalidation.empty;
+  [%expect
+    {|
+    values=7/7/7
+    live=2 validated=2 computes=1
+    Memo graph: 1/1/0 nodes/edges/blocked (restore), 0/0/0 nodes/edges/blocked (compute)
+    Memo cycle detection graph: 0/0/0 nodes/edges/paths
+    |}]
+;;
