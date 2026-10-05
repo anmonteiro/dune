@@ -72,3 +72,27 @@ project does not specify the option explicitly.
   _build/default/priv/priv2/.priv2.objs/byte/priv2.cmt
   _build/default/pub/pub2/.pub2.objs/byte/pub2.cmt
   _build/install/default/lib/pub2/pub2.cmt
+
+Request annotations and interfaces directly, including the interface produced as
+an additional output when compiling a module without an mli.
+
+  $ mkdir targets
+  $ touch targets/with_intf.ml targets/with_intf.mli targets/without_intf.ml targets/intf_only.mli
+  $ cat >targets/dune <<EOF
+  > (env (_ (bin_annot true)))
+  > (library
+  >  (name compiler_targets)
+  >  (wrapped false)
+  >  (modules_without_implementation intf_only))
+  > EOF
+  $ dune build targets/.compiler_targets.objs/byte/without_intf.cmi targets/.compiler_targets.objs/byte/without_intf.cmt targets/.compiler_targets.objs/byte/with_intf.cmo targets/.compiler_targets.objs/byte/with_intf.cmti targets/.compiler_targets.objs/byte/intf_only.cmti
+  $ find _build/default/targets -name '*.cm*' | sort
+  _build/default/targets/.compiler_targets.objs/byte/intf_only.cmi
+  _build/default/targets/.compiler_targets.objs/byte/intf_only.cmti
+  _build/default/targets/.compiler_targets.objs/byte/with_intf.cmi
+  _build/default/targets/.compiler_targets.objs/byte/with_intf.cmo
+  _build/default/targets/.compiler_targets.objs/byte/with_intf.cmt
+  _build/default/targets/.compiler_targets.objs/byte/with_intf.cmti
+  _build/default/targets/.compiler_targets.objs/byte/without_intf.cmi
+  _build/default/targets/.compiler_targets.objs/byte/without_intf.cmo
+  _build/default/targets/.compiler_targets.objs/byte/without_intf.cmt

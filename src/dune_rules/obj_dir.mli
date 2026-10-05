@@ -129,6 +129,9 @@ module Module : sig
       has no implementation.*)
   val cm_file_exn : 'path t -> Module.t -> kind:Lib_mode.Cm_kind.t -> 'path
 
+  (** The basename of [cm_file_exn], with the same validation. *)
+  val cm_file_name_exn : Module.t -> kind:Lib_mode.Cm_kind.t -> Filename.t
+
   val o_file : 'path t -> Module.t -> ext_obj:Filename.Extension.t -> 'path option
   val o_file_exn : 'path t -> Module.t -> ext_obj:Filename.Extension.t -> 'path
   val cm_public_file_exn : 'path t -> Module.t -> kind:Lib_mode.Cm_kind.t -> 'path
