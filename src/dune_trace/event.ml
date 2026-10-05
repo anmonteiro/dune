@@ -371,6 +371,10 @@ type memo_metrics =
   ; compute_blocked : int
   ; cycle_detection_nodes : int
   ; cycle_detection_edges : int
+  ; cache_validity_queries : int
+  ; cache_validity_nodes : int
+  ; cache_validity_edges : int
+  ; cache_validity_cache_hits : int
   }
 
 let watch_build_finish
@@ -389,6 +393,10 @@ let watch_build_finish
         ; compute_blocked
         ; cycle_detection_nodes
         ; cycle_detection_edges
+        ; cache_validity_queries
+        ; cache_validity_nodes
+        ; cache_validity_edges
+        ; cache_validity_cache_hits
         }
   =
   let dur = Time.diff stop start in
@@ -430,6 +438,14 @@ let watch_build_finish
               , Arg.record
                   [ "nodes", Arg.int cycle_detection_nodes
                   ; "edges", Arg.int cycle_detection_edges
+                  ]
+                |> Arg.list )
+            ; ( "cache_validity"
+              , Arg.record
+                  [ "queries", Arg.int cache_validity_queries
+                  ; "nodes", Arg.int cache_validity_nodes
+                  ; "edges", Arg.int cache_validity_edges
+                  ; "cache_hits", Arg.int cache_validity_cache_hits
                   ]
                 |> Arg.list )
             ]
