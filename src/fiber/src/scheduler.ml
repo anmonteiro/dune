@@ -315,6 +315,11 @@ and exec_fiber : type a. context -> a t -> a continuation -> Jobs.t -> step' =
   match t with
   | Return_t x -> exec ctx k x jobs
   | Never_t -> loop jobs
+  | Map_t (Ivar_fill_t (ivar, x), f) ->
+    let jobs = Jobs.concat jobs (Jobs.fill_ivar ivar x Empty) in
+    (match f () with
+     | exception exn -> handle_exception ctx exn jobs
+     | y -> exec ctx k y jobs)
   | Map_t (t, f) -> exec_fiber ctx t (Map (f, k)) jobs
   | Map2_t (t, f, g) -> exec_fiber ctx t (Map2 (f, g, k)) jobs
   | Map3_t (t, f, g, h) -> exec_fiber ctx t (Map3 (f, g, h, k)) jobs
