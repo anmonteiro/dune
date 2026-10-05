@@ -537,18 +537,28 @@ module Module = struct
     | None -> raise_no_impl m ~kind:(Ocaml Cmx)
   ;;
 
+  let cm_file_name m ~kind =
+    let ext = Lib_mode.Cm_kind.ext kind in
+    Module_name.Unique.artifact_filename (Module.obj_name m) ~ext
+  ;;
+
+  let cm_file_name_exn m ~kind =
+    if has_impl_if_needed m ~kind then cm_file_name m ~kind else raise_no_impl m ~kind
+  ;;
+
   let cm_file t m ~(kind : Lib_mode.Cm_kind.t) =
     if has_impl_if_needed m ~kind
     then (
-      let ext = Lib_mode.Cm_kind.ext kind in
-      Some (obj_file t m ~kind ~ext))
+      let name = cm_file_name m ~kind in
+      let dir = cm_dir t kind (Module.visibility m) in
+      Some (relative t dir name))
     else None
   ;;
 
   let cm_file_exn t m ~kind =
-    match cm_file t m ~kind with
-    | Some s -> s
-    | None -> raise_no_impl m ~kind
+    let name = cm_file_name_exn m ~kind in
+    let dir = cm_dir t kind (Module.visibility m) in
+    relative t dir name
   ;;
 
   let cm_public_file (type path) (t : path t) m ~(kind : Lib_mode.Cm_kind.t) : path option
