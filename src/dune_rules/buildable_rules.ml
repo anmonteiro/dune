@@ -27,8 +27,7 @@ let with_lib_deps (t : Context.t) merlin_ident ~dir ~f =
     let prefix =
       Merlin_ident.merlin_file_path dir merlin_ident
       |> Path.build
-      |> Build_system.build_file
-      |> Action_builder.record_success
+      |> Build_system.record_file_success
     in
     Rules.prefix_rules prefix ~f
 ;;

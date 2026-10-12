@@ -274,3 +274,13 @@ let exec_dep_node_now : type i o. (i, o) Dep_node.t -> o Fiber.t =
 ;;
 
 let exec_dep_node node = Fiber.of_thunk_apply exec_dep_node_now node
+
+let read_if_current_now : type i o. (i, o) Dep_node.t -> o option Fiber.t =
+  fun node ->
+  match node.state, node.value with
+  | Cached, Ok value when Run.is_current (Dep_node.last_validated_at node) ->
+    Deps_collector.add_dep_from_caller_and_return node (Some value)
+  | _ -> Fiber.return None
+;;
+
+let read_if_current node = Fiber.of_thunk_apply read_if_current_now node

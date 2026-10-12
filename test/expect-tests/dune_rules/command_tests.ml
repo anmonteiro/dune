@@ -219,7 +219,7 @@ let%expect_test "success prefixes preserve lazy evaluation, facts and invalidati
 ;;
 
 let%expect_test "success prefixes collect both errors and retain their dependencies" =
-  List.iter [ `Fused; `Unfused ] ~f:(fun kind ->
+  List.iter [ `Fused; `Unfused; `Node ] ~f:(fun kind ->
     let prefix_fails = Memo.Var.create ~name:"prefix-fails" true in
     let action_fails = Memo.Var.create ~name:"action-fails" true in
     let failing_node name var =
@@ -231,6 +231,7 @@ let%expect_test "success prefixes collect both errors and retain their dependenc
     let prefix_node = failing_node "prefix" prefix_fails in
     let prefix =
       match kind with
+      | `Node -> Action_builder.record_success_node prefix_node
       | `Fused -> Action_builder.record_success (Memo.Node.read prefix_node)
       | `Unfused ->
         Action_builder.map
@@ -280,7 +281,7 @@ let%expect_test "success prefixes collect both errors and retain their dependenc
 ;;
 
 let%expect_test "success prefixes let the action unblock the prefix" =
-  List.iter [ `Fused; `Unfused ] ~f:(fun kind ->
+  List.iter [ `Fused; `Unfused; `Node ] ~f:(fun kind ->
     let gate = Fiber.Ivar.create () in
     let calls = ref [] in
     let record name = calls := name :: !calls in
@@ -297,6 +298,9 @@ let%expect_test "success prefixes let the action unblock the prefix" =
     in
     let prefix =
       match kind with
+      | `Node ->
+        Memo.lazy_node ~name:"suspended-prefix" (fun () -> memo)
+        |> Action_builder.record_success_node
       | `Fused -> Action_builder.record_success memo
       | `Unfused -> Action_builder.map (Action_builder.record_success memo) ~f:Fun.id
     in
@@ -357,4 +361,97 @@ let%expect_test "success prefixes preserve early errors outside a memoized node"
     assert (List.equal String.equal (List.rev !calls) [ "prefix"; "reported"; "action" ]));
   print_endline "early error reporting preserved";
   [%expect {| early error reporting preserved |}]
+;;
+
+let%expect_test "cached success prefixes discard values and retain parent dependencies" =
+  let module Dep = Dune_engine.Dep in
+  let run memo =
+    Fiber.run (Memo.run memo) ~iter:(fun () -> failwith "unexpected suspension")
+  in
+  let prefix_value = Memo.Var.create ~name:"shared-prefix-value" 0 in
+  let prefix_fails = Memo.Var.create ~name:"shared-prefix-fails" false in
+  let prefix_calls = ref 0 in
+  let prefix_node =
+    Memo.lazy_node ~name:"shared-prefix" ~cutoff:Int.equal (fun () ->
+      let open Memo.O in
+      let* value = Memo.Var.read prefix_value in
+      let+ fails = Memo.Var.read prefix_fails in
+      incr prefix_calls;
+      if fails then failwith "shared prefix" else value)
+  in
+  let prefix = Action_builder.record_success_node prefix_node in
+  let read_if_current = Memo.Node.read_if_current prefix_node in
+  assert (run read_if_current = None);
+  let (), deps = run (Action_builder.evaluate_and_collect_deps prefix) in
+  assert (Dep.Set.is_empty deps && !prefix_calls = 0);
+  let (), _ = run (Action_builder.evaluate_and_collect_facts prefix) in
+  assert (run read_if_current = Some 0);
+  let parent name initial =
+    let calls = ref 0 in
+    let value = Memo.Var.create ~name initial in
+    let action =
+      let open Action_builder.O in
+      let action =
+        let+ value = Action_builder.of_memo (Memo.Var.read value) in
+        incr calls;
+        value
+      in
+      prefix >>> action
+    in
+    let node =
+      Memo.lazy_node ~name:"shared-prefix-parent" (fun () ->
+        Action_builder.evaluate_and_collect_facts action)
+    in
+    node, value, calls
+  in
+  let a, value_a, calls_a = parent "a" 10 in
+  let b, _, calls_b = parent "b" 20 in
+  let check node expected =
+    let result =
+      Fiber.run
+        (Fiber.collect_errors (fun () -> Memo.run (Memo.Node.read node)))
+        ~iter:(fun () -> failwith "unexpected suspension")
+    in
+    match result, expected with
+    | Ok (value, facts), Some expected ->
+      assert (value = expected && Dep.Facts.equal facts Dep.Facts.empty)
+    | Error [ { Exn_with_backtrace.exn = Memo.Error.E error; _ } ], None ->
+      assert (
+        match Memo.Error.get error with
+        | Failure message -> String.equal message "shared prefix"
+        | _ -> false)
+    | _ -> failwith "unexpected shared prefix result"
+  in
+  let check_calls prefix a b =
+    assert (!prefix_calls = prefix && !calls_a = a && !calls_b = b)
+  in
+  check a (Some 10);
+  check b (Some 20);
+  check_calls 1 1 1;
+  Memo.reset Memo.Invalidation.empty;
+  assert (run read_if_current = None);
+  check a (Some 10);
+  check b (Some 20);
+  check_calls 1 1 1;
+  Memo.reset (Memo.Var.set prefix_value 1);
+  check a (Some 10);
+  assert (run read_if_current = Some 1);
+  check b (Some 20);
+  check_calls 2 2 2;
+  Memo.reset (Memo.Var.set value_a 11);
+  check a (Some 11);
+  check b (Some 20);
+  check_calls 2 3 2;
+  Memo.reset (Memo.Var.set prefix_fails true);
+  check a None;
+  assert (run read_if_current = None);
+  check b None;
+  check b None;
+  check_calls 3 4 3;
+  Memo.reset (Memo.Var.set prefix_fails false);
+  check a (Some 11);
+  check b (Some 20);
+  check_calls 4 5 4;
+  print_endline "shared cached prefixes preserve invalidation and error recovery";
+  [%expect {| shared cached prefixes preserve invalidation and error recovery |}]
 ;;

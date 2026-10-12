@@ -416,6 +416,14 @@ module Node : sig
   val input : ('i, _) t -> 'i
   val read : (_, 'o) t -> 'o memo
 
+  (** Return [Some value] if this node has a successful value already validated in
+      the current run, and record a dependency on the node. Return [None] without
+      recording a dependency otherwise, including for cached errors or computations
+      still in progress. This does not restore or compute the node. The check runs
+      when the returned Memo computation is evaluated. Use this to optimize a read,
+      with [read] as the fallback for [None], so results do not depend on cache state. *)
+  val read_if_current : (_, 'o) t -> 'o option memo
+
   (** Mark this node as invalid, forcing recomputation of this value. The
       consumers may be recomputed or not, depending on early cutoff. *)
   val invalidate : reason:Invalidation.Reason.t -> _ t -> Invalidation.t

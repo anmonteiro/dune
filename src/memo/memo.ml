@@ -271,6 +271,7 @@ module Node = struct
 
   let input (t : (_, _) t) = t.input
   let read = Exec.exec_dep_node
+  let read_if_current = Exec.read_if_current
   let invalidate = Invalidation.invalidate_node
 
   module Packed = struct
