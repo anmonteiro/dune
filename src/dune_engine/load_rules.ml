@@ -483,10 +483,24 @@ end = struct
   end
 
   module Normal = struct
+    module Evaluated_rules = struct
+      type t =
+        { rules : Rules.t
+        ; directory_targets : Loc.t Path.Build.Map.t Lazy.t
+        }
+
+      let make rules = { rules; directory_targets = lazy (Rules.directory_targets rules) }
+
+      let union a b =
+        let rules = Rules.union a.rules b.rules in
+        if rules == a.rules then a else if rules == b.rules then b else make rules
+      ;;
+    end
+
     type t =
       { build_dir_only_sub_dirs : Build_only_sub_dirs.t
       ; directory_targets : Loc.t Path.Build.Map.t
-      ; rules : Rules.t Memo.Lazy.t
+      ; rules : Evaluated_rules.t Memo.Lazy.t
       }
 
     let combine_exn r { build_dir_only_sub_dirs; directory_targets; rules } =
@@ -498,7 +512,7 @@ end = struct
             let open Memo.O in
             let+ r = Memo.Lazy.force r.rules
             and+ r' = Memo.Lazy.force rules in
-            Rules.union r r')
+            Evaluated_rules.union r r')
       }
     ;;
 
@@ -564,7 +578,7 @@ end = struct
         Memo.lazy_ ~name:"check-rules-are-descendant" (fun () ->
           let+ rules = rules in
           check_all_rules_are_descendant ~of_ rules;
-          rules)
+          Evaluated_rules.make rules)
       in
       { build_dir_only_sub_dirs; directory_targets; rules }
     ;;
@@ -835,7 +849,12 @@ end = struct
           Path.Build.equal (Path.Build.parent_exn dir_target) dir
           && Subdir_set.mem build_dir_only_sub_dirs name
         then report_rule_internal_dir_conflict name loc);
-      let* rules_produced = Memo.Lazy.force rules in
+      let* { Normal.Evaluated_rules.rules = rules_produced
+           ; directory_targets = real_directory_targets
+           }
+        =
+        Memo.Lazy.force rules
+      in
       let rules =
         let dir = Path.build dir in
         Rules.find rules_produced dir
@@ -877,7 +896,7 @@ end = struct
       let rules_here = compile_rules ~dir ~source_dirs rules in
       validate_directory_targets
         ~dir
-        ~real_directory_targets:(Rules.directory_targets rules_produced)
+        ~real_directory_targets:(Lazy.force real_directory_targets)
         ~directory_targets;
       (let subdirs_to_keep = Subdir_set.of_dir_set descendants_to_keep in
        remove_old_artifacts ~dir ~rules_here ~subdirs_to_keep;
