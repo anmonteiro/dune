@@ -150,28 +150,40 @@ let context_indexes =
         "indixes"
         ~input:(module Input)
         (fun (ctx, for_) ->
+           let build_dir = Context.build_dir ctx in
            Context.name ctx
            |> Dune_load.dune_files
-           >>| Dune_file.fold_static_stanzas ~init:[] ~f:(fun dune_file stanza acc ->
-             let obj =
-               let dir =
-                 let build_dir = Context.build_dir ctx in
-                 Path.Build.append_source build_dir (Dune_file.dir dune_file)
-               in
-               match Stanza.repr stanza with
-               | Executables.T exes | Tests.T { exes; _ } ->
-                 Some (Executables.obj_dir ~dir exes)
-               | Library.T lib -> Some (Library.obj_dir ~dir lib)
-               | Melange_stanzas.Emit.T melange_emit ->
-                 Some
-                   (Obj_dir.make_for_exe_target
-                      ~dir
-                      (Melange_stanzas.Emit.exe_target melange_emit))
-               | _ -> None
-             in
-             match obj with
-             | None -> acc
-             | Some obj_dir -> Path.build (index_path_in_obj_dir obj_dir ~for_) :: acc)
+           >>| List.fold_left ~init:[] ~f:(fun acc dune_file ->
+             let dir = Path.Build.append_source build_dir (Dune_file.dir dune_file) in
+             List.fold_left
+               (Dune_file.static_stanzas dune_file)
+               ~init:acc
+               ~f:(fun acc stanza ->
+                 let obj_dir =
+                   match Stanza.repr stanza with
+                   | Executables.T exes | Tests.T { exes; _ } ->
+                     Some
+                       (Obj_dir.Paths.exe_target_object_directory
+                          ~dir
+                          (Executables.exe_target exes))
+                   | Library.T lib ->
+                     Some (Obj_dir.Paths.library_object_directory ~dir (snd lib.name))
+                   | Melange_stanzas.Emit.T melange_emit ->
+                     Some
+                       (Obj_dir.Paths.exe_target_object_directory
+                          ~dir
+                          (Melange_stanzas.Emit.exe_target melange_emit))
+                   | _ -> None
+                 in
+                 match obj_dir with
+                 | None -> acc
+                 | Some obj_dir ->
+                   let dir =
+                     match for_ with
+                     | Compilation_mode.Ocaml -> obj_dir
+                     | Melange -> Obj_dir.Paths.library_melange_dir ~obj_dir
+                   in
+                   Path.build (Path.Build.relative dir index_file_name) :: acc))
            |> Action_builder.of_memo)
     in
     Action_builder.exec_memo memo
