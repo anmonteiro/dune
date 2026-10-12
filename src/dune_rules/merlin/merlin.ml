@@ -413,8 +413,24 @@ module Processed = struct
               This is too rough but, really, preprocessors should emit copy
               line directives instead and then Dune should have the database
               similar to Copy_line_directive to handle this. *)
-           Path.Build.Map.find per_file_config (remove_extension file)
-           |> Option.map ~f:(fun config -> Without_extension, config))
+           let+ ({ module_; _ } as fallback) = find (remove_extension file) in
+           let extension =
+             Path.Build.extension file |> Filename.Extension.Or_empty.to_string
+           in
+           let matching_sources =
+             Module.sources_without_pp module_
+             |> List.filter ~f:(fun source ->
+               String.equal
+                 extension
+                 (Path.extension source |> Filename.Extension.Or_empty.to_string))
+           in
+           let config =
+             match matching_sources with
+             | [ source ] ->
+               find (Path.as_in_build_dir_exn source) |> Option.value ~default:fallback
+             | _ -> fallback
+           in
+           Without_extension, config)
     in
     let pp = Module_reference.Per_item.find pp_config (Module.path module_) in
     let unit_name = Module_name.Unique.to_string (Module.obj_name module_) in
@@ -887,22 +903,46 @@ module Unprocessed = struct
       modules
       |> Modules.With_vlib.drop_vlib
       |> Modules.fold ~init:[] ~f:(fun m init ->
-        Module.sources_without_pp m
-        |> Path.Build.Set.of_list_map ~f:(fun src -> Path.as_in_build_dir_exn src)
-        |> Path.Build.Set.fold ~init ~f:(fun src acc ->
-          let config =
-            { Processed.module_ = Module.set_pp m None
-            ; opens = Modules.With_vlib.local_open modules m
-            ; reader =
-                String.Map.find
-                  readers
-                  (Filename.Extension.Or_empty.to_string (Path.Build.extension src))
-            }
+        let sources =
+          let source kind =
+            match Module.source m ~ml_kind:kind with
+            | None -> None
+            | Some source ->
+              Some (Module.File.original_path source |> Path.as_in_build_dir_exn)
           in
-          (* we add the config with and without the extension, the latter is
-             needed for a fallback in this file's [get] function. *)
-          let src_without_extension = remove_extension src in
-          (src, config) :: (src_without_extension, config) :: acc))
+          match source Impl, source Intf with
+          | None, None -> []
+          | Some source, None | None, Some source -> [ source ]
+          | Some impl, Some intf ->
+            (* Preserve the legacy fallback preference for later filenames. *)
+            (match Path.Build.compare impl intf with
+             | Eq -> [ impl ]
+             | Lt -> [ impl; intf ]
+             | Gt -> [ intf; impl ])
+        in
+        match sources with
+        | [] -> init
+        | _ :: _ ->
+          let module_ =
+            match Module.pp_flags m with
+            | None -> m
+            | Some _ -> Module.set_pp m None
+          in
+          let opens = Modules.With_vlib.local_open modules m in
+          List.fold_left sources ~init ~f:(fun acc src ->
+            let config =
+              { Processed.module_
+              ; opens
+              ; reader =
+                  String.Map.find
+                    readers
+                    (Filename.Extension.Or_empty.to_string (Path.Build.extension src))
+              }
+            in
+            (* we add the config with and without the extension, the latter is
+               needed for a fallback in this file's [get] function. *)
+            let src_without_extension = remove_extension src in
+            (src, config) :: (src_without_extension, config) :: acc))
       |> Path.Build.Map.of_list_reduce ~f:(fun existing _ -> existing)
     in
     { Processed.pp_config; config; per_file_config }

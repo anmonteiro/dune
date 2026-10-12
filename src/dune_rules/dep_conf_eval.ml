@@ -88,7 +88,9 @@ let expand_include =
          (Pform.Env.initial ~stanza:Stanza.latest_version ~extensions:[])
          Dep_conf.decode_bindings)
   in
-  fun ~dir ~project s ->
+  fun ~expander s ->
+    let dir = Expander.dir expander in
+    let project = Expander.project expander in
     Path.Build.relative dir s
     |> Path.build
     |> Action_builder.read_sexp
@@ -170,7 +172,7 @@ let rec dir_contents ~loc d =
     >>| List.concat
 ;;
 
-let package loc pkg_name (context : Build_context.t) ~dune_version =
+let package ~explicit loc pkg_name (context : Build_context.t) ~dune_version =
   Action_builder.of_memo
     (let open Memo.O in
      let* package_db = Package_db.create context.name in
@@ -184,7 +186,7 @@ let package loc pkg_name (context : Build_context.t) ~dune_version =
        [(public_headers (package foo))]) where a no-op is fine. *)
     Action_builder.return ()
   | Some (Installed pkg) ->
-    if dune_version < (2, 9)
+    if explicit && dune_version < (2, 9)
     then
       Action_builder.fail
         { fail =
@@ -265,12 +267,8 @@ let rec dep expander : Dep_conf.t -> _ = function
   | Include s ->
     (* TODO this is wrong. we shouldn't allow bindings here if we are in an
        unnamed expansion *)
-    let dir = Expander.dir expander in
     let pair =
-      let* deps =
-        let* project = Action_builder.of_memo @@ Dune_load.find_project ~dir in
-        expand_include ~dir ~project s
-      in
+      let* deps = expand_include ~expander s in
       let builder, _bindings, action_env = named_paths_builder ~expander deps in
       let+ paths = builder
       and+ env = action_env in
@@ -316,15 +314,16 @@ let rec dep expander : Dep_conf.t -> _ = function
        let+ () = dep_on_alias_rec ~loc:(String_with_vars.loc s) a in
        [])
   | Glob_files glob_files ->
+    let dir = Expander.dir expander in
     Other
       (Glob_files_expand.action_builder
          glob_files
          ~f:(Expander.expand ~mode:Single expander)
-         ~base_dir:(Expander.dir expander)
+         ~base_dir:dir
        >>| Glob_files_expand.Expanded.matches
        >>| List.map ~f:(fun path ->
          if Filename.is_relative path
-         then Path.Build.relative (Expander.dir expander) path |> Path.build
+         then Path.Build.relative dir path |> Path.build
          else Path.of_string path))
   | Source_tree s ->
     Other
@@ -338,7 +337,7 @@ let rec dep expander : Dep_conf.t -> _ = function
          let context = Build_context.create ~name:(Expander.context expander) in
          let loc = String_with_vars.loc p in
          let dune_version = Expander.project expander |> Dune_project.dune_version in
-         package loc pkg_name context ~dune_version
+         package ~explicit:true loc pkg_name context ~dune_version
        in
        [])
   | Universe ->
@@ -410,7 +409,13 @@ and combined_package_deps_builder expander pkgs =
       match found with
       | Some (Local _) -> Action_builder.return ()
       | Some (Build build) -> build
-      | Some (Installed _) | None -> package loc pkg_name context ~dune_version)
+      | Some (Installed _) ->
+        let explicit =
+          List.exists requested ~f:(fun (_, requested_package) ->
+            Package.Name.equal pkg_name requested_package)
+        in
+        package ~explicit loc pkg_name context ~dune_version
+      | None -> package ~explicit:true loc pkg_name context ~dune_version)
   in
   env
 
@@ -552,11 +557,7 @@ let named sandbox ~expander l =
     let open Action_builder.O in
     let rec sandbox_dep acc = function
       | Dep_conf.Include s ->
-        let* deps =
-          let dir = Expander.dir expander in
-          let* project = Action_builder.of_memo (Dune_load.find_project ~dir) in
-          expand_include ~dir ~project s
-        in
+        let* deps = expand_include ~expander s in
         sandbox_bindings acc deps
       | dep -> Action_builder.return (add_sandbox_config acc dep)
     and sandbox_bindings acc deps =
