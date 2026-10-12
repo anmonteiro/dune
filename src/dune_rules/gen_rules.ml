@@ -572,10 +572,58 @@ let gen_automatic_subdir_rules sctx ~dir ~nearest_src_dir ~src_dir =
   | Some kind -> Rules.collect_unit (fun () -> Automatic_subdir.gen_rules ~sctx ~dir kind)
 ;;
 
+let gen_rules_redirecting_directory sctx ~src_dir ~source_dir ~components ~dir =
+  let+ rules =
+    let* source_dir = source_dir in
+    let* nearest_src_dir =
+      match source_dir with
+      | Some _ -> Memo.return source_dir
+      | None -> Source_tree.find_dir (Path.Source.parent_exn src_dir)
+    in
+    let allowed_subdirs = Automatic_subdir.subdirs components in
+    let rules =
+      match nearest_src_dir, Automatic_subdir.of_src_dir src_dir with
+      | None, _ | _, None ->
+        { Gen_rules.Rules.empty with
+          build_dir_only_sub_dirs =
+            Gen_rules.Build_only_sub_dirs.singleton
+              ~dir
+              (Subdir_set.of_set allowed_subdirs)
+        }
+      | Some _, Some kind ->
+        Gen_rules.rules_for
+          ~dir
+          ~allowed_subdirs
+          (Rules.collect_unit (fun () -> Automatic_subdir.gen_rules ~sctx ~dir kind))
+    in
+    let rules =
+      match Opam_create.gen_rules sctx ~dir ~nearest_src_dir ~src_dir with
+      | None -> rules
+      | Some opam_rules -> Gen_rules.Rules.combine_exn opam_rules rules
+    in
+    Memo.return (Gen_rules.redirect_to_parent rules)
+  and+ melange_rules = Melange_rules.setup_emit_js_rules sctx ~dir in
+  Gen_rules.combine melange_rules rules
+;;
+
 let gen_rules_regular_directory (sctx : Super_context.t Memo.t) ~src_dir ~components ~dir =
   Dir_status.DB.get ~dir
   >>= function
   | Lock_dir _ -> Memo.return Gen_rules.no_rules
+  | Generated when not (List.is_empty components) ->
+    gen_rules_redirecting_directory
+      sctx
+      ~src_dir
+      ~source_dir:(Memo.return None)
+      ~components
+      ~dir
+  | Is_component_of_a_group_but_not_the_root _ ->
+    gen_rules_redirecting_directory
+      sctx
+      ~src_dir
+      ~source_dir:(Source_tree.find_dir src_dir)
+      ~components
+      ~dir
   | dir_status ->
     let+ rules =
       let* st_dir = Source_tree.find_dir src_dir in

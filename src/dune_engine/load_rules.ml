@@ -490,6 +490,7 @@ end = struct
         }
 
       let make rules = { rules; directory_targets = lazy (Rules.directory_targets rules) }
+      let empty = make Rules.empty
 
       let union a b =
         let rules = Rules.union a.rules b.rules in
@@ -497,10 +498,14 @@ end = struct
       ;;
     end
 
+    type produced_rules =
+      | Empty
+      | Deferred of Evaluated_rules.t Memo.Lazy.t
+
     type t =
       { build_dir_only_sub_dirs : Build_only_sub_dirs.t
       ; directory_targets : Loc.t Path.Build.Map.t
-      ; rules : Evaluated_rules.t Memo.Lazy.t
+      ; rules : produced_rules
       }
 
     let combine_exn r { build_dir_only_sub_dirs; directory_targets; rules } =
@@ -508,11 +513,15 @@ end = struct
           Build_only_sub_dirs.union r.build_dir_only_sub_dirs build_dir_only_sub_dirs
       ; directory_targets = Path.Build.Map.union_exn r.directory_targets directory_targets
       ; rules =
-          Memo.lazy_ ~name:"union-rules" (fun () ->
-            let open Memo.O in
-            let+ r = Memo.Lazy.force r.rules
-            and+ r' = Memo.Lazy.force rules in
-            Evaluated_rules.union r r')
+          (match r.rules, rules with
+           | Empty, rules | rules, Empty -> rules
+           | Deferred rules, Deferred other_rules ->
+             Deferred
+               (Memo.lazy_ ~name:"union-rules" (fun () ->
+                  let open Memo.O in
+                  let+ rules = Memo.Lazy.force rules
+                  and+ other_rules = Memo.Lazy.force other_rules in
+                  Evaluated_rules.union rules other_rules)))
       }
     ;;
 
@@ -575,10 +584,14 @@ end = struct
       check_all_directory_targets_are_descendant ~of_ directory_targets;
       check_all_sub_dirs_rule_dirs_are_descendant ~of_ build_dir_only_sub_dirs;
       let rules =
-        Memo.lazy_ ~name:"check-rules-are-descendant" (fun () ->
-          let+ rules = rules in
-          check_all_rules_are_descendant ~of_ rules;
-          Evaluated_rules.make rules)
+        match rules with
+        | Gen_rules.Rules.Empty -> Empty
+        | Deferred rules ->
+          Deferred
+            (Memo.lazy_ ~name:"check-rules-are-descendant" (fun () ->
+               let+ rules = rules in
+               check_all_rules_are_descendant ~of_ rules;
+               Evaluated_rules.make rules))
       in
       { build_dir_only_sub_dirs; directory_targets; rules }
     ;;
@@ -853,7 +866,9 @@ end = struct
            ; directory_targets = real_directory_targets
            }
         =
-        Memo.Lazy.force rules
+        match rules with
+        | Normal.Empty -> Memo.return Normal.Evaluated_rules.empty
+        | Deferred rules -> Memo.Lazy.force rules
       in
       let rules =
         let dir = Path.build dir in

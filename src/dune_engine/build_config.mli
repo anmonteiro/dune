@@ -23,6 +23,10 @@ module Gen_rules : sig
   end
 
   module Rules : sig
+    type produced_rules =
+      | Empty (** No rule generation or effects to evaluate. *)
+      | Deferred of Rules.t Memo.t
+
     type nonrec t =
       { build_dir_only_sub_dirs : Build_only_sub_dirs.t
         (** Sub-directories that don't exist in the source tree but exists in
@@ -36,7 +40,7 @@ module Gen_rules : sig
         the rules that are going to produce these targets. However, it's
         ok to have an approximate location as the rule that produces the
         target will be responsible for producing the final location*)
-      ; rules : Rules.t Memo.t
+      ; rules : produced_rules
       }
 
     type rules := Rules.t

@@ -21,16 +21,20 @@ module Gen_rules = struct
   end
 
   module Rules = struct
+    type produced_rules =
+      | Empty
+      | Deferred of Rules.t Memo.t
+
     type nonrec t =
       { build_dir_only_sub_dirs : Build_only_sub_dirs.t
       ; directory_targets : Loc.t Path.Build.Map.t
-      ; rules : Rules.t Memo.t
+      ; rules : produced_rules
       }
 
     let empty =
       { build_dir_only_sub_dirs = Path.Build.Map.empty
       ; directory_targets = Path.Build.Map.empty
-      ; rules = Memo.return Rules.empty
+      ; rules = Empty
       }
     ;;
 
@@ -39,7 +43,7 @@ module Gen_rules = struct
           ?(directory_targets = empty.directory_targets)
           rules
       =
-      { build_dir_only_sub_dirs; directory_targets; rules }
+      { build_dir_only_sub_dirs; directory_targets; rules = Deferred rules }
     ;;
 
     let combine_exn r ({ build_dir_only_sub_dirs; directory_targets; rules } as other) =
@@ -54,10 +58,14 @@ module Gen_rules = struct
            ; directory_targets =
                Path.Build.Map.union_exn r.directory_targets directory_targets
            ; rules =
-               (let open Memo.O in
-                let+ r = r.rules
-                and+ r' = rules in
-                Rules.union r r')
+               (match r.rules, rules with
+                | Empty, rules | rules, Empty -> rules
+                | Deferred rules, Deferred other_rules ->
+                  Deferred
+                    (let open Memo.O in
+                     let+ rules = rules
+                     and+ other_rules = other_rules in
+                     Rules.union rules other_rules))
            })
     ;;
   end
