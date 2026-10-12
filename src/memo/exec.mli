@@ -19,3 +19,7 @@ val report_and_collect_errors
 
 (** Restore-or-compute a memoized node, returning its value (reraising cached errors). *)
 val exec_dep_node : ('i, 'o) Dep_node.t -> 'o Fiber.t
+
+(** Read a successful value already validated in the current run, recording its
+    dependency. Return [None] without recording a dependency in all other cases. *)
+val read_if_current : ('i, 'o) Dep_node.t -> 'o option Fiber.t

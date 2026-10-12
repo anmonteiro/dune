@@ -65,6 +65,10 @@ val record : 'a -> Dep.Set.t -> f:(Dep.t -> Dep.Fact.t Memo.t) -> 'a t
     until the action's dependencies need to be determined. *)
 val record_success : unit Memo.t -> unit t
 
+(** Require the given memoized node to succeed, discarding its value. Retaining
+    the node allows successful values validated in the current run to be reused. *)
+val record_success_node : (_, _) Memo.Node.t -> unit t
+
 module Expert : sig
   (** Like [record] but records a dependency on a *source* file. Evaluating the resulting
       [t] in the [Eager] mode will raise a user error if the file can't be digested.

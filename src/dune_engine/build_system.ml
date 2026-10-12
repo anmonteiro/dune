@@ -1430,6 +1430,10 @@ let build_file p =
   ()
 ;;
 
+let record_file_success path =
+  Memo.node (Lazy.force build_file_memo) path |> Action_builder.record_success_node
+;;
+
 let build_dir p =
   let+ (_ : Digest.t Targets.Produced.t) = build_dir p in
   ()

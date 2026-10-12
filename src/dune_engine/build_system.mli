@@ -5,6 +5,10 @@ open Import
 (** Build a target, which may be a file or a directory. *)
 val build_file : Path.t -> unit Memo.t
 
+(** Require a target to build successfully without adding its digest to the
+    action's dependency facts. *)
+val record_file_success : Path.t -> unit Action_builder.t
+
 (** Build a directory. *)
 val build_dir : Path.t -> unit Memo.t
 

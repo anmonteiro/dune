@@ -67,6 +67,7 @@ module T = struct
         }
         -> 'a t
     | Record_success : unit Memo.t -> unit t
+    | Record_success_node : ('i, 'o) Memo.Node.t -> unit t
     | Memoize : 'a memoized -> 'a t
     | Goal : 'a t -> 'a t
     | Exec_memo : ('i, 'o) memo * 'i -> 'o t
@@ -107,6 +108,7 @@ module T = struct
   let of_memo memo = Of_memo memo
   let record res deps ~f = Record { res; deps; f }
   let record_success memo = Record_success memo
+  let record_success_node node = Record_success_node node
   let exec_memo m i = Exec_memo (m, i)
   let goal t = Goal t
 
@@ -183,6 +185,24 @@ let rec eval : type a m. a t -> m eval_mode -> (a * m) Memo.t =
       Memo.fork_and_join (fun () -> eval a mode) (fun () -> eval b mode)
     in
     (a, b), Deps_or_facts.union mode deps_a deps_b
+  | Seq (Record_success_node node, b) ->
+    (match mode with
+     | Lazy -> eval b mode
+     | Eager ->
+       let open Memo.O in
+       let* cached = Memo.Node.read_if_current node in
+       (match cached with
+        | Some _ -> eval b mode
+        | None ->
+          Memo.fork_and_join_unit
+            (fun () ->
+               let+ _ = Memo.Node.read node in
+               ())
+            (fun () -> eval b mode)))
+  | Seq (Record_success memo, b) ->
+    (match mode with
+     | Lazy -> eval b mode
+     | Eager -> Memo.fork_and_join_unit (fun () -> memo) (fun () -> eval b mode))
   | Seq (a, b) ->
     let open Memo.O in
     let+ ((), deps_a), (b, deps_b) =
@@ -258,6 +278,13 @@ let rec eval : type a m. a t -> m eval_mode -> (a * m) Memo.t =
      | Eager ->
        let open Memo.O in
        let+ () = memo in
+       (), Dep.Facts.empty)
+  | Record_success_node node ->
+    (match mode with
+     | Lazy -> Memo.return ((), Dep.Set.empty)
+     | Eager ->
+       let open Memo.O in
+       let+ _ = Memo.Node.read node in
        (), Dep.Facts.empty)
   | Memoize memoized -> force_memoized mode memoized
   | Goal t ->
