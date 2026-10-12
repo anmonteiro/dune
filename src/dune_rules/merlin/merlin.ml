@@ -639,6 +639,49 @@ module Processed = struct
   ;;
 end
 
+module Write = struct
+  module Spec = struct
+    type ('path, 'target) t = Processed.Unindexed.t Nonempty_list.t * Digest.t * 'target
+
+    let name = "write-merlin-conf"
+    let version = 1
+    let runs_process = false
+    let can_run_in_action_runner = false
+    let is_useful_to ~memoize:_ = true
+    let bimap (configurations, digest, target) _path f = configurations, digest, f target
+
+    let encode (_, digest, target) _path target_to_sexp : Sexp.t =
+      List [ target_to_sexp target; Atom (Digest.to_string digest) ]
+    ;;
+
+    let action (configurations, _, target) ~ectx:_ ~eenv:_ =
+      Processed.Persist.dump (Path.build target) configurations;
+      Fiber.return ()
+    ;;
+  end
+
+  module A = Action_ext.Make (Spec)
+
+  let action configurations_with_digests ~target =
+    let configurations = Nonempty_list.map configurations_with_digests ~f:fst in
+    let without_indexes =
+      Nonempty_list.map
+        configurations
+        ~f:(fun ({ Processed.Unindexed.config; _ } as configuration) ->
+          { configuration with config = { config with indexes = [] } })
+    in
+    let content = Processed.Persist.to_string without_indexes in
+    let index_digests = Nonempty_list.to_list_map configurations_with_digests ~f:snd in
+    let digest =
+      let d = Digest.Manual.create () in
+      Digest.Manual.string d content;
+      Digest.Manual.list d index_digests ~f:Digest.Manual.digest;
+      Digest.Manual.get d
+    in
+    A.action (configurations, digest, target)
+  ;;
+end
+
 let obj_dir_of_lib kind mode obj_dir =
   (match kind, mode with
    | `Private, Compilation_mode.Ocaml -> Obj_dir.byte_dir
@@ -893,7 +936,7 @@ module Unprocessed = struct
     =
     let open Action_builder.O in
     let context = Super_context.context sctx in
-    let+ config =
+    let+ config, indexes_digest =
       let* stdlib_dir =
         Action_builder.of_memo
         @@
@@ -938,7 +981,7 @@ module Unprocessed = struct
                List.concat [ requires_compile; libs ])
       in
       let+ flags = flags
-      and+ indexes = Ocaml_index.context_indexes context ~for_
+      and+ indexes, indexes_digest = Ocaml_index.context_indexes_with_digest context ~for_
       and+ deps_src_dirs, deps_obj_dirs, deps_cmt_dirs =
         add_lib_dirs sctx ~for_ requires_compile
       and+ hidden_src_dirs, hidden_obj_dirs, hidden_cmt_dirs =
@@ -952,18 +995,19 @@ module Unprocessed = struct
       let obj_dirs = Path.Set.union deps_obj_dirs objs_dirs in
       let cmt_dirs = Path.Set.union deps_cmt_dirs hidden_cmt_dirs in
       let source_root = Path.Source.root |> Path.source in
-      { Processed.stdlib_dir
-      ; source_root
-      ; src_dirs
-      ; obj_dirs
-      ; cmt_dirs
-      ; hidden_src_dirs
-      ; hidden_obj_dirs
-      ; flags
-      ; extensions
-      ; indexes
-      ; parameters
-      }
+      ( { Processed.stdlib_dir
+        ; source_root
+        ; src_dirs
+        ; obj_dirs
+        ; cmt_dirs
+        ; hidden_src_dirs
+        ; hidden_obj_dirs
+        ; flags
+        ; extensions
+        ; indexes
+        ; parameters
+        }
+      , indexes_digest )
     and+ pp_config = pp_config t context ~expander in
     let module_configs =
       modules
@@ -978,7 +1022,8 @@ module Unprocessed = struct
           let opens = Modules.With_vlib.local_open modules m in
           { Processed.opens; module_path; unit_name; sources } :: init)
     in
-    { Processed.Unindexed.config; modules = module_configs; pp_config; readers }
+    ( { Processed.Unindexed.config; modules = module_configs; pp_config; readers }
+    , indexes_digest )
   ;;
 end
 
@@ -1001,13 +1046,13 @@ let dot_merlin sctx ~dir ~more_src_dirs ~expander (default :: alternatives : gro
     in
     let+ default = process default
     and+ alternatives = List.map alternatives ~f:process |> Action_builder.all in
-    (default :: alternatives : Processed.Unindexed.t Nonempty_list.t)
+    (default :: alternatives : (Processed.Unindexed.t * Digest.t) Nonempty_list.t)
   in
   let action =
     configurations
-    |> Action_builder.map ~f:Processed.Persist.to_string
-    |> Action_builder.with_no_targets
-    |> Action_builder.With_targets.write_file_dyn merlin_file
+    |> Action_builder.map ~f:(fun configurations ->
+      Write.action configurations ~target:merlin_file |> Action.Full.make)
+    |> Action_builder.with_file_targets ~file_targets:[ merlin_file ]
   in
   Super_context.add_rule sctx ~dir action
 ;;
