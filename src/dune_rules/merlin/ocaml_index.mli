@@ -19,6 +19,11 @@ val cctx_rules : Compilation_context.t -> unit Memo.t
     given context for the given compilation mode. *)
 val context_indexes : Context.t -> for_:Compilation_mode.t -> Path.t list Action_builder.t
 
+val context_indexes_with_digest
+  :  Context.t
+  -> for_:Compilation_mode.t
+  -> (Path.t list * Digest.t) Action_builder.t
+
 (** [project_rule] adds a rule that will aggregate all the generated indexes
     into one global, project-wide, index *)
 val project_rule : Super_context.t -> Dune_project.t -> unit Memo.t

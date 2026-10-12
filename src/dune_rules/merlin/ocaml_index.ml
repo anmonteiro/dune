@@ -135,7 +135,7 @@ let cctx_rules cctx =
   Super_context.add_rule sctx ~dir aggregate
 ;;
 
-let context_indexes =
+let context_indexes_with_digest =
   let context_indexes =
     let module Input : Memo.Input with type t = Context.t * Compilation_mode.t = struct
       type t = Context.t * Compilation_mode.t
@@ -184,11 +184,17 @@ let context_indexes =
                      | Melange -> Obj_dir.Paths.library_melange_dir ~obj_dir
                    in
                    Path.build (Path.Build.relative dir index_file_name) :: acc))
+           >>| (fun indexes ->
+           indexes, Digest.string (Marshal.to_string indexes ~sharing:false))
            |> Action_builder.of_memo)
     in
     Action_builder.exec_memo memo
   in
   fun ctx ~for_ -> context_indexes (ctx, for_)
+;;
+
+let context_indexes ctx ~for_ =
+  Action_builder.map (context_indexes_with_digest ctx ~for_) ~f:fst
 ;;
 
 let project_rule sctx project =
