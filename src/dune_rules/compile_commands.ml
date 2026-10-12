@@ -102,46 +102,69 @@ let collect_entries sctx =
   let open Memo.O in
   let* dune_files = Dune_load.dune_files (Context.name ctx) in
   Dune_file.fold_static_stanzas dune_files ~init:[] ~f:(fun dune_file stanza acc ->
-    let dir =
-      Path.Build.append_source (Context.build_dir ctx) (Dune_file.dir dune_file)
+    let has_foreign_sources =
+      match Stanza.repr stanza with
+      | Library.T lib -> Buildable.has_foreign_stubs lib.buildable
+      | Executables.T exes | Tests.T { exes; _ } ->
+        Buildable.has_foreign_stubs exes.buildable
+      | Foreign_library.T _ -> true
+      | _ -> false
     in
-    (let* expander = Super_context.expander sctx ~dir
-     and* dir_contents = Dir_contents.get sctx ~dir
-     and* scope = Scope.DB.find_by_dir dir in
-     let* foreign_sources = Dir_contents.foreign_sources dir_contents in
-     match Stanza.repr stanza with
-     | Library.T lib when Buildable.has_foreign_stubs lib.buildable ->
-       Foreign_sources.for_lib_opt foreign_sources ~name:(Library.best_name lib)
-       |> (function
-        | None -> Memo.return None
-        | Some sources ->
-          get_lib_requires ~dir ~scope lib
-          >>| fun requires ->
-          Some
-            (collect_from_foreign_sources
-               ~sctx
-               ~dir
-               ~expander
-               ~dir_contents
-               ~requires
-               sources))
-     | (Executables.T exes | Tests.T { exes; _ })
-       when Buildable.has_foreign_stubs exes.buildable ->
-       let requires = Resolve.return [] in
-       Foreign_sources.for_exes_opt
-         foreign_sources
-         ~first_exe:(snd (Nonempty_list.hd exes.names))
-       |> Option.map
-            ~f:(collect_from_foreign_sources ~sctx ~dir ~expander ~dir_contents ~requires)
-       |> Memo.return
-     | Foreign_library.T lib ->
-       let requires = Resolve.return [] in
-       Foreign_sources.for_archive_opt foreign_sources ~archive_name:lib.archive_name
-       |> Option.map
-            ~f:(collect_from_foreign_sources ~sctx ~dir ~expander ~dir_contents ~requires)
-       |> Memo.return
-     | _ -> Memo.return None)
-    :: acc)
+    if not has_foreign_sources
+    then acc
+    else (
+      let dir =
+        Path.Build.append_source (Context.build_dir ctx) (Dune_file.dir dune_file)
+      in
+      (let* expander = Super_context.expander sctx ~dir
+       and* dir_contents = Dir_contents.get sctx ~dir
+       and* scope = Scope.DB.find_by_dir dir in
+       let* foreign_sources = Dir_contents.foreign_sources dir_contents in
+       match Stanza.repr stanza with
+       | Library.T lib when Buildable.has_foreign_stubs lib.buildable ->
+         Foreign_sources.for_lib_opt foreign_sources ~name:(Library.best_name lib)
+         |> (function
+          | None -> Memo.return None
+          | Some sources ->
+            get_lib_requires ~dir ~scope lib
+            >>| fun requires ->
+            Some
+              (collect_from_foreign_sources
+                 ~sctx
+                 ~dir
+                 ~expander
+                 ~dir_contents
+                 ~requires
+                 sources))
+       | (Executables.T exes | Tests.T { exes; _ })
+         when Buildable.has_foreign_stubs exes.buildable ->
+         let requires = Resolve.return [] in
+         Foreign_sources.for_exes_opt
+           foreign_sources
+           ~first_exe:(snd (Nonempty_list.hd exes.names))
+         |> Option.map
+              ~f:
+                (collect_from_foreign_sources
+                   ~sctx
+                   ~dir
+                   ~expander
+                   ~dir_contents
+                   ~requires)
+         |> Memo.return
+       | Foreign_library.T lib ->
+         let requires = Resolve.return [] in
+         Foreign_sources.for_archive_opt foreign_sources ~archive_name:lib.archive_name
+         |> Option.map
+              ~f:
+                (collect_from_foreign_sources
+                   ~sctx
+                   ~dir
+                   ~expander
+                   ~dir_contents
+                   ~requires)
+         |> Memo.return
+       | _ -> Memo.return None)
+      :: acc))
   |> Memo.all_concurrently
   >>| List.filter_map ~f:Fun.id
 ;;
