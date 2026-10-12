@@ -2,8 +2,8 @@ Compilation database discovery must not load directory contents while
 registering root rules. Doing so creates a cycle when copy_files needs those
 root rules to discover its inputs (issue #16516).
 
-The regression affects even workspaces without foreign code. Language 3.22
-works because compilation database generation is disabled.
+Workspaces without foreign code work both before and after compilation
+database generation is enabled in language 3.23.
 
   $ make_dune_project 3.22
   $ echo hello > file.txt
@@ -16,14 +16,6 @@ works because compilation database generation is disabled.
 
   $ make_dune_project 3.23
   $ dune build foo/file.txt @check
-  Error: Dependency cycle between:
-     Computing directory contents of _build/default/foo
-  -> { dir = In_build_dir "default"
-     ; predicate = Element (Glob "file.txt")
-     ; only_generated_files = false
-     }
-  -> Computing directory contents of _build/default/foo
-  [1]
   $ test ! -f compile_commands.json
 
 Selecting only source files also works. No compilation database should be
@@ -43,17 +35,8 @@ workaround or prebuilding the input.
   > EOF
   $ echo '(copy_files ../generated.txt)' > foo/dune
   $ dune build foo/generated.txt @check
-  Error: Dependency cycle between:
-     Computing directory contents of _build/default/foo
-  -> { dir = In_build_dir "default"
-     ; predicate = Element (Glob "generated.txt")
-     ; only_generated_files = false
-     }
-  -> Computing directory contents of _build/default/foo
-  [1]
   $ cat _build/default/foo/generated.txt
-  cat: _build/default/foo/generated.txt: No such file or directory
-  [1]
+  generated
   $ test ! -f compile_commands.json
 
 A foreign library with copied sources also cycles. Skipping non-foreign
@@ -165,7 +148,8 @@ rule registration can create a cycle when it queries root build files.
 
 Unrelated generated files must not be inspected while collecting the database.
 Here a report rule depends on the database and produces a directory target.
-Enumerating that target for an unrelated copy_files stanza creates a cycle.
+Its unrelated copy_files stanza is skipped, but the foreign stanza's
+file-available condition above still creates a cycle.
 
   $ echo '(using directory-targets 0.1)' >> dune-project
   $ cat >> dune <<EOF
@@ -178,12 +162,7 @@ Enumerating that target for an unrelated copy_files stanza creates a cycle.
   $ echo '(copy_files ../reports/*.txt)' > unrelated/dune
   $ dune build compile_commands.json
   Error: Dependency cycle between:
-     Computing directory contents of _build/default/unrelated
-  -> { dir = In_build_dir "default/reports"
-     ; predicate = Element (Glob "*.txt")
-     ; only_generated_files = false
-     }
-  -> Computing directory contents of _build/default/unrelated
+     %{file-available:../stub.c} at foo/dune:5
   [1]
   $ test ! -d _build/default/reports
 
