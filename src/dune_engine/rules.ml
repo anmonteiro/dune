@@ -22,43 +22,108 @@ module Dir_rules = struct
   type data =
     | Rule of Rule.t
     | Alias of alias
+    | Prefixed of
+        { prefix : unit Action_builder.t
+        ; rules : data Id.Map.t
+        }
 
   type t = data Id.Map.t
 
-  let dyn_of_data = function
-    | Rule rule ->
-      Dyn.Variant ("Rule", [ Record [ "targets", Targets.Validated.to_dyn rule.targets ] ])
-    | Alias alias ->
-      Dyn.Variant ("Alias", [ Record [ "name", Alias.Name.to_dyn alias.name ] ])
+  let data_repr =
+    Repr.fix (fun data_repr ->
+      Repr.variant
+        "directory-rule"
+        [ Repr.case
+            "Rule"
+            (Repr.record
+               "rule"
+               [ Repr.field
+                   "targets"
+                   (Repr.abstract Targets.Validated.to_dyn)
+                   ~get:(fun rule -> rule.Rule.targets)
+               ])
+            ~proj:(function
+              | Rule rule -> Some rule
+              | Alias _ | Prefixed _ -> None)
+        ; Repr.case
+            "Alias"
+            (Repr.record
+               "alias"
+               [ Repr.field "name" (Repr.abstract Alias.Name.to_dyn) ~get:(fun t ->
+                   t.name)
+               ])
+            ~proj:(function
+              | Alias alias -> Some alias
+              | Rule _ | Prefixed _ -> None)
+        ; Repr.case "Prefixed" (Repr.list data_repr) ~proj:(function
+            | Prefixed { prefix = _; rules } -> Some (Id.Map.values rules)
+            | Rule _ | Alias _ -> None)
+        ])
   ;;
 
-  let to_dyn t = Dyn.(list dyn_of_data) (Id.Map.values t)
+  let repr = Repr.view (Repr.list data_repr) ~to_:Id.Map.values
+  let to_dyn = Repr.to_dyn repr
 
   type ready =
     { rules : Rule.t list
     ; aliases : Alias_spec.t Alias.Name.Map.t
     }
 
-  let consume t =
-    let rules, aliases =
-      Id.Map.values t
-      |> List.partition_map ~f:(function
-        | Rule rule -> Left rule
-        | Alias { name; spec } -> Right (name, spec))
+  let add_alias { name; spec } aliases =
+    Alias.Name.Map.update aliases name ~f:(function
+      | None -> Some spec
+      | Some base -> Some (Alias_spec.union spec base))
+  ;;
+
+  let consume_prefixed t =
+    let rec collect t ~prefixes ~init =
+      Id.Map.foldi t ~init ~f:(fun id data ((rules, aliases) as acc) ->
+        match data with
+        | Rule rule ->
+          let rule =
+            match prefixes with
+            | [] -> rule
+            | _ :: _ ->
+              let action =
+                List.fold_left prefixes ~init:rule.action ~f:(fun action prefix ->
+                  let open Action_builder.O in
+                  prefix >>> action)
+              in
+              Rule.set_action rule action
+          in
+          rule :: rules, aliases
+        | Alias alias -> rules, Id.Map.set aliases id alias
+        | Prefixed { prefix; rules } ->
+          collect rules ~prefixes:(prefix :: prefixes) ~init:acc)
     in
+    let rules, aliases = collect t ~prefixes:[] ~init:([], Id.Map.empty) in
+    let rules = List.rev rules in
     let aliases =
-      let add_item what = function
-        | None -> Some what
-        | Some base -> Some (Alias_spec.union what base)
-      in
       (* This accumulates the aliases in reverse order, but there's another
          reversal whenever the expansion is inspected. The order doesn't really
          matter, but it does change the tests. So it's nice to maintain it if
          possible *)
-      List.fold_left aliases ~init:Alias.Name.Map.empty ~f:(fun acc (name, item) ->
-        Alias.Name.Map.update acc name ~f:(add_item item))
+      Id.Map.fold aliases ~init:Alias.Name.Map.empty ~f:add_alias
     in
     { rules; aliases }
+  ;;
+
+  let consume t =
+    if
+      Id.Map.exists t ~f:(function
+        | Prefixed _ -> true
+        | Rule _ | Alias _ -> false)
+    then consume_prefixed t
+    else (
+      let rules, aliases =
+        Id.Map.fold t ~init:([], Alias.Name.Map.empty) ~f:(fun data (rules, aliases) ->
+          match data with
+          | Rule rule -> rule :: rules, aliases
+          | Alias alias -> rules, add_alias alias aliases
+          | Prefixed _ ->
+            Code_error.raise "Dir_rules.consume: unexpected prefixed rules" [])
+      in
+      { rules = List.rev rules; aliases })
   ;;
 
   let empty = Id.Map.empty
@@ -94,6 +159,7 @@ module Dir_rules = struct
     val union : t -> t -> t
     val singleton : data -> t
     val add : t -> data -> t
+    val prefix : t -> unit Action_builder.t -> t
   end = struct
     type maybe_empty = t
     type nonrec t = t
@@ -103,6 +169,7 @@ module Dir_rules = struct
     let union = union
     let singleton = singleton
     let add = add
+    let prefix rules prefix = singleton (Prefixed { prefix; rules })
   end
 end
 
@@ -180,20 +247,23 @@ let of_rules rules =
 ;;
 
 let directory_targets (rules : t) =
-  Path.Build.Map.fold
-    ~init:Path.Build.Map.empty
-    rules
-    ~f:(fun (dir_rules : Dir_rules.Nonempty.t) acc ->
-      (dir_rules :> Dir_rules.t)
-      |> Id.Map.fold ~init:acc ~f:(fun (data : Dir_rules.data) acc ->
-        match data with
-        | Alias _ -> acc
-        | Rule rule ->
+  let rec collect rules acc =
+    Id.Map.fold rules ~init:acc ~f:(fun (data : Dir_rules.data) acc ->
+      match data with
+      | Alias _ -> acc
+      | Prefixed { prefix = _; rules } -> collect rules acc
+      | Rule rule ->
+        if Filename.Set.is_empty rule.targets.dirs
+        then acc
+        else
           Filename.Set.fold ~init:acc rule.targets.dirs ~f:(fun target acc ->
             let target = Path.Build.relative_fname rule.targets.root target in
             Path.Build.Map.update acc target ~f:(function
               | None -> Some (Rule.loc rule)
-              | Some loc -> Some loc))))
+              | Some loc -> Some loc)))
+  in
+  Path.Build.Map.fold rules ~init:Path.Build.Map.empty ~f:(fun dir_rules acc ->
+    collect (dir_rules : Dir_rules.Nonempty.t :> Dir_rules.t) acc)
 ;;
 
 let collect f =
@@ -210,23 +280,6 @@ let collect_unit f =
 
 let to_map x = (x : t :> Dir_rules.t Path.Build.Map.t)
 
-let map t ~f =
-  Path.Build.Map.map t ~f:(fun m ->
-    Id.Map.to_list (m : Dir_rules.Nonempty.t :> Dir_rules.t)
-    |> Id.Map.of_list_map_exn ~f:(fun (id, data) ->
-      match f data with
-      | `No_change -> id, data
-      | `Changed data -> Id.gen (), data)
-    |> Dir_rules.Nonempty.create
-    |> Option.value_exn)
-;;
-
-let map_rules t ~f =
-  map t ~f:(function
-    | (Alias _ : Dir_rules.data) -> `No_change
-    | Rule r -> `Changed (Rule (f r) : Dir_rules.data))
-;;
-
 let find t p =
   match Path.as_in_build_dir p with
   | None -> Dir_rules.empty
@@ -241,12 +294,7 @@ let prefix_rules prefix ~f =
   let* res, rules = collect f in
   let+ () =
     produce
-      (map_rules rules ~f:(fun (rule : Rule.t) ->
-         let t =
-           let open Action_builder.O in
-           prefix >>> rule.action
-         in
-         Rule.set_action rule t))
+      (Path.Build.Map.map rules ~f:(fun rules -> Dir_rules.Nonempty.prefix rules prefix))
   in
   res
 ;;
