@@ -431,7 +431,7 @@ module Processed = struct
     ; directives : Sexp.t
     }
 
-  let select_without_extension candidates ~file =
+  let select_without_extension candidates ~file ~allow_ambiguous =
     let extension = Path.Build.extension file |> Filename.Extension.Or_empty.to_string in
     let matching_extension =
       List.filter candidates ~f:(fun { module_; kind; opens = _; reader = _ } ->
@@ -442,22 +442,26 @@ module Processed = struct
             extension
             (Path.extension source |> Filename.Extension.Or_empty.to_string))
     in
-    match matching_extension with
-    | [ candidate ] -> Some candidate
-    | [] ->
-      (match candidates with
-       | [ candidate ] -> Some candidate
-       | [] | _ :: _ :: _ -> None)
-    | _ :: _ :: _ -> None
+    match matching_extension, candidates with
+    | [ candidate ], _ | [], [ candidate ] -> Some candidate
+    | _, candidate :: _ when allow_ambiguous -> Some candidate
+    | _ -> None
   ;;
 
   let get_configuration
         { per_file_config = { exact; without_extension }; pp_config; config; for_ = _ }
         ~file
+        ~allow_ambiguous
     =
     let open Option.O in
     let+ match_kind, ({ module_; opens; reader; kind = _ } as module_config) =
-      let find file = Path.Build.Map.find exact file in
+      let find file =
+        match Path.Build.Map.find exact file with
+        | Some _ as config -> config
+        | None ->
+          Path.Build.Map.find without_extension file
+          >>= select_without_extension ~file ~allow_ambiguous
+      in
       match find file with
       | Some config -> Some (Exact_or_copy, config)
       | None ->
@@ -473,7 +477,7 @@ module Processed = struct
               line directives instead and then Dune should have the database
               similar to Copy_line_directive to handle this. *)
            Path.Build.Map.find without_extension (remove_extension file)
-           >>= select_without_extension ~file
+           >>= select_without_extension ~file ~allow_ambiguous
            |> Option.map ~f:(fun config -> Without_extension, config))
     in
     let pp = Module_reference.Per_item.find pp_config (Module.path module_) in
@@ -482,36 +486,42 @@ module Processed = struct
   ;;
 
   let matching_configurations =
-    let rec loop configurations ~file ~exact ~without_extension =
+    let rec loop configurations ~file ~allow_ambiguous ~exact ~without_extension =
       match configurations with
       | [] ->
         (match exact with
          | _ :: _ -> List.rev exact
          | [] -> List.rev without_extension)
       | (is_default, configuration) :: configurations ->
-        (match get_configuration configuration ~file with
-         | None -> loop configurations ~file ~exact ~without_extension
+        (match get_configuration configuration ~file ~allow_ambiguous with
+         | None -> loop configurations ~file ~allow_ambiguous ~exact ~without_extension
          | Some (Exact_or_copy, module_config, directives) ->
            let match_ = is_default, configuration, module_config, directives in
-           loop configurations ~file ~exact:(match_ :: exact) ~without_extension
+           loop
+             configurations
+             ~file
+             ~allow_ambiguous
+             ~exact:(match_ :: exact)
+             ~without_extension
          | Some (Without_extension, module_config, directives) ->
            let match_ = is_default, configuration, module_config, directives in
            loop
              configurations
              ~file
+             ~allow_ambiguous
              ~exact
              ~without_extension:(match_ :: without_extension))
     in
-    fun (default :: alternatives : t) ~file ->
+    fun (default :: alternatives : t) ~file ~allow_ambiguous ->
       let configurations =
         (true, default)
         :: List.map alternatives ~f:(fun configuration -> false, configuration)
       in
-      loop configurations ~file ~exact:[] ~without_extension:[]
+      loop configurations ~file ~allow_ambiguous ~exact:[] ~without_extension:[]
   ;;
 
-  let configurations t ~file =
-    matching_configurations t ~file
+  let configurations t ~file ~allow_ambiguous =
+    matching_configurations t ~file ~allow_ambiguous
     |> List.map
          ~f:
            (fun
@@ -1031,8 +1041,7 @@ module Unprocessed = struct
             in
             (* we add the config with and without the extension, the latter is
                needed for a fallback in this file's [get] function. *)
-            ( (src, config) :: exact
-            , (remove_extension src, config) :: without_extension )))
+            (src, config) :: exact, (remove_extension src, config) :: without_extension))
     in
     let per_file_config =
       { Processed.exact =

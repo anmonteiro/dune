@@ -166,8 +166,8 @@ directory, libraries, preprocessing, or conditional source suffixes.
 Add `for_ : Compilation_mode.t` to `Processed.configuration`, the group-member
 record, and serialize it with `Compilation_mode.repr`. Do not put it on
 `Processed.config`, which is the mode-local directive payload. This requires
-incrementing the persistent `merlin-conf` version from #15493's version 10 to
-version 11. Store `Ml_kind.t` with each `per_file_config` entry in the same
+incrementing the persistent `merlin-conf` version from the upstream version 11
+to version 12. Store `Ml_kind.t` with each `per_file_config` entry in the same
 version bump.
 
 Expose a file-oriented view:
@@ -188,6 +188,7 @@ type file_configuration =
 val configurations
   :  Processed.t
   -> file:Path.Build.t
+  -> allow_ambiguous:bool
   -> file_configuration Nonempty_list.t option
 ```
 
@@ -212,7 +213,11 @@ fallback must also retain the selected entry's kind rather than discarding it.
 If an extensionless key is ambiguous between implementation and interface
 entries, use the query's final source extension to select the kind and return no
 match if it is still ambiguous. Never invent `KIND` or `COUNTERPART` from the
-first suffix that happens to match.
+first suffix that happens to match. The plural request sets
+`allow_ambiguous:false`. Only the legacy `File` request sets it to `true`,
+preserving its fallback to the lexicographically later filename when the
+source kind cannot be determined. Both requests retain alias lookup along
+copy-line directive chains.
 
 #### Preserve exact-match precedence across modes
 

@@ -56,7 +56,11 @@ module Processed : sig
       print the resulting configuration in dot-merlin syntax. *)
   val print_generic_dot_merlin : Path.t list -> unit
 
-  val configurations : t -> file:Path.Build.t -> file_configuration Nonempty_list.t option
+  val configurations
+    :  t
+    -> file:Path.Build.t
+    -> allow_ambiguous:bool
+    -> file_configuration Nonempty_list.t option
 end
 
 val make

@@ -154,12 +154,17 @@ end = struct
   module Merlin = Dune_rules.Merlin
 
   let load_merlin_configurations =
-    let rec find_closest file path first_error =
-      find_in_directory file path first_error (get_merlin_files_paths path)
-    and find_in_directory file path first_error = function
+    let rec find_closest file path first_error ~allow_ambiguous =
+      find_in_directory
+        file
+        path
+        first_error
+        ~allow_ambiguous
+        (get_merlin_files_paths path)
+    and find_in_directory file path first_error ~allow_ambiguous = function
       | [] ->
         (match Path.Build.parent path with
-         | Some parent -> find_closest file parent first_error
+         | Some parent -> find_closest file parent first_error ~allow_ambiguous
          | None ->
            (match first_error with
             | Some error -> Error error
@@ -178,17 +183,20 @@ end = struct
         (match Merlin.Processed.load_file file_path with
          | Error error ->
            let first_error = Option.first_some first_error (Some error) in
-           find_in_directory file path first_error files
+           find_in_directory file path first_error ~allow_ambiguous files
          | Ok configuration ->
-           (match Merlin.Processed.configurations configuration ~file with
+           (match
+              Merlin.Processed.configurations configuration ~file ~allow_ambiguous
+            with
             | Some configurations -> Ok configurations
-            | None -> find_in_directory file path first_error files))
+            | None -> find_in_directory file path first_error ~allow_ambiguous files))
     in
-    fun file -> find_closest file (Path.Build.parent_exn file) None
+    fun file ~allow_ambiguous ->
+      find_closest file (Path.Build.parent_exn file) None ~allow_ambiguous
   ;;
 
   let load_merlin_file file =
-    match load_merlin_configurations file with
+    match load_merlin_configurations file ~allow_ambiguous:true with
     | Ok configurations -> (Nonempty_list.hd configurations).directives
     | Error error -> Merlin_conf.make_error error
   ;;
@@ -248,7 +256,7 @@ end = struct
     >>| (function
      | Error error -> Merlin_conf.make_configurations_error error
      | Ok file ->
-       (match load_merlin_configurations file with
+       (match load_merlin_configurations file ~allow_ambiguous:false with
         | Ok configurations -> Merlin_conf.make_configurations configurations
         | Error error -> Merlin_conf.make_configurations_error error))
     >>| Merlin_conf.to_stdout
