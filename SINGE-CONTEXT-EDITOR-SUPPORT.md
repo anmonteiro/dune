@@ -163,24 +163,21 @@ directory, libraries, preprocessing, or conditional source suffixes.
 
 ### 2. Persist mode and source-match metadata
 
-Add `for_ : Compilation_mode.t` to `Processed.configuration`, the group-member
-record, and serialize it with `Compilation_mode.repr`. Do not put it on
-`Processed.config`, which is the mode-local directive payload. This requires
-incrementing the persistent `merlin-conf` version from #15493's version 10 to
-version 11. Store `Ml_kind.t` with each `per_file_config` entry in the same
-version bump.
+Implemented upstream by #16522. `for_ : Compilation_mode.t` belongs to the
+group-member configuration, not `Processed.config`, which is the mode-local
+directive payload. Persist compact module rows with source paths, `Ml_kind.t`,
+and a boolean recording whether the opposite-kind authored source exists.
+Build the per-file indexes when loading the configuration, not while generating
+build rules. The persistent `merlin-conf` version is 15; adding the protocol
+request does not change this representation.
 
 Expose a file-oriented view:
 
 ```ocaml
-type source_kind =
-  | Implementation
-  | Interface
-
 type file_configuration =
   { mode : Compilation_mode.t
   ; is_default : bool
-  ; kind : source_kind
+  ; kind : Ml_kind.t
   ; counterpart : Path.t option
   ; directives : Sexp.t
   }
@@ -189,21 +186,23 @@ val configurations
   :  Processed.t
   -> file:Path.Build.t
   -> file_configuration Nonempty_list.t option
+
+val get : Processed.t -> file:Path.Build.t -> Sexp.t option
 ```
 
 `is_default` in this file-oriented view is derived from whether the matched
 member was the head of the persisted group. It is protocol metadata, not a
 field stored in `Processed.configuration`.
 
-`None` means that this stanza does not own the file. `Some` is nonempty by type,
-so once Dune has selected a matching stanza there is no empty success state to
-handle or accidentally serialize.
+`None` means that this stanza has no unambiguous match for the file. `Some` is
+nonempty by type, so once Dune has selected a matching stanza there is no empty
+success state to handle or accidentally serialize.
 
 The lookup result must retain the matched `Ml_kind.t` together with its
 `module_config`; do not reconstruct it later from a filename suffix. Set `kind`
-from that matched source. Set `counterpart` from
-`Module.source_without_pp module_` for the opposite `Ml_kind.t`, so it names the
-exact existing authored implementation or interface selected by this mode.
+from that matched source. Resolve `counterpart` from the stored original source
+path for the opposite `Ml_kind.t`, guarded by the authored-source existence
+boolean, so it names the exact implementation or interface selected by this mode.
 `None` means that this mode's module has no existing opposite-kind source.
 
 This requires constructing `per_file_config` entries with their source kind.
@@ -212,7 +211,12 @@ fallback must also retain the selected entry's kind rather than discarding it.
 If an extensionless key is ambiguous between implementation and interface
 entries, use the query's final source extension to select the kind and return no
 match if it is still ambiguous. Never invent `KIND` or `COUNTERPART` from the
-first suffix that happens to match.
+first suffix that happens to match. The plural request uses
+`Processed.configurations`, which omits ambiguous source kinds. The legacy
+`File` request uses `Processed.get`, preserving its fallback to the
+lexicographically later filename when the source kind cannot be determined.
+Both requests retain alias lookup along
+copy-line directive chains.
 
 #### Preserve exact-match precedence across modes
 
@@ -220,8 +224,8 @@ first suffix that happens to match.
 
 - `Exact_or_copy`: the queried path is present in `per_file_config`, or following
   a copy-line directive finds an entry;
-- `Extensionless`: the existing last-resort lookup finds an entry after removing
-  the queried path's extension.
+- `Without_extension`: the existing last-resort lookup finds an entry after
+  removing the queried path's extension.
 
 This precedence must be decided across the whole configuration group, not
 independently for each mode. For example, in a mixed library containing
@@ -234,18 +238,18 @@ incorrectly report that both modes apply to the file.
 class and then:
 
 1. return all `Exact_or_copy` matches, in group order, when at least one exists;
-2. otherwise return all `Extensionless` matches, in group order;
+2. otherwise return all `Without_extension` matches, in group order;
 3. return `None` when neither class has a match and `Some` of a nonempty list
    otherwise.
 
-The rebased generation commit implements this classification and precedence
-for the singular lookup. Preserve that implementation when extracting the
-plural `configurations` API; do not implement the plural lookup as an
-independent filter over group members.
+The merged metadata implementation shares this classification and precedence
+between singular and plural lookup. Preserve it; do not implement plural
+lookup as an independent filter over group members.
 
-Remove `Processed.get` after migrating its caller to `configurations`. Keep the
-singular compatibility projection in the CLI's `load_merlin_file`: choose the
-first applicable entry in group order for the legacy `File` request.
+Keep `Processed.get` for the legacy `File` request: it chooses the first
+applicable entry in group order and retains ambiguous filename fallback.
+The CLI must not implement legacy lookup by projecting the plural result,
+because the plural API intentionally omits ambiguous matches.
 
 ### 3. Add an additive configuration-server request
 
