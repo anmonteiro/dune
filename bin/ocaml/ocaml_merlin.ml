@@ -65,8 +65,8 @@ end = struct
       let open Sexp in
       let kind =
         match kind with
-        | Merlin.Processed.Implementation -> "implementation"
-        | Interface -> "interface"
+        | Root.Ocaml.Ml_kind.Impl -> "implementation"
+        | Intf -> "interface"
       in
       let counterpart =
         match counterpart with
@@ -153,13 +153,13 @@ end = struct
 
   module Merlin = Dune_rules.Merlin
 
-  let load_merlin_configurations =
-    let rec find_closest file path first_error =
-      find_in_directory file path first_error (get_merlin_files_paths path)
-    and find_in_directory file path first_error = function
+  let load_merlin_configuration =
+    let rec find_closest file path first_error ~request =
+      find_in_directory file path first_error ~request (get_merlin_files_paths path)
+    and find_in_directory file path first_error ~request = function
       | [] ->
         (match Path.Build.parent path with
-         | Some parent -> find_closest file parent first_error
+         | Some parent -> find_closest file parent first_error ~request
          | None ->
            (match first_error with
             | Some error -> Error error
@@ -178,18 +178,25 @@ end = struct
         (match Merlin.Processed.load_file file_path with
          | Error error ->
            let first_error = Option.first_some first_error (Some error) in
-           find_in_directory file path first_error files
+           find_in_directory file path first_error ~request files
          | Ok configuration ->
-           (match Merlin.Processed.configurations configuration ~file with
-            | Some configurations -> Ok configurations
-            | None -> find_in_directory file path first_error files))
+           let result =
+             match request with
+             | `File -> Merlin.Processed.get configuration ~file
+             | `File_configurations ->
+               Merlin.Processed.configurations configuration ~file
+               |> Option.map ~f:Merlin_conf.make_configurations
+           in
+           (match result with
+            | Some result -> Ok result
+            | None -> find_in_directory file path first_error ~request files))
     in
-    fun file -> find_closest file (Path.Build.parent_exn file) None
+    fun file ~request -> find_closest file (Path.Build.parent_exn file) None ~request
   ;;
 
   let load_merlin_file file =
-    match load_merlin_configurations file with
-    | Ok configurations -> (Nonempty_list.hd configurations).directives
+    match load_merlin_configuration file ~request:`File with
+    | Ok directives -> directives
     | Error error -> Merlin_conf.make_error error
   ;;
 
@@ -248,8 +255,8 @@ end = struct
     >>| (function
      | Error error -> Merlin_conf.make_configurations_error error
      | Ok file ->
-       (match load_merlin_configurations file with
-        | Ok configurations -> Merlin_conf.make_configurations configurations
+       (match load_merlin_configuration file ~request:`File_configurations with
+        | Ok configurations -> configurations
         | Error error -> Merlin_conf.make_configurations_error error))
     >>| Merlin_conf.to_stdout
   ;;
