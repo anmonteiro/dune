@@ -25,9 +25,12 @@ val expand_all_unchecked
   -> Ordered_set_lang.Unexpanded.t
   -> (Loc.t * (Module_name.Unchecked.t * string)) Module_trie.Unchecked.t Memo.t
 
+(** [extra_modules] are available to explicit references but do not contribute to
+    the [:standard] module set. *)
 val eval
   :  expander:Expander.t
   -> modules:Module.Source.t Module_trie.Unchecked.t
+  -> extra_modules:Module.Source.t Module_trie.Unchecked.t
   -> stanza_loc:Loc.t
   -> private_modules:Ordered_set_lang.Unexpanded.t
   -> kind:kind

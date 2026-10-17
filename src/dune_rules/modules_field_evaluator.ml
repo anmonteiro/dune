@@ -396,6 +396,7 @@ let check_invalid_module_listing
 let eval
       ~expander
       ~modules:(all_modules : Indexed_source.t Module_name.Unchecked.Path.Map.t)
+      ~standard
       ~stanza_loc
       ~private_modules
       ~kind
@@ -432,7 +433,7 @@ let eval
       Memo.return
         (Module_name.Unchecked.Path.Map.map
            ~f:(fun { Indexed_source.source; _ } -> stanza_loc, source)
-           all_modules)
+           standard)
   and+ private_modules =
     eval ~standard:Module_name.Unchecked.Path.Map.empty private_modules
   in
@@ -504,6 +505,7 @@ let eval
 let eval
       ~expander
       ~modules:(all_modules : Module.Source.t Module_trie.Unchecked.t)
+      ~extra_modules
       ~stanza_loc
       ~private_modules
       ~kind
@@ -516,9 +518,9 @@ let eval
   Memo.push_stack_frame ~human_readable_description:(fun () ->
     Pp.textf "(modules) field at %s" (Loc.to_file_colon_line stanza_loc))
   @@ fun () ->
-  let all_modules_by_path =
+  let index_modules modules =
     Module_trie.Unchecked.foldi
-      all_modules
+      modules
       ~init:Module_name.Unchecked.Path.Map.empty
       ~f:(fun path m acc ->
         let logical_path =
@@ -529,6 +531,10 @@ let eval
           logical_path
           { Indexed_source.logical_path; trie_path = path; source = m })
   in
+  let standard = index_modules all_modules in
+  let all_modules_by_path =
+    Module_name.Unchecked.Path.Map.superpose standard (index_modules extra_modules)
+  in
   let* modules0 =
     eval0
       ~expander
@@ -536,7 +542,7 @@ let eval
       ~all_modules:all_modules_by_path
       ~include_subdirs
       ~version
-      ~standard:all_modules_by_path
+      ~standard
       settings.modules
   in
   let* is_vendored =
@@ -547,6 +553,7 @@ let eval
   eval
     ~expander
     ~modules:all_modules_by_path
+    ~standard
     ~stanza_loc
     ~private_modules
     ~kind
