@@ -160,14 +160,15 @@ module Build_config = struct
           ?(directory_targets = Rules.empty.directory_targets)
           rules
       =
-      let rules = { Rules.build_dir_only_sub_dirs; directory_targets; rules } in
+      let rules = Rules.create ~build_dir_only_sub_dirs ~directory_targets rules in
       Gen_rules_result.rules_here rules
     ;;
 
     let make_empty ~dir subdirs =
-      make
-        ~build_dir_only_sub_dirs:(Build_only_sub_dirs.singleton ~dir subdirs)
-        (Memo.return Dune_engine.Rules.empty)
+      Gen_rules_result.rules_here
+        { Rules.empty with
+          build_dir_only_sub_dirs = Build_only_sub_dirs.singleton ~dir subdirs
+        }
     ;;
 
     include Gen_rules_result
