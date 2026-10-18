@@ -36,7 +36,8 @@ module Gen_rules : sig
         the rules that are going to produce these targets. However, it's
         ok to have an approximate location as the rule that produces the
         target will be responsible for producing the final location*)
-      ; rules : Rules.t Memo.t
+      ; rules : Rules.t Memo.t option
+        (** [None] means there is no rule generation or effects to evaluate. *)
       }
 
     type rules := Rules.t

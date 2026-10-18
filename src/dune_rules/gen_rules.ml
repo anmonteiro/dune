@@ -578,78 +578,105 @@ let gen_rules_regular_directory (sctx : Super_context.t Memo.t) ~src_dir ~compon
   | Lock_dir _ -> Memo.return Gen_rules.no_rules
   | dir_status ->
     let+ rules =
-      let* st_dir = Source_tree.find_dir src_dir in
+      let* st_dir =
+        match dir_status with
+        | Generated when not (List.is_empty components) -> Memo.return None
+        | _ -> Source_tree.find_dir src_dir
+      in
       let* nearest_src_dir =
         match st_dir with
         | Some dir -> Memo.return (Some dir)
         | None -> Source_tree.find_dir (Path.Source.parent_exn src_dir)
       in
       let+ rules =
-        let+ make_rules =
-          let+ directory_targets =
-            Dir_status.directory_targets
-              dir_status
-              ~jsoo_enabled:Jsoo_rules.jsoo_enabled
-              ~dir
+        match dir_status, components with
+        | Generated, _ :: _ | Is_component_of_a_group_but_not_the_root _, _ ->
+          let allowed_subdirs = Automatic_subdir.subdirs components in
+          let rules =
+            match nearest_src_dir, Automatic_subdir.of_src_dir src_dir with
+            | Some _, Some kind ->
+              Gen_rules.rules_for
+                ~dir
+                ~allowed_subdirs
+                (Rules.collect_unit (fun () -> Automatic_subdir.gen_rules ~sctx ~dir kind))
+            | None, _ | _, None ->
+              { Gen_rules.Rules.empty with
+                build_dir_only_sub_dirs =
+                  Gen_rules.Build_only_sub_dirs.singleton
+                    ~dir
+                    (Subdir_set.of_set allowed_subdirs)
+              }
           in
-          let allowed_subdirs =
-            let automatic = Automatic_subdir.subdirs components in
-            let toplevel =
-              match components with
-              | _ :: _ -> Filename.Set.empty
-              | [] ->
-                (* XXX sync this list with the pattern matches above. It's quite ugly
-                   we need this, we should rewrite this code to avoid this. *)
-                Filename.Set.of_list
-                  [ Filename.js_dir_basename
-                  ; Filename.doc_dir_basename
-                  ; Filename.doc_new_dir_basename
-                  ; Filename.ppx_dir_basename
-                  ; Filename.dune_dir_basename
-                  ; Filename.topmod_dir_basename
-                  ; Filename.of_string_exn Dune_lang.Oxcaml.parameterised_dir
-                  ]
+          Memo.return (Gen_rules.redirect_to_parent rules)
+        | _ ->
+          let+ make_rules =
+            let+ directory_targets =
+              Dir_status.directory_targets
+                dir_status
+                ~jsoo_enabled:Jsoo_rules.jsoo_enabled
+                ~dir
             in
-            Filename.Set.union automatic toplevel
-          in
-          fun rules ->
-            let rules =
-              let* rules =
-                let+ automatic_subdir_rules =
-                  gen_automatic_subdir_rules sctx ~dir ~nearest_src_dir ~src_dir
-                and+ project_rules =
-                  match st_dir with
-                  | None -> Memo.return Rules.empty
-                  | Some st_dir -> gen_project_rules sctx st_dir
-                and+ rules = rules in
-                Rules.union (Rules.union project_rules automatic_subdir_rules) rules
-              in
-              let+ compile_commands_rules =
-                (* Generate compile_commands.json only for the merlin
-                   context at the context root *)
+            let allowed_subdirs =
+              let automatic = Automatic_subdir.subdirs components in
+              let toplevel =
                 match components with
+                | _ :: _ -> Filename.Set.empty
                 | [] ->
-                  let* sctx = sctx in
-                  if Context.merlin (Super_context.context sctx)
-                  then
-                    Rules.collect_unit (fun () -> Compile_commands.gen_rules sctx ~rules)
-                  else Memo.return Rules.empty
-                | _ -> Memo.return Rules.empty
+                  (* XXX sync this list with the pattern matches above. It's quite ugly
+                     we need this, we should rewrite this code to avoid this. *)
+                  Filename.Set.of_list
+                    [ Filename.js_dir_basename
+                    ; Filename.doc_dir_basename
+                    ; Filename.doc_new_dir_basename
+                    ; Filename.ppx_dir_basename
+                    ; Filename.dune_dir_basename
+                    ; Filename.topmod_dir_basename
+                    ; Filename.of_string_exn Dune_lang.Oxcaml.parameterised_dir
+                    ]
               in
-              Rules.union rules compile_commands_rules
+              Filename.Set.union automatic toplevel
             in
-            Gen_rules.rules_for ~dir ~directory_targets ~allowed_subdirs rules
-        in
-        match dir_status with
-        | Lock_dir _ -> Gen_rules.rules_here Gen_rules.Rules.empty
-        | Source_only source_dir ->
-          gen_rules_source_only sctx ~dir source_dir |> make_rules |> Gen_rules.rules_here
-        | Generated | Is_component_of_a_group_but_not_the_root _ ->
-          Memo.return Rules.empty |> make_rules |> Gen_rules.redirect_to_parent
-        | Standalone (source_dir, _) | Group_root { source_dir; _ } ->
-          gen_rules_standalone_or_root sctx ~dir ~source_dir
-          |> make_rules
-          |> Gen_rules.rules_here
+            fun rules ->
+              let rules =
+                let* rules =
+                  let+ automatic_subdir_rules =
+                    gen_automatic_subdir_rules sctx ~dir ~nearest_src_dir ~src_dir
+                  and+ project_rules =
+                    match st_dir with
+                    | None -> Memo.return Rules.empty
+                    | Some st_dir -> gen_project_rules sctx st_dir
+                  and+ rules = rules in
+                  Rules.union (Rules.union project_rules automatic_subdir_rules) rules
+                in
+                let+ compile_commands_rules =
+                  (* Generate compile_commands.json only for the merlin
+                     context at the context root *)
+                  match components with
+                  | [] ->
+                    let* sctx = sctx in
+                    if Context.merlin (Super_context.context sctx)
+                    then
+                      Rules.collect_unit (fun () ->
+                        Compile_commands.gen_rules sctx ~rules)
+                    else Memo.return Rules.empty
+                  | _ -> Memo.return Rules.empty
+                in
+                Rules.union rules compile_commands_rules
+              in
+              Gen_rules.rules_for ~dir ~directory_targets ~allowed_subdirs rules
+          in
+          (match dir_status with
+           | Lock_dir _ -> Gen_rules.rules_here Gen_rules.Rules.empty
+           | Source_only source_dir ->
+             gen_rules_source_only sctx ~dir source_dir
+             |> make_rules
+             |> Gen_rules.rules_here
+           | Generated | Is_component_of_a_group_but_not_the_root _ ->
+             Memo.return Rules.empty |> make_rules |> Gen_rules.redirect_to_parent
+           | Standalone (source_dir, _) | Group_root { source_dir; _ } ->
+             gen_rules_standalone_or_root sctx ~dir ~source_dir
+             |> make_rules
+             |> Gen_rules.rules_here)
       in
       match Opam_create.gen_rules sctx ~dir ~nearest_src_dir ~src_dir with
       | None -> rules

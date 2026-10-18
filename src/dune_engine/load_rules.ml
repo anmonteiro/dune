@@ -486,7 +486,7 @@ end = struct
     type t =
       { build_dir_only_sub_dirs : Build_only_sub_dirs.t
       ; directory_targets : Loc.t Path.Build.Map.t
-      ; rules : Rules.t Memo.Lazy.t
+      ; rules : Rules.t Memo.Lazy.t option
       }
 
     let combine_exn r { build_dir_only_sub_dirs; directory_targets; rules } =
@@ -494,11 +494,15 @@ end = struct
           Build_only_sub_dirs.union r.build_dir_only_sub_dirs build_dir_only_sub_dirs
       ; directory_targets = Path.Build.Map.union_exn r.directory_targets directory_targets
       ; rules =
-          Memo.lazy_ ~name:"union-rules" (fun () ->
-            let open Memo.O in
-            let+ r = Memo.Lazy.force r.rules
-            and+ r' = Memo.Lazy.force rules in
-            Rules.union r r')
+          (match r.rules, rules with
+           | None, rules | rules, None -> rules
+           | Some rules, Some other_rules ->
+             Some
+               (Memo.lazy_ ~name:"union-rules" (fun () ->
+                  let open Memo.O in
+                  let+ rules = Memo.Lazy.force rules
+                  and+ other_rules = Memo.Lazy.force other_rules in
+                  Rules.union rules other_rules)))
       }
     ;;
 
@@ -561,10 +565,11 @@ end = struct
       check_all_directory_targets_are_descendant ~of_ directory_targets;
       check_all_sub_dirs_rule_dirs_are_descendant ~of_ build_dir_only_sub_dirs;
       let rules =
-        Memo.lazy_ ~name:"check-rules-are-descendant" (fun () ->
-          let+ rules = rules in
-          check_all_rules_are_descendant ~of_ rules;
-          rules)
+        Option.map rules ~f:(fun rules ->
+          Memo.lazy_ ~name:"check-rules-are-descendant" (fun () ->
+            let+ rules = rules in
+            check_all_rules_are_descendant ~of_ rules;
+            rules))
       in
       { build_dir_only_sub_dirs; directory_targets; rules }
     ;;
@@ -835,7 +840,11 @@ end = struct
           Path.Build.equal (Path.Build.parent_exn dir_target) dir
           && Subdir_set.mem build_dir_only_sub_dirs name
         then report_rule_internal_dir_conflict name loc);
-      let* rules_produced = Memo.Lazy.force rules in
+      let* rules_produced =
+        match rules with
+        | None -> Memo.return Rules.empty
+        | Some rules -> Memo.Lazy.force rules
+      in
       let rules =
         let dir = Path.build dir in
         Rules.find rules_produced dir

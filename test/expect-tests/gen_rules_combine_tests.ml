@@ -4,9 +4,11 @@ module Generated_rules = Build_config.Gen_rules.Rules
 
 let () = Dune_tests_common.init ()
 
-let run rules =
-  Fiber.run (Memo.run rules) ~iter:(fun () ->
-    Code_error.raise "Unexpected suspension in generated rules test" [])
+let run = function
+  | None -> Rules.empty
+  | Some rules ->
+    Fiber.run (Memo.run rules) ~iter:(fun () ->
+      Code_error.raise "Unexpected suspension in generated rules test" [])
 ;;
 
 let%expect_test "empty generated rule combinations remain deferred" =
