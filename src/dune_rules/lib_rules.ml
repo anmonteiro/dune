@@ -122,6 +122,9 @@ let build_lib
 
 let gen_wrapped_compat_modules (lib : Library.t) cctx =
   let modules = Compilation_context.modules cctx in
+  let loc = lib.buildable.loc in
+  let sctx = Compilation_context.super_context cctx in
+  let dir = Compilation_context.dir cctx in
   let transition_message =
     lazy
       (match Modules.With_vlib.wrapped modules with
@@ -151,10 +154,8 @@ let gen_wrapped_compat_modules (lib : Library.t) cctx =
         hidden_name
     in
     let source_path = Option.value_exn (Module.file m ~ml_kind:Impl) in
-    let loc = lib.buildable.loc in
-    let sctx = Compilation_context.super_context cctx in
     Action_builder.write_file_dyn (Path.as_in_build_dir_exn source_path) contents
-    |> Super_context.add_rule sctx ~loc ~dir:(Compilation_context.dir cctx))
+    |> Super_context.add_rule sctx ~loc ~dir)
 ;;
 
 (* Rules for building static and dynamic libraries using [ocamlmklib]. *)
