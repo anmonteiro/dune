@@ -54,6 +54,36 @@ end = struct
 
     let make_error msg = Sexp.(List [ List [ Atom "ERROR"; Atom msg ] ])
 
+    let make_configurations_error msg =
+      Sexp.(List [ Atom "CONFIGURATIONS-ERROR"; Atom msg ])
+    ;;
+
+    let file_configuration { Merlin.Processed.mode; is_default; kind; directives; _ } =
+      let mode =
+        match mode with
+        | Compilation_mode.Ocaml -> "ocaml"
+        | Melange -> "melange"
+      in
+      let kind =
+        Root.Ocaml.Ml_kind.choose kind ~impl:"implementation" ~intf:"interface"
+      in
+      Sexp.(
+        List
+          [ Atom "CONFIG"
+          ; List [ Atom "MODE"; Atom mode ]
+          ; List [ Atom "DEFAULT"; Atom (Bool.to_string is_default) ]
+          ; List [ Atom "KIND"; Atom kind ]
+          ; List [ Atom "DIRECTIVES"; directives ]
+          ])
+    ;;
+
+    let make_configurations configurations =
+      let configurations =
+        Nonempty_list.to_list_map configurations ~f:file_configuration
+      in
+      Sexp.List [ Atom "CONFIGURATIONS"; List configurations ]
+    ;;
+
     let to_stdout (t : t) =
       Csexp.to_channel stdout t;
       flush stdout
@@ -63,6 +93,7 @@ end = struct
   module Commands = struct
     type t =
       | File of string
+      | File_configurations of string
       | Halt
       | Unknown of string
 
@@ -74,6 +105,7 @@ end = struct
         (match sexp with
          | Atom "Halt" -> Halt
          | List [ Atom "File"; Atom path ] -> File path
+         | List [ Atom "File-Configurations"; Atom path ] -> File_configurations path
          | sexp ->
            let msg = Printf.sprintf "Bad input: %s" (Sexp.to_string sexp) in
            Unknown msg)
@@ -113,32 +145,38 @@ end = struct
 
   module Merlin = Dune_rules.Merlin
 
-  let load_merlin_file file =
+  let load_merlin_file =
     (* We search for an appropriate merlin configuration in the current
        directory and its parents *)
-    let rec find_closest path =
+    let rec find_closest file path ~request =
       match
         get_merlin_files_paths path
         |> List.find_map ~f:(fun file_path ->
           (* FIXME we are racing against the build system writing these
              files here *)
           match Merlin.Processed.load_file file_path with
-          | Error msg -> Some (Merlin_conf.make_error msg)
-          | Ok config -> Merlin.Processed.get config ~file)
+          | Error msg -> Some (Error msg)
+          | Ok config ->
+            (match request with
+             | `File -> Merlin.Processed.get config ~file
+             | `File_configurations ->
+               Merlin.Processed.configurations config ~file
+               |> Option.map ~f:Merlin_conf.make_configurations)
+            |> Option.map ~f:Result.return)
       with
       | Some p -> Some p
       | None ->
         (match Path.Build.parent path with
          | None -> None
-         | Some dir -> find_closest dir)
+         | Some dir -> find_closest file dir ~request)
     in
-    match find_closest (Path.Build.parent_exn file) with
-    | Some x -> x
-    | None ->
-      Path.Build.drop_build_context_exn file
-      |> Path.Source.to_string_maybe_quoted
-      |> Printf.sprintf "No config found for file %s. Try calling 'dune build'."
-      |> Merlin_conf.make_error
+    fun file ~request ->
+      match find_closest file (Path.Build.parent_exn file) ~request with
+      | Some x -> x
+      | None ->
+        Path.Build.drop_build_context_exn file
+        |> Path.Source.to_string_maybe_quoted
+        |> Result.errorf "No config found for file %s. Try calling 'dune build'."
   ;;
 
   (* [to_local p] makes path [p] relative to the project's root. [p] can be: -
@@ -183,11 +221,15 @@ end = struct
             Ok (Path.Build.append_local (Context_name.build_dir context) file)))
   ;;
 
-  let print_merlin_conf ~selected_context file =
+  let print_merlin_conf ~selected_context ~request file =
     to_local ~selected_context file
+    >>| Result.bind ~f:(load_merlin_file ~request)
     >>| (function
-     | Error s -> Merlin_conf.make_error s
-     | Ok file -> load_merlin_file file)
+     | Ok config -> config
+     | Error msg ->
+       (match request with
+        | `File -> Merlin_conf.make_error msg
+        | `File_configurations -> Merlin_conf.make_configurations_error msg))
     >>| Merlin_conf.to_stdout
   ;;
 
@@ -213,7 +255,12 @@ end = struct
       match Commands.read_input stdin with
       | Halt -> Fiber.return ()
       | File path ->
-        let* () = print_merlin_conf ~selected_context path in
+        let* () = print_merlin_conf ~selected_context ~request:`File path in
+        main ()
+      | File_configurations path ->
+        let* () =
+          print_merlin_conf ~selected_context ~request:`File_configurations path
+        in
         main ()
       | Unknown msg ->
         Merlin_conf.to_stdout (Merlin_conf.make_error msg);
