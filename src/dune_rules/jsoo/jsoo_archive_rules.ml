@@ -119,10 +119,8 @@ let lib_archive_rules_memo =
        >>= function
        | None -> Memo.return None
        | Some (lib, cctx) ->
-         let* sctx =
-           Context.DB.by_dir lib_dir >>| Context.name >>= Super_context.find_exn
-         in
-         let obj_dir = Library.obj_dir ~dir:lib_dir lib in
+         let sctx = Compilation_context.super_context cctx in
+         let obj_dir = Compilation_context.obj_dir cctx in
          let obj_dir_dir = Obj_dir.dir obj_dir in
          let src =
            Library.archive lib ~dir:obj_dir_dir ~ext:(Mode.compiled_lib_ext Mode.Byte)
