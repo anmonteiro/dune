@@ -21,10 +21,10 @@ let cclibs =
          c_library_flags)
 ;;
 
-let expand_c_library_flags sctx expander ~dir ~has_cxx flags =
+let expand_c_library_flags sctx expander ~has_cxx flags =
   let standard =
     let open Action_builder.O in
-    let* project = Action_builder.of_memo (Dune_load.find_project ~dir) in
+    let* project = Action_builder.return (Expander.project expander) in
     match Dune_project.use_standard_c_and_cxx_flags project with
     | Some true when has_cxx () ->
       let ctx = Super_context.context sctx in
@@ -85,7 +85,6 @@ let build_lib
          expand_c_library_flags
            sctx
            expander
-           ~dir
            ~has_cxx:(fun () -> Buildable.has_foreign_cxx lib.buildable)
            lib.c_library_flags
          >>| map_cclibs)
@@ -271,7 +270,6 @@ let foreign_rules (library : Foreign_library.t) ~sctx ~expander ~dir ~dir_conten
     expand_c_library_flags
       sctx
       expander
-      ~dir
       ~has_cxx:(fun () -> Foreign.Sources.has_cxx_sources foreign_sources)
       library.c_library_flags
   in
@@ -327,7 +325,6 @@ let build_stubs lib ~cctx ~dir ~expander ~requires ~dir_contents ~vlib_stubs_o_f
           expand_c_library_flags
             sctx
             expander
-            ~dir
             ~has_cxx:(fun () -> Foreign.Sources.has_cxx_sources foreign_sources)
             lib.c_library_flags
         and+ ctypes_lib =

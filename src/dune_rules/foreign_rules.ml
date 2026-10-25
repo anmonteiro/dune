@@ -224,11 +224,10 @@ let base_flags ~(kind : Foreign_language.t) ~use_standard_flags ~ocaml_config =
          ])
 ;;
 
-let compilation_flags ~sctx ~dir ~expander ~loc ~(src : Foreign.Source.t) =
+let compilation_flags ~sctx ~project ~dir ~expander ~loc ~(src : Foreign.Source.t) =
   let open Action_builder.O in
   let kind = Foreign.Source.language src in
   let ctx = Super_context.context sctx in
-  let* project = Action_builder.of_memo (Dune_load.find_project ~dir) in
   let* ocaml = Action_builder.of_memo (Context.ocaml ctx) in
   let+ user_flags =
     match Foreign.Source.kind src with
@@ -256,11 +255,11 @@ let compilation_flags ~sctx ~dir ~expander ~loc ~(src : Foreign.Source.t) =
   @ user_flags
 ;;
 
-let c_compile_args ~sctx ~dir ~expander ~loc ~src ~include_flags =
+let c_compile_args ~sctx ~project ~dir ~expander ~loc ~src ~include_flags =
   Command.Args.S
     [ Dyn
         (Action_builder.map
-           (compilation_flags ~sctx ~dir ~expander ~loc ~src)
+           (compilation_flags ~sctx ~project ~dir ~expander ~loc ~src)
            ~f:(fun flags -> Command.Args.As flags))
     ; Dyn
         (let open Action_builder.O in
@@ -287,6 +286,7 @@ let build_c ~sctx ~dir ~expander ~include_flags (loc, (src : Foreign.Source.t), 
       Dep_conf_eval.unnamed Sandbox_config.needs_sandboxing ctypes.deps ~expander
   in
   let ctx = Super_context.context sctx in
+  let project = Expander.project expander in
   let* ocaml = Context.ocaml ctx in
   (* Emit warning for Stubs case when standard flags are overridden *)
   let* () =
@@ -299,7 +299,6 @@ let build_c ~sctx ~dir ~expander ~include_flags (loc, (src : Foreign.Source.t), 
          [dune-project] file (thus defaulting to [true]), the [:standard] set of
          flags has been overridden and we are not in a vendored project *)
       let has_standard = Ordered_set_lang.Unexpanded.has_standard flags in
-      let* project = Dune_load.find_project ~dir in
       let use_standard_flags = Dune_project.use_standard_c_and_cxx_flags project in
       let+ is_vendored =
         match Path.Build.drop_build_context dir with
@@ -353,7 +352,7 @@ let build_c ~sctx ~dir ~expander ~include_flags (loc, (src : Foreign.Source.t), 
        ~env
        ~sandbox
        c_compiler
-       [ c_compile_args ~sctx ~dir ~expander ~loc ~src ~include_flags
+       [ c_compile_args ~sctx ~project ~dir ~expander ~loc ~src ~include_flags
        ; Hidden_deps (Dep.Set.singleton (Dep.file_selector caml_headers))
        ; S output_param
        ; A "-c"
