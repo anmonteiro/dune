@@ -23,16 +23,17 @@ let build_c_command
       ~expander
       ~include_flags
       ~loc
+      ~ocaml
       (src : Foreign.Source.t)
       ~ext_obj
   =
   let open Action_builder.O in
-  let+ ocaml = Action_builder.of_memo (Context.ocaml (Super_context.context sctx))
-  and+ args =
+  let { Ocaml_toolchain.ocaml_config; lib_config; _ } = ocaml in
+  let+ args =
     (* Expand the command args to strings, discarding file-level deps (header
        files, include directories). Flag values flow through Memo, so changes
        to dune files or compiler config still invalidate this rule. *)
-    Foreign_rules.c_compile_args ~sctx ~dir ~expander ~loc ~src ~include_flags
+    Foreign_rules.c_compile_args ~sctx ~dir ~expander ~loc ~ocaml ~src ~include_flags
     |> Command.expand_no_targets ~dir:(Path.build dir)
     |> Action_builder.evaluate_and_collect_deps
     |> Action_builder.of_memo
@@ -48,13 +49,13 @@ let build_c_command
   ; file = src_relative
   ; arguments =
       List.concat
-        [ [ Ocaml_config.c_compiler ocaml.ocaml_config ]
+        [ [ Ocaml_config.c_compiler ocaml_config ]
         ; args
         ; (let dst =
              Filename.to_string (Foreign.Source.object_name src)
              ^ Filename.Extension.to_string ext_obj
            in
-           match ocaml.lib_config.ccomp_type with
+           match lib_config.ccomp_type with
            | Msvc -> [ "/Fo" ^ dst ]
            | Cc | Other _ -> [ "-o"; dst ])
         ; [ "-c"; Path.Local.to_string src_relative ]
@@ -73,15 +74,14 @@ let collect_from_foreign_sources
       foreign_sources
   =
   let open Action_builder.O in
-  let* ext_obj =
-    let+ ocaml = Action_builder.of_memo (Context.ocaml (Super_context.context sctx)) in
-    ocaml.lib_config.ext_obj
-  in
+  let* ocaml = Action_builder.of_memo (Context.ocaml (Super_context.context sctx)) in
+  let { Ocaml_toolchain.lib_config; _ } = ocaml in
+  let ext_obj = lib_config.ext_obj in
   Foreign.Sources.to_list_map foreign_sources ~f:(fun _ (loc, src) ->
     let include_flags =
       Foreign_rules.build_include_flags ~sctx ~dir ~expander ~dir_contents ~requires ~src
     in
-    build_c_command ~sctx ~dir ~expander ~include_flags ~loc src ~ext_obj)
+    build_c_command ~sctx ~dir ~expander ~include_flags ~loc ~ocaml src ~ext_obj)
   |> Action_builder.all
 ;;
 
