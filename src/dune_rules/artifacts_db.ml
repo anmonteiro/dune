@@ -30,8 +30,9 @@ let available_exes ~dir (exes : Executables.t) =
 
 let get_installed_binaries ~(context : Context.t) stanzas =
   let merge _ x y = Some (Appendable_list.( @ ) x y) in
+  let build_dir = Context.build_dir context in
   Memo.List.map stanzas ~f:(fun d ->
-    let dir = Path.Build.append_source (Context.build_dir context) (Dune_file.dir d) in
+    let dir = Path.Build.append_source build_dir (Dune_file.dir d) in
     let* expander = Expander0.get ~dir in
     let expand_value sw =
       Expander0.expand expander ~mode:Single sw
@@ -106,14 +107,15 @@ let all =
   @@ fun () ->
   let+ contexts = Context.DB.all () in
   Context_name.Map.of_list_map_exn contexts ~f:(fun context ->
+    let context_name = Context.name context in
     let artifacts =
       let local_bins =
         Memo.lazy_ ~name:"get_installed_binaries" (fun () ->
-          Context.name context |> Dune_load.dune_files >>= get_installed_binaries ~context)
+          context_name |> Dune_load.dune_files >>= get_installed_binaries ~context)
       in
       Artifacts.create context ~local_bins |> Memo.return
     in
-    Context.name context, artifacts)
+    context_name, artifacts)
 ;;
 
 let get (context : Context.t) =
