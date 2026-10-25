@@ -656,7 +656,8 @@ Only the first matching stanza contributes configurations.
 Conditional sources only return their applicable mode, even when it is not
 the stanza's default. Melange-only libraries have a default Melange mode.
 
-  $ for file in platform.ml platform.melange.ml iface.melange.mli melange_only.ml; do
+  $ for file in platform.ml platform.melange.ml iface.mli iface.melange.mli \
+  >   melange_only.ml; do
   >   printf '%s:\n' "$file"
   >   query_ocaml_merlin_configurations_pp "$PWD/mixed/$file" --root mixed \
   >     | grep -E 'MODE|DEFAULT|KIND'
@@ -669,6 +670,10 @@ the stanza's default. Melange-only libraries have a default Melange mode.
      (MODE melange)
      (DEFAULT false)
      (KIND implementation)
+  iface.mli:
+     (MODE ocaml)
+     (DEFAULT true)
+     (KIND interface)
   iface.melange.mli:
      (MODE melange)
      (DEFAULT false)
@@ -677,30 +682,6 @@ the stanza's default. Melange-only libraries have a default Melange mode.
      (MODE melange)
      (DEFAULT true)
      (KIND implementation)
-
-Only the first matching stanza contributes configurations.
-
-  $ cp mixed/_build/default/.merlin-conf/lib-mixed \
-  >   mixed/_build/default/.merlin-conf/lib-000-mixed-copy
-  $ query_ocaml_merlin_configurations_pp "$PWD/mixed/foo.ml" --root mixed \
-  >   | grep -Eo '\(MODE (ocaml|melange)\)'
-  (MODE ocaml)
-  (MODE melange)
-  $ rm mixed/_build/default/.merlin-conf/lib-000-mixed-copy
-
-Each configuration contains the directives for its own compilation mode.
-
-  $ query_ocaml_merlin_configurations_pp "$PWD/mixed/foo.ml" --root mixed \
-  >   | grep -E 'MODE|STDLIB|\(B .*\.mixed\.objs|pp_(ocaml|melange)' \
-  >   | sed -E 's#-pp "[^"]*/sh #-pp "$SHELL #'
-     (MODE ocaml)
-       (STDLIB /OCAMLC_WHERE)
-       (B $TESTCASE_ROOT/mixed/_build/default/.mixed.objs/byte)
-        (-pp "$SHELL ./pp_ocaml.sh"))
-     (MODE melange)
-       (STDLIB /MELC_STDLIB/melange)
-       (B $TESTCASE_ROOT/mixed/_build/default/.mixed.objs/melange)
-        (-pp "$SHELL ./pp_melange.sh"))
 
 Source metadata is selected independently for every applicable mode.
 
@@ -727,21 +708,6 @@ The counterpart field is absent when that mode has no opposite-kind source.
   >   --root mixed | grep -E 'MODE|KIND|COUNTERPART'
      (MODE melange)
      (KIND implementation)
-
-Exact conditional sources only return the mode in which they apply.
-
-  $ for file in platform.ml platform.melange.ml iface.mli iface.melange.mli \
-  >   melange_only.ml; do
-  >   printf '%s: ' "$file"
-  >   query_ocaml_merlin_configurations_pp "$PWD/mixed/$file" --root mixed \
-  >     | grep -Eo '\(MODE (ocaml|melange)\)' | tr '\n' ' ' | sed 's/ $//'
-  >   echo
-  > done
-  platform.ml: (MODE ocaml)
-  platform.melange.ml: (MODE melange)
-  iface.mli: (MODE ocaml)
-  iface.melange.mli: (MODE melange)
-  melange_only.ml: (MODE melange)
 
 When an exact source does not match, lookup by filename without extension can
 return multiple modes while preserving the source kind selected by the query's
