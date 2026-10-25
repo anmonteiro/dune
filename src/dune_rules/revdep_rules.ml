@@ -25,14 +25,14 @@ module Index = struct
          | Some prev -> Collect.union prev dependent))
   ;;
 
-  let add_dep_for_libraries acc deps dir scope =
+  let add_dep_for_libraries acc deps dir libs =
     Memo.List.fold_left deps ~init:acc ~f:(fun acc (dep : Lib_dep.t) ->
       match dep with
       (* Select deps are conditional and may resolve to different libs
          depending on availability, so we don't track them as revdeps. *)
       | Select _ -> Memo.return acc
       | Direct (loc, name) | Re_export (loc, name) | Instantiate { loc; lib = name; _ } ->
-        Lib.DB.resolve_when_exists (Scope.libs scope) (loc, name)
+        Lib.DB.resolve_when_exists libs (loc, name)
         >>| (function
          | None -> acc
          | Some lib ->
@@ -49,12 +49,13 @@ module Index = struct
       let src_dir = Dune_file.dir dune_file in
       let dir = Path.Build.append_source build_dir src_dir in
       let* scope = Scope.DB.find_by_dir dir in
+      let libs = Scope.libs scope in
       Dune_file.stanzas dune_file
       >>= Memo.List.fold_left ~init:acc ~f:(fun acc stanza ->
         match Stanza.repr stanza with
         | Library.T lib_conf ->
           (let lib_id = Library.to_lib_id ~src_dir lib_conf in
-           Lib.DB.find_lib_id (Scope.libs scope) (Local lib_id))
+           Lib.DB.find_lib_id libs (Local lib_id))
           >>= (function
            | None -> Memo.return acc
            | Some lib ->
@@ -77,7 +78,7 @@ module Index = struct
           Expander.eval_blang expander enabled_if
           >>= (function
            | false -> Memo.return acc
-           | true -> add_dep_for_libraries acc libraries dir scope)
+           | true -> add_dep_for_libraries acc libraries dir libs)
         | _ -> Memo.return acc)
     in
     Dune_load.dune_files context_name
