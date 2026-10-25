@@ -590,6 +590,37 @@ be un-commented afterward. This feature doesn't aim at writing exact or correct
 ``.merlin`` files. Its sole purpose is to lessen the burden of writing the
 configuration from scratch.
 
+Configuration Server Protocol
+-----------------------------
+
+``dune ocaml-merlin`` reads requests from standard input and writes responses to
+standard output as canonical S-expressions. The examples below use readable
+S-expressions instead.
+
+``(File <path>)`` returns the legacy list of Merlin directives for a file.
+``(File-Configurations <path>)`` returns all applicable compilation modes from
+the first matching stanza:
+
+.. code:: dune
+
+    (CONFIGURATIONS
+     ((CONFIG
+       (MODE ocaml)
+       (DEFAULT true)
+       (KIND implementation)
+       (DIRECTIVES ((B <build-directory>) (S <source-directory>))))))
+
+Each entry has a unique ``MODE`` (``ocaml`` or ``melange``), a ``DEFAULT`` boolean,
+a ``KIND`` (``implementation`` or ``interface``), and its own Merlin directives.
+The list is nonempty, with OCaml before Melange when both apply. ``DEFAULT``
+identifies the stanza's default mode, which need not apply to a conditional
+source file. Clients should ignore unknown fields in a ``CONFIG`` entry.
+
+A failed plural lookup returns ``(CONFIGURATIONS-ERROR <message>)``. Legacy
+``File`` errors remain ``((ERROR <message>))``. Both request forms can be used on
+the same connection; ``Halt`` or end of input ends the session. Malformed
+canonical S-expressions also end the session.
+
 .. _merlin-filenames:
 
 Non-Standard Filenames
