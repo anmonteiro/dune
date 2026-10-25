@@ -767,10 +767,9 @@ end = struct
       Install.Context.lib_dir ~context:(Context.name ctx) ~package:pkg_name
     in
     let lib_root lib =
+      let info = Lib.info lib in
       let subdir =
-        Lib_info.Status.relative_to_package
-          (Lib_info.status @@ Lib.info lib)
-          (Lib.name lib)
+        Lib_info.Status.relative_to_package (Lib_info.status info) (Lib_info.name info)
         |> Option.value_exn
       in
       Path.Build.append_local pkg_root subdir
@@ -798,7 +797,7 @@ end = struct
           let* dir_contents = Dir_contents.get sctx ~dir in
           let obj_dir = Lib.Local.obj_dir lib in
           let lib = Lib.Local.to_lib lib in
-          let name = Lib.name lib in
+          let name = Lib_info.name info in
           let* lib_modes =
             Lib_info.effective_modes
               info
