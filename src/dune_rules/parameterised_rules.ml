@@ -333,8 +333,7 @@ let instantiate ~sctx lib =
     | Local ->
       let local_lib = Lib.Local.of_lib_exn lib in
       let+ modules = Dir_contents.modules_of_local_lib sctx local_lib ~for_ in
-      let modules_obj_dir = Lib_info.obj_dir (Lib.Local.info local_lib) in
-      modules_obj_dir, Modules.With_vlib.modules modules
+      Lib.Local.obj_dir local_lib, Modules.With_vlib.modules modules
   in
   let impl_only = Modules.With_vlib.impl_only modules in
   let dep_graph =
