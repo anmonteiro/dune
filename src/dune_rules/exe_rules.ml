@@ -160,10 +160,11 @@ let executables_rules
   =
   (* Use "eobjs" rather than "objs" to avoid a potential conflict with a library
      of the same name *)
+  let libs = Scope.libs scope in
   let* modules, obj_dir =
     Dir_contents.ml dir_contents ~for_
     >>= Ml_sources.modules_and_obj_dir
-          ~libs:(Scope.libs scope)
+          ~libs
           ~for_:(Exe_target (Executables.exe_target exes))
   in
   let* () = Check_rules.add_obj_dir sctx ~obj_dir for_ in
@@ -210,10 +211,7 @@ let executables_rules
     in
     let requires_link = Lib.Compile.requires_link compile_info ~for_ in
     let instances =
-      Parameterised_instances.instances
-        ~sctx
-        ~db:(Scope.libs scope)
-        exes.buildable.libraries
+      Parameterised_instances.instances ~sctx ~db:libs exes.buildable.libraries
     in
     let js_of_ocaml =
       Js_of_ocaml.Mode.Pair.mapi js_of_ocaml ~f:(fun mode x ->
