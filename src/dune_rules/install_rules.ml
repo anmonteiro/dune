@@ -763,9 +763,8 @@ end = struct
     @@
     let pkg_name = Package.name pkg in
     let ctx = Super_context.context sctx in
-    let pkg_root =
-      Install.Context.lib_dir ~context:(Context.name ctx) ~package:pkg_name
-    in
+    let context_name = Context.name ctx in
+    let pkg_root = Install.Context.lib_dir ~context:context_name ~package:pkg_name in
     let lib_root lib =
       let subdir =
         Lib_info.Status.relative_to_package
@@ -879,7 +878,7 @@ end = struct
       |> Section.Map.of_list_multi
       |> Section.Map.to_list
     in
-    let sections = sections (Context.name ctx) files pkg in
+    let sections = sections context_name files pkg in
     Dune_package.Or_meta.Dune_package
       { Dune_package.version = Package.version pkg
       ; name = pkg_name
