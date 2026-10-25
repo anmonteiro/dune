@@ -168,8 +168,7 @@ end = struct
             | None ->
               Path.Build.drop_build_context_exn file
               |> Path.Source.to_string_maybe_quoted
-              |> Result.errorf
-                   "No config found for file %s. Try calling 'dune build'."))
+              |> Result.errorf "No config found for file %s. Try calling 'dune build'."))
       | file_path :: files ->
         (* FIXME we are racing against the build system writing these files
            here *)
