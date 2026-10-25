@@ -17,18 +17,19 @@ module Paths = struct
   ;;
 
   let exe_target_object_directory ~dir target =
-    let suffix =
-      match Exe_target.compilation_mode target with
-      | Ocaml ->
+    let basename =
+      match Exe_target.compilation_mode target, Exe_target.first_name target with
+      | Melange, "." -> ".mobjs"
+      | Ocaml, name ->
         (* Use "eobjs" rather than "objs" to avoid a potential conflict with a
            library of the same name. *)
-        ".eobjs"
-      | Melange ->
+        "." ^ name ^ ".eobjs"
+      | Melange, name ->
         (* Use "mobjs" rather than "objs" to avoid a potential conflict with a
            library or executable of the same name. *)
-        ".mobjs"
+        "." ^ name ^ ".mobjs"
     in
-    Path.Build.relative dir ("." ^ Exe_target.first_name target ^ suffix)
+    Path.Build.relative dir basename
   ;;
 end
 

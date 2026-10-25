@@ -55,8 +55,8 @@ include Alias_builder.Alias_rec (struct
               let* melange_target_dirs =
                 Dune_file.find_stanzas stanzas Melange_stanzas.Emit.key
                 |> Action_builder.of_memo
-                >>| List.map ~f:(fun mel ->
-                  Melange_stanzas.Emit.target_dir ~dir:build_path mel)
+                >>| List.filter_map ~f:(fun (mel : Melange_stanzas.Emit.t) ->
+                  Option.map mel.target ~f:(Path.Build.relative build_path))
               in
               Action_builder.List.map
                 melange_target_dirs
