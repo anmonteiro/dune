@@ -285,24 +285,24 @@ module L = struct
     Command.Args.S [ Dyn local; Hidden_deps external_; Dyn include_flags ]
   ;;
 
-  let dll_dir_paths libs =
-    List.fold_left libs ~init:Path.Set.empty ~f:(fun dll_file_paths lib ->
-      List.fold_left
-        (Lib_info.foreign_dll_files (Lib.info lib))
-        ~init:dll_file_paths
-        ~f:(fun dll_file_paths dll_file_path ->
-          let dll_dir_path = Path.parent_exn dll_file_path in
-          Path.Set.add dll_file_paths dll_dir_path))
-  ;;
-
   let toplevel_ld_paths ts lib_config =
-    let with_dlls =
-      List.filter ts ~f:(fun t ->
-        match Lib_info.foreign_dll_files (Lib.info t) with
-        | [] -> false
-        | _ -> true)
+    let c_include_paths, dll_dir_paths =
+      List.fold_left
+        ts
+        ~init:(Path.Set.empty, Path.Set.empty)
+        ~f:(fun (c_include_paths, dll_dir_paths) lib ->
+          let info = Lib.info lib in
+          match Lib_info.foreign_dll_files info with
+          | [] -> c_include_paths, dll_dir_paths
+          | dll_files ->
+            let c_include_paths = Path.Set.add c_include_paths (Lib_info.src_dir info) in
+            let dll_dir_paths =
+              List.fold_left dll_files ~init:dll_dir_paths ~f:(fun acc dll_file ->
+                Path.Set.add acc (Path.parent_exn dll_file))
+            in
+            c_include_paths, dll_dir_paths)
     in
-    Path.Set.union (c_include_paths with_dlls lib_config) (dll_dir_paths with_dlls)
+    Path.Set.union (remove_stdlib c_include_paths lib_config) dll_dir_paths
   ;;
 
   let toplevel_include_paths ts lib_config =
