@@ -58,7 +58,9 @@ end = struct
       Sexp.(List [ Atom "CONFIGURATIONS-ERROR"; Atom msg ])
     ;;
 
-    let file_configuration { Merlin.Processed.mode; is_default; kind; directives; _ } =
+    let file_configuration
+          { Merlin.Processed.mode; is_default; kind; counterpart; directives }
+      =
       let mode =
         match mode with
         | Compilation_mode.Ocaml -> "ocaml"
@@ -67,14 +69,22 @@ end = struct
       let kind =
         Root.Ocaml.Ml_kind.choose kind ~impl:"implementation" ~intf:"interface"
       in
-      Sexp.(
-        List
-          [ Atom "CONFIG"
-          ; List [ Atom "MODE"; Atom mode ]
-          ; List [ Atom "DEFAULT"; Atom (Bool.to_string is_default) ]
-          ; List [ Atom "KIND"; Atom kind ]
-          ; List [ Atom "DIRECTIVES"; directives ]
-          ])
+      let open Sexp in
+      let counterpart =
+        match counterpart with
+        | None -> []
+        | Some path ->
+          [ List [ Atom "COUNTERPART"; Atom (Path.to_absolute_filename path) ] ]
+      in
+      let fields =
+        [ List [ Atom "MODE"; Atom mode ]
+        ; List [ Atom "DEFAULT"; Atom (Bool.to_string is_default) ]
+        ; List [ Atom "KIND"; Atom kind ]
+        ]
+        @ counterpart
+        @ [ List [ Atom "DIRECTIVES"; directives ] ]
+      in
+      List (Atom "CONFIG" :: fields)
     ;;
 
     let make_configurations configurations =
@@ -146,37 +156,39 @@ end = struct
   module Merlin = Dune_rules.Merlin
 
   let load_merlin_file =
-    (* We search for an appropriate merlin configuration in the current
-       directory and its parents *)
-    let rec find_closest file path ~request =
-      match
-        get_merlin_files_paths path
-        |> List.find_map ~f:(fun file_path ->
-          (* FIXME we are racing against the build system writing these
-             files here *)
-          match Merlin.Processed.load_file file_path with
-          | Error msg -> Some (Error msg)
-          | Ok config ->
-            (match request with
-             | `File -> Merlin.Processed.get config ~file
-             | `File_configurations ->
-               Merlin.Processed.configurations config ~file
-               |> Option.map ~f:Merlin_conf.make_configurations)
-            |> Option.map ~f:Result.return)
-      with
-      | Some p -> Some p
-      | None ->
+    let rec find_closest file path first_error ~request =
+      find_in_directory file path first_error ~request (get_merlin_files_paths path)
+    and find_in_directory file path first_error ~request = function
+      | [] ->
         (match Path.Build.parent path with
-         | None -> None
-         | Some dir -> find_closest file dir ~request)
+         | Some parent -> find_closest file parent first_error ~request
+         | None ->
+           (match first_error with
+            | Some error -> Error error
+            | None ->
+              Path.Build.drop_build_context_exn file
+              |> Path.Source.to_string_maybe_quoted
+              |> Result.errorf "No config found for file %s. Try calling 'dune build'."))
+      | file_path :: files ->
+        (* FIXME we are racing against the build system writing these files
+           here *)
+        (match Merlin.Processed.load_file file_path with
+         | Error error ->
+           let first_error = Option.first_some first_error (Some error) in
+           find_in_directory file path first_error ~request files
+         | Ok configuration ->
+           let result =
+             match request with
+             | `File -> Merlin.Processed.get configuration ~file
+             | `File_configurations ->
+               Merlin.Processed.configurations configuration ~file
+               |> Option.map ~f:Merlin_conf.make_configurations
+           in
+           (match result with
+            | Some result -> Ok result
+            | None -> find_in_directory file path first_error ~request files))
     in
-    fun file ~request ->
-      match find_closest file (Path.Build.parent_exn file) ~request with
-      | Some x -> x
-      | None ->
-        Path.Build.drop_build_context_exn file
-        |> Path.Source.to_string_maybe_quoted
-        |> Result.errorf "No config found for file %s. Try calling 'dune build'."
+    fun file ~request -> find_closest file (Path.Build.parent_exn file) None ~request
   ;;
 
   (* [to_local p] makes path [p] relative to the project's root. [p] can be: -
