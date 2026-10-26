@@ -1,6 +1,6 @@
-Bytecode linking can pick C stubs from an unrelated installed or local library
-when a shared search directory contains a DLL with the same name. Changing the
-order of local and installed directories can expose either collision.
+Bytecode linking selects the required C stubs even when unrelated installed
+or local libraries have DLLs with the same names. Local stub directories take
+precedence, and sandboxing keeps unrelated local DLLs out of the link action.
 
 See https://github.com/ocaml/dune/issues/9979.
 
@@ -68,17 +68,11 @@ And we try to build an executable depending on the (local) `libA` and the (insta
   > EOF
 
   $ OCAMLPATH=./install/lib dune build exeA.bc
-  File "_none_", line 1:
-  Error: Error while linking .exeA.eobjs/byte/dune__exe__ExeA.cmo:
-         The external function dummy2 is not available
-  [1]
 
-The error comes from passing as flags `-I ./install/lib/pkgA/../stublibs -I
-libA` so the `dlllibA_stubs.so` in `./install/lib/stublibs` takes precedence
-over the one in `libA`.
+The local `libA` directory is searched before the installed stub directory,
+even though `pkgA.libB` precedes `libA` in the library list.
 
-If we list `libA` __before__ `pkgA.libB`, the build succeeds because the include
-flags look like `-I libA -I ./install/lib/pkgA/../stublibs`:
+Listing `libA` before `pkgA.libB` also succeeds:
 
   $ cat >dune <<EOF
   > (executable
@@ -122,7 +116,8 @@ the same directory as local `libA`. The executable still uses installed
   > EOF
   $ OCAMLPATH=./install/lib dune build exeA.bc
 
-Putting the local directory first now selects the unrelated local `libB` stubs.
+Putting the local library first also works: the unrelated local `libB` DLL
+is not a dependency of the link action and is absent from its sandbox.
 
   $ cat >dune <<EOF
   > (executable
@@ -132,7 +127,3 @@ Putting the local directory first now selects the unrelated local `libB` stubs.
   >  (modules exeA))
   > EOF
   $ OCAMLPATH=./install/lib dune build exeA.bc
-  File "_none_", line 1:
-  Error: Error while linking .exeA.eobjs/byte/dune__exe__ExeA.cmo:
-         The external function dummy1 is not available
-  [1]

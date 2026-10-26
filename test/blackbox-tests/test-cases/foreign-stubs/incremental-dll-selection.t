@@ -42,7 +42,8 @@ changing the library dependencies must invalidate that selection. See #9979.
   $ ocamlrun -I _build/default/b _build/default/main_b.bc
   2
 
-The same independent selections work without sandboxing.
+The same independent selections work when no sandboxing is preferred globally.
+Bytecode linking still requires a sandbox.
 
   $ dune build main_a.bc main_b.bc --sandbox=none --build-dir _build-no-sandbox
   $ ocamlrun -I _build-no-sandbox/default/a \

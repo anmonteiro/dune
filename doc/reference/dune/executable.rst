@@ -78,6 +78,10 @@ files for executables. See
   linker, i.e., when using a version script. See
   :doc:`/concepts/dependency-spec` for more details.
 
+  Bytecode links that dynamically load C stubs are sandboxed. Declare additional
+  local files read through custom ``link_flags`` here so they are available to
+  the linker.
+
 - ``(modules <modules>)`` specifies which modules in the current directory Dune
   should consider when building this executable. Modules not listed here will be
   ignored and cannot be used inside the executable described by the current

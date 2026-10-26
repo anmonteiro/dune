@@ -1,5 +1,6 @@
 Two shared search directories can each contain the wrong DLL for a selected
-library. Neither ordering of the directories can link the executable.
+library. Sandboxed links select the required local and installed DLLs with
+either library order.
 See #9979 and #16789.
 
 Install an old a alongside the b that the executable will use.
@@ -63,7 +64,7 @@ Build local a and an unrelated b in the same directory.
   $ dune build local/dllb_stubs$ext_dll
   $ echo 'let () = Printf.printf "%d %d\n" (A.value ()) (B.value ())' >main.ml
 
-Installed directories first select the old a.
+Listing the installed library first does not select the old a.
 
   $ cat >dune <<'EOF'
   > (data_only_dirs producer prefix)
@@ -73,12 +74,8 @@ Installed directories first select the old a.
   >  (libraries pkg.b a))
   > EOF
   $ dune build main.bc
-  File "_none_", line 1:
-  Error: Error while linking .main.eobjs/byte/dune__exe__Main.cmo:
-         The external function selected_a is not available
-  [1]
 
-Local directories first select the unrelated b.
+Listing the local library first does not expose the unrelated b.
 
   $ cat >dune <<'EOF'
   > (data_only_dirs producer prefix)
@@ -88,7 +85,3 @@ Local directories first select the unrelated b.
   >  (libraries a pkg.b))
   > EOF
   $ dune build main.bc
-  File "_none_", line 1:
-  Error: Error while linking .main.eobjs/byte/dune__exe__Main.cmo:
-         The external function selected_b is not available
-  [1]

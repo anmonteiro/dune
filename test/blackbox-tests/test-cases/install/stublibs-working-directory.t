@@ -1,6 +1,6 @@
 The bytecode linker searches its working directory before any -I directory.
-An unrelated root-level DLL can therefore shadow an installed dependency even
-when no local stub directory is passed on the command line. See #9979.
+Sandboxing prevents an unrelated root-level DLL from shadowing an installed
+dependency, even when no local stub directory is passed. See #9979.
 
   $ mkdir -p producer app relative-stubs
   $ cat >producer/dune-project <<'EOF'
@@ -65,14 +65,12 @@ working directory must preserve the meaning of this flag.
   > external relative : unit -> int = "relative_value"
   > let () = Printf.printf "%d %d\n" (B.value ()) (relative ())
   > EOF
-  $ dune build app/main.bc --sandbox=none
-  File "_none_", line 1:
-  Error: Error while linking app/.main.eobjs/byte/dune__exe__Main.cmo:
-         The external function selected_b is not available
-  [1]
 
-Removing the unrelated DLL lets the same executable and relative flags
-link successfully.
+Bytecode linking requires a sandbox even when the global preference is none.
+
+  $ dune build app/main.bc --sandbox=none
+
+Removing the unrelated DLL does not change the successful result.
 
   $ rm _build/default/dllb_stubs$ext_dll
   $ dune build app/main.bc --sandbox=none
