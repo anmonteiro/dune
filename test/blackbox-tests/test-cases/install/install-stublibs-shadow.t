@@ -1,6 +1,6 @@
-Bytecode linking selects the required C stubs even when unrelated installed
-or local libraries have DLLs with the same names. Local stub directories take
-precedence, and sandboxing keeps unrelated local DLLs out of the link action.
+Prioritizing local stub directories fixes collisions with installed DLLs.
+Sandboxing hides unrelated local DLLs unless they are declared as link
+dependencies.
 
 See https://github.com/ocaml/dune/issues/9979.
 
@@ -127,3 +127,21 @@ is not a dependency of the link action and is absent from its sandbox.
   >  (modules exeA))
   > EOF
   $ OCAMLPATH=./install/lib dune build exeA.bc
+
+An unrelated DLL explicitly listed in `link_deps` is present in the sandbox.
+Putting the local directory first now selects that DLL instead of `pkgA.libB`.
+This is a regression: unpatched Dune successfully links the same stanza.
+
+  $ cat >dune <<EOF
+  > (executable
+  >  (name exeA)
+  >  (modes byte)
+  >  (libraries pkgA.libB libA)
+  >  (link_deps libA/dlllibB_stubs%{ext_dll})
+  >  (modules exeA))
+  > EOF
+  $ OCAMLPATH=./install/lib dune build exeA.bc
+  File "_none_", line 1:
+  Error: Error while linking .exeA.eobjs/byte/dune__exe__ExeA.cmo:
+         The external function dummy1 is not available
+  [1]
