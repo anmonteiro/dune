@@ -4,6 +4,7 @@ open Memo.O
 module Link_params = struct
   type t =
     { include_dirs : Path.t list
+    ; local_dll_dirs : Path.t list
     ; deps : Path.t list
       (* List of files that will be read by the compiler at link time and
            appear directly on the command line *)
@@ -57,6 +58,15 @@ module Link_params = struct
       let dirs = List.map files ~f:Path.parent_exn in
       List.sort_uniq dirs ~compare:Path.compare
     in
+    let local_dll_dirs, include_dirs =
+      match mode with
+      | Byte when Lib.is_local t ->
+        let dll_dirs = List.map dll_files ~f:Path.parent_exn |> Path.Set.of_list in
+        List.partition_map include_dirs ~f:(fun dir ->
+          if Path.Set.mem dll_dirs dir then Left dir else Right dir)
+      | Byte | Byte_for_jsoo | Byte_with_stubs_statically_linked_in | Native ->
+        [], include_dirs
+    in
     let hidden_deps =
       match Lib_info.exit_module info with
       | None -> hidden_deps
@@ -79,7 +89,7 @@ module Link_params = struct
                      (Filename.Extension.to_string lib_config.ext_obj))
            :: hidden_deps)
     in
-    { deps; hidden_deps; include_dirs }
+    { deps; hidden_deps; include_dirs; local_dll_dirs }
   ;;
 end
 
@@ -327,7 +337,7 @@ module Lib_and_module = struct
       let open Action_builder.O in
       let build_dir = Context.build_dir (Super_context.context sctx) in
       Command.Args.Dyn
-        (let+ l =
+        (let+ args =
            Action_builder.List.map ts ~f:(function
              | Lib t ->
                let t =
@@ -336,36 +346,46 @@ module Lib_and_module = struct
                    ~ext_lib:(Some lib_config.ext_lib)
                    t
                in
-               let+ { Link_params.hidden_deps; include_dirs; deps } =
+               let+ { Link_params.hidden_deps; include_dirs; local_dll_dirs; deps } =
                  Action_builder.of_memo (Link_params.get sctx t mode lib_config)
                in
-               Command.Args.S
-                 (Deps deps
-                  :: Hidden_deps (Dep.Set.of_files hidden_deps)
-                  :: List.map include_dirs ~f:(fun dir ->
-                    Command.Args.S [ A "-I"; Path dir ]))
+               ( local_dll_dirs
+               , Command.Args.S
+                   (Deps deps
+                    :: Hidden_deps (Dep.Set.of_files hidden_deps)
+                    :: List.map include_dirs ~f:(fun dir ->
+                      Command.Args.S [ A "-I"; Path dir ])) )
              | Module (obj_dir, m) ->
-               Command.Args.S
-                 (Dep
-                    (Obj_dir.Module.cm_file_exn
-                       obj_dir
-                       m
-                       ~kind:(Ocaml (Mode.cm_kind (Link_mode.mode mode))))
-                  ::
-                  (match mode with
-                   | Byte | Byte_for_jsoo | Byte_with_stubs_statically_linked_in -> []
-                   | Native ->
-                     [ Command.Args.Hidden_deps
-                         ([ Obj_dir.Module.o_file_exn
-                              obj_dir
-                              m
-                              ~ext_obj:lib_config.ext_obj
-                          ]
-                          |> Dep.Set.of_files)
-                     ]))
-               |> Action_builder.return)
+               let args =
+                 Command.Args.S
+                   (Dep
+                      (Obj_dir.Module.cm_file_exn
+                         obj_dir
+                         m
+                         ~kind:(Ocaml (Mode.cm_kind (Link_mode.mode mode))))
+                    ::
+                    (match mode with
+                     | Byte | Byte_for_jsoo | Byte_with_stubs_statically_linked_in -> []
+                     | Native ->
+                       [ Command.Args.Hidden_deps
+                           ([ Obj_dir.Module.o_file_exn
+                                obj_dir
+                                m
+                                ~ext_obj:lib_config.ext_obj
+                            ]
+                            |> Dep.Set.of_files)
+                       ]))
+               in
+               Action_builder.return ([], args))
          in
-         Command.Args.S l)
+         let local_dll_dirs, args = List.split args in
+         (* Prefer local stubs over shared installed stub directories.
+            Sandboxing hides local DLLs that are not declared dependencies. *)
+         let local_dll_flags =
+           List.concat_map local_dll_dirs ~f:(fun dirs ->
+             List.map dirs ~f:(fun dir -> Command.Args.S [ A "-I"; Path dir ]))
+         in
+         Command.Args.S (local_dll_flags @ args))
     ;;
   end
 end
