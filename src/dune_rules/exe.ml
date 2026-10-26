@@ -211,6 +211,11 @@ let link_exe
        In each case, we could then pass the argument in dependency order, which
        would provide a better fix for this issue. *)
     let ocaml = Compilation_context.ocaml cctx in
+    let sandbox =
+      match linkage_mode with
+      | Byte -> Sandbox_config.inter sandbox Sandbox_config.needs_sandboxing
+      | Byte_for_jsoo | Byte_with_stubs_statically_linked_in | Native -> sandbox
+    in
     Action_builder.with_no_targets prefix
     >>> Command.run
           ~dir:(Path.build (Context.build_dir ctx))
