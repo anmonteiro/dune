@@ -27,6 +27,12 @@
 
 open Import
 
+module Paths : sig
+  val library_object_directory : dir:Path.Build.t -> Lib_name.Local.t -> Path.Build.t
+  val library_melange_dir : obj_dir:Path.Build.t -> Path.Build.t
+  val exe_target_object_directory : dir:Path.Build.t -> Exe_target.t -> Path.Build.t
+end
+
 type 'path t
 
 val of_local : Path.Build.t t -> Path.t t
