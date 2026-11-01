@@ -1,6 +1,6 @@
-Bytecode linking can pick C stubs from an unrelated installed or local library
-when a shared search directory contains a DLL with the same name. Changing the
-order of local and installed directories can expose either collision.
+Prioritizing local stub directories fixes collisions with installed DLLs.
+Sandboxing hides unrelated local DLLs unless they are declared as link
+dependencies.
 
 See https://github.com/ocaml/dune/issues/9979.
 
@@ -68,17 +68,11 @@ And we try to build an executable depending on the (local) `libA` and the (insta
   > EOF
 
   $ OCAMLPATH=./install/lib dune build exeA.bc
-  File "_none_", line 1:
-  Error: Error while linking .exeA.eobjs/byte/dune__exe__ExeA.cmo:
-         The external function dummy2 is not available
-  [1]
 
-The error comes from passing as flags `-I ./install/lib/pkgA/../stublibs -I
-libA` so the `dlllibA_stubs.so` in `./install/lib/stublibs` takes precedence
-over the one in `libA`.
+The local `libA` directory is searched before the installed stub directory,
+even though `pkgA.libB` precedes `libA` in the library list.
 
-If we list `libA` __before__ `pkgA.libB`, the build succeeds because the include
-flags look like `-I libA -I ./install/lib/pkgA/../stublibs`:
+Listing `libA` before `pkgA.libB` also succeeds:
 
   $ cat >dune <<EOF
   > (executable
@@ -116,11 +110,26 @@ the same directory as local `libA`. The executable still uses installed
   $ mv dune.new dune
   $ OCAMLPATH=./install/lib dune build exeA.bc
 
-Putting the local directory first now selects the unrelated local `libB` stubs.
+Putting the local library first also works: the unrelated local `libB` DLL
+is not a dependency of the link action and is absent from its sandbox.
 
   $ sed 's/(libraries pkgA\.libB libA)/(libraries libA pkgA.libB)/' \
   >   dune > dune.new
   $ mv dune.new dune
+  $ OCAMLPATH=./install/lib dune build exeA.bc
+
+An unrelated DLL explicitly listed in `link_deps` is present in the sandbox.
+Putting the local directory first now selects that DLL instead of `pkgA.libB`.
+This is a regression: unpatched Dune successfully links the same stanza.
+
+  $ cat >dune <<EOF
+  > (executable
+  >  (name exeA)
+  >  (modes byte)
+  >  (libraries pkgA.libB libA)
+  >  (link_deps libA/dlllibB_stubs%{ext_dll})
+  >  (modules exeA))
+  > EOF
   $ OCAMLPATH=./install/lib dune build exeA.bc
   File "_none_", line 1:
   Error: Error while linking .exeA.eobjs/byte/dune__exe__ExeA.cmo:
