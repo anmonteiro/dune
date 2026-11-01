@@ -2813,22 +2813,19 @@ let%expect_test "completed file views remain local to each Memo run" =
                    (finite inherited_left [ "leaf" ])
                    (finite inherited_leaf [ "tip" ]))
             | 1 -> Subdirs.singleton ~dir Subdir_set.all
-            | _ -> Subdirs.empty
+            | _ -> Path.Build.Map.empty
           else if Path.Build.equal dir inherited_left
           then Memo.return (finite dir [ "local" ])
           else if Path.Build.equal dir inherited_orphan
           then Memo.return (Subdirs.singleton ~dir Subdir_set.all)
-          else Memo.return Subdirs.empty
+          else Memo.return Path.Build.Map.empty
         in
         let rules =
           if Path.Build.equal dir inherited_orphan
           then Rules.of_rules [ file_rule [ Path.Build.relative dir "probe" ] ]
           else Rules.empty
         in
-        Build_config.Gen_rules.Gen_rules_result.rules_here
-          (Build_config.Gen_rules.Rules.create
-             ~build_dir_only_sub_dirs
-             (Memo.return rules))
+        Build_config.Gen_rules.make ~build_dir_only_sub_dirs (Memo.return rules)
       else if Path.Build.equal dir selector_context.build_dir
       then (
         let rules =
@@ -2851,9 +2848,7 @@ let%expect_test "completed file views remain local to each Memo run" =
               incr selector_refresh_runs;
               Rules.Produce.rule selector_refresh_rule))
         in
-        Memo.return
-          (Build_config.Gen_rules.Gen_rules_result.rules_here
-             (Build_config.Gen_rules.Rules.create rules)))
+        Memo.return (Build_config.Gen_rules.make rules))
       else if Path.Build.equal dir coverage_context.build_dir
       then (
         let rules =
@@ -2871,9 +2866,7 @@ let%expect_test "completed file views remain local to each Memo run" =
                    ~f:(fun path -> Fpath.exists (Path.Build.to_string path));
               Rules.Produce.rule coverage_rule))
         in
-        Memo.return
-          (Build_config.Gen_rules.Gen_rules_result.rules_here
-             (Build_config.Gen_rules.Rules.create rules)))
+        Memo.return (Build_config.Gen_rules.make rules))
       else if Path.Build.equal dir cleanup_context.build_dir
       then (
         incr cleanup_generator_runs;
@@ -2993,9 +2986,7 @@ let%expect_test "completed file views remain local to each Memo run" =
                         Rules.Produce.rule
                           (file_rule [ cleanup_nested_a; cleanup_nested_b ]))))
         in
-        Memo.return
-          (Build_config.Gen_rules.Gen_rules_result.rules_here
-             (Build_config.Gen_rules.Rules.create rules)))
+        Memo.return (Build_config.Gen_rules.make rules))
       else if Path.Build.equal dir selection_context.build_dir
       then (
         let split = !epoch_split in
@@ -3053,14 +3044,12 @@ let%expect_test "completed file views remain local to each Memo run" =
                  else generated_leaf_rule)))
         in
         Memo.return
-          (Build_config.Gen_rules.Gen_rules_result.rules_here
-             (Build_config.Gen_rules.Rules.create
-                ~build_dir_only_sub_dirs:
-                  (Build_config.Gen_rules.Build_only_sub_dirs.singleton
-                     ~dir
-                     (List.map selection_dirs ~f:Filename.of_string_exn
-                      |> Subdir_set.of_list))
-                rules)))
+          (Build_config.Gen_rules.make
+             ~build_dir_only_sub_dirs:
+               (Build_config.Gen_rules.Build_only_sub_dirs.singleton
+                  ~dir
+                  (List.map selection_dirs ~f:Filename.of_string_exn |> Subdir_set.of_list))
+             rules))
       else if Path.Build.equal dir selection_alternate
       then (
         let rules =
@@ -3069,9 +3058,7 @@ let%expect_test "completed file views remain local to each Memo run" =
               incr alternate_runs;
               Rules.Produce.rule (file_rule [ alternate ])))
         in
-        Memo.return
-          (Build_config.Gen_rules.Gen_rules_result.rules_here
-             (Build_config.Gen_rules.Rules.create rules)))
+        Memo.return (Build_config.Gen_rules.make rules))
       else if Path.Build.equal dir declarations_left
       then
         let+ directory_target = Memo.Var.read generated_directory_enabled
@@ -3080,31 +3067,27 @@ let%expect_test "completed file views remain local to each Memo run" =
           Path.Build.Map.of_list_exn
             [ conflicting_directory, Loc.none; mixed_directory, Loc.none ]
         in
-        Build_config.Gen_rules.Gen_rules_result.rules_here
-          (Build_config.Gen_rules.Rules.create
-             ~directory_targets:
-               (if directory_target && declared
-                then Path.Build.Map.set directory_targets generated Loc.none
-                else directory_targets)
-             (Rules.collect_unit (fun () ->
-                let* () =
-                  Memo.parallel_iter
-                    [ conflicting_directory_rule; mixed_directory_rule ]
-                    ~f:(fun rule ->
-                      Rules.narrow (Target_mask.of_targets rule.Rule.targets) (fun () ->
-                        Rules.Produce.rule rule))
-                in
-                Memo.parallel_iter
-                  [ conflicting_directory; mixed_directory ]
-                  ~f:(fun target ->
-                    Rules.narrow (Target_mask.files [ target ]) (fun () ->
-                      incr directory_conflict_runs;
-                      Rules.Produce.rule (file_rule [ target ]))))))
+        Build_config.Gen_rules.make
+          ~directory_targets:
+            (if directory_target && declared
+             then Path.Build.Map.set directory_targets generated Loc.none
+             else directory_targets)
+          (Rules.collect_unit (fun () ->
+             let* () =
+               Memo.parallel_iter
+                 [ conflicting_directory_rule; mixed_directory_rule ]
+                 ~f:(fun rule ->
+                   Rules.narrow (Target_mask.of_targets rule.Rule.targets) (fun () ->
+                     Rules.Produce.rule rule))
+             in
+             Memo.parallel_iter
+               [ conflicting_directory; mixed_directory ]
+               ~f:(fun target ->
+                 Rules.narrow (Target_mask.files [ target ]) (fun () ->
+                   incr directory_conflict_runs;
+                   Rules.Produce.rule (file_rule [ target ])))))
       else if Path.Build.equal dir visibility_dir
-      then
-        Memo.return
-          (Build_config.Gen_rules.Gen_rules_result.rules_here
-             (Build_config.Gen_rules.Rules.create (Memo.Lazy.force visibility_rules)))
+      then Memo.return (Build_config.Gen_rules.make (Memo.Lazy.force visibility_rules))
       else if Path.Build.equal dir left_dir || Path.Build.equal dir right_dir
       then (
         let label, target =
@@ -3116,11 +3099,9 @@ let%expect_test "completed file views remain local to each Memo run" =
               forced := label :: !forced;
               Rules.Produce.rule (file_rule [ target ])))
         in
-        Memo.return
-          (Build_config.Gen_rules.Gen_rules_result.rules_here
-             (Build_config.Gen_rules.Rules.create rules)))
+        Memo.return (Build_config.Gen_rules.make rules))
       else if not (Path.Build.equal dir context.build_dir)
-      then Memo.return Build_config.Gen_rules.Gen_rules_result.no_rules
+      then Memo.return Build_config.Gen_rules.no_rules
       else (
         let split = !split in
         let late_enabled = !late_enabled in
@@ -3191,14 +3172,13 @@ let%expect_test "completed file views remain local to each Memo run" =
             else Memo.return ())
         in
         Memo.return
-          (Build_config.Gen_rules.Gen_rules_result.rules_here
-             (Build_config.Gen_rules.Rules.create
-                ~build_dir_only_sub_dirs:
-                  (Build_config.Gen_rules.Build_only_sub_dirs.singleton
-                     ~dir
-                     (Subdir_set.of_list
-                        [ Path.Build.basename left_dir; Path.Build.basename right_dir ]))
-                rules)))
+          (Build_config.Gen_rules.make
+             ~build_dir_only_sub_dirs:
+               (Build_config.Gen_rules.Build_only_sub_dirs.singleton
+                  ~dir
+                  (Subdir_set.of_list
+                     [ Path.Build.basename left_dir; Path.Build.basename right_dir ]))
+             rules))
     ;;
   end
   in
@@ -3256,7 +3236,7 @@ let%expect_test "completed file views remain local to each Memo run" =
     ~promote_source:(fun ~chmod:_ ~delete_dst_if_it_is_a_directory:_ ~src:_ ~dst:_ ->
       Fiber.return ())
     ~sandboxing_preference:[]
-    ~rule_generator:(module Rule_generator)
+    ~rule_generator:Rule_generator.gen_rules
     ~implicit_default_alias:(fun _ -> Memo.return None)
     ~execution_parameters:(fun _ ~dir:_ ->
       Memo.return Execution_parameters.builtin_default)
@@ -10057,8 +10037,14 @@ let%expect_test "ready direct directory proofs remain local and conservative" =
 ;;
 
 let%expect_test "empty generated rule records preserve sharing and metadata errors" =
-  let module Generated = Build_config.Gen_rules.Rules in
-  let module Subdirs = Build_config.Gen_rules.Build_only_sub_dirs in
+  let module Gen_rules = Build_config.Gen_rules in
+  let module Generated = Gen_rules.Rules in
+  let module Subdirs = Gen_rules.Build_only_sub_dirs in
+  let combine left right =
+    match Gen_rules.combine (Rules left) (Rules right) with
+    | Rules rules -> rules
+    | Unknown_context -> Code_error.raise "Expected generated rules" []
+  in
   let dir = path "default/empty-generated-union" in
   let target name = Path.Build.relative dir name in
   let calls = ref 0 in
@@ -10077,22 +10063,24 @@ let%expect_test "empty generated rule records preserve sharing and metadata erro
   in
   let a = make "a" in
   let b = make "b" in
-  let left = Generated.combine_exn Generated.empty a in
-  let right = Generated.combine_exn a Generated.empty in
-  let both = Generated.combine_exn a b in
+  let left = combine Generated.empty a in
+  let right = combine a Generated.empty in
+  let both = combine a b in
   printfn "construction remains lazy: %b" (!calls = 0);
   printfn "empty records forward the original wrapper: %b" (left == a && right == a);
-  let subdirs = Subdirs.find both.build_dir_only_sub_dirs dir in
+  let subdirs =
+    Path.Build.Map.find both.build_dir_only_sub_dirs dir |> Option.value_exn
+  in
   printfn
     "nonempty metadata is merged: %b"
     (List.for_all [ "a"; "b" ] ~f:(fun name ->
        Subdir_set.mem subdirs (Filename.of_string_exn name)
        && Path.Build.Map.mem both.directory_targets (target name)));
   expect_code_error "duplicate directory declarations are rejected" (fun () ->
-    ignore (Generated.combine_exn a a : Generated.t));
+    ignore (combine a a : Generated.t));
   let declarations = { Generated.empty with directory_targets = a.directory_targets } in
   expect_code_error "an empty rule body does not discard declarations" (fun () ->
-    ignore (Generated.combine_exn declarations a : Generated.t));
+    ignore (combine declarations a : Generated.t));
   printfn "metadata failures precede generation: %b" (!calls = 0);
   let first, second =
     run

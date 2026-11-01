@@ -830,10 +830,10 @@ let gen_rules_regular_directory (sctx : Super_context.t Memo.t) ~src_dir ~compon
                      Rules.narrow (Compile_commands.rule_targets ~dir) (fun () ->
                        let* sctx = sctx in
                        if Context.merlin (Super_context.context sctx)
-                       then (
+                       then
                          let* existing_rules = rules.Gen_rules.Rules.rules in
                          let rules = Rules.union source_rules existing_rules in
-                         Compile_commands.gen_rules sctx ~rules)
+                         Compile_commands.gen_rules sctx ~rules
                        else Memo.return ())
                    | _ :: _ -> Memo.return ()))
             in

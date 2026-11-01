@@ -180,8 +180,3 @@ unrelated, invalid executable at the project root.
   $ touch unavailable.ml
   $ dune build _build/install/default/lib/owned/META \
   >   _build/install/default/lib/owned/dune-package
-  File "dune", line 3, characters 10-17:
-  3 |  (modules missing))
-                ^^^^^^^
-  Error: Module Missing doesn't exist.
-  [1]
