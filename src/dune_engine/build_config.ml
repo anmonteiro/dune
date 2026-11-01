@@ -33,7 +33,8 @@ module Gen_rules = struct
           ?(directory_targets = empty.directory_targets)
           rules
       =
-      { build_dir_only_sub_dirs; directory_targets; rules }
+      let rules = Memo.lazy_ ~name:"generated-rules" (fun () -> rules) in
+      { build_dir_only_sub_dirs; directory_targets; rules = Memo.Lazy.force rules }
     ;;
 
     let combine_exn r ({ build_dir_only_sub_dirs; directory_targets; rules } as other) =
@@ -43,23 +44,23 @@ module Gen_rules = struct
         (match phys_equal other empty with
          | true -> r
          | false ->
-           { build_dir_only_sub_dirs =
-               Build_only_sub_dirs.union r.build_dir_only_sub_dirs build_dir_only_sub_dirs
-           ; directory_targets =
-               Path.Build.Map.union_exn r.directory_targets directory_targets
-           ; rules =
-               (let open Memo.O in
-                let+ r = r.rules
-                and+ r' = rules in
-                Rules.union r r')
-           })
+           create
+             ~build_dir_only_sub_dirs:
+               (Build_only_sub_dirs.union
+                  r.build_dir_only_sub_dirs
+                  build_dir_only_sub_dirs)
+             ~directory_targets:
+               (Path.Build.Map.union_exn r.directory_targets directory_targets)
+             (let open Memo.O in
+              let+ a = r.rules
+              and+ b = rules in
+              Rules.union a b))
     ;;
   end
 
   type t =
     | Rules of Rules.t
     | Unknown_context
-    | Redirect_to_parent of Rules.t
 
   let no_rules = Rules Rules.empty
 
@@ -78,10 +79,6 @@ module Gen_rules = struct
     match x, y with
     | Unknown_context, _ | _, Unknown_context -> Unknown_context
     | Rules x, Rules y -> Rules (Rules.combine_exn x y)
-    | Rules x, Redirect_to_parent y
-    | Redirect_to_parent x, Rules y
-    | Redirect_to_parent x, Redirect_to_parent y ->
-      Redirect_to_parent (Rules.combine_exn x y)
   ;;
 end
 

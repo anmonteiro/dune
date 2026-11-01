@@ -821,11 +821,13 @@ let build_cm'
     ~sourcemap
 ;;
 
+let cm_target ~mode ~src ~obj_dir ~config =
+  let name = with_js_ext ~mode (Path.basename src |> Filename.to_string) in
+  in_obj_dir ~obj_dir ~config [ name ]
+;;
+
 let build_from_cm sctx ~dir ~in_context ~mode ~src ~obj_dir ~shapes ~config ~sourcemap =
-  let target =
-    let name = with_js_ext ~mode (Path.basename src |> Filename.to_string) in
-    in_obj_dir ~obj_dir ~config [ name ]
-  in
+  let target = cm_target ~mode ~src ~obj_dir ~config in
   build_cm'
     sctx
     ~dir
@@ -987,17 +989,18 @@ let setup_separate_compilation_rules sctx components =
                     [ "stdlib"; with_js_ext ~mode "stdlib.cma" ])
                :: l
            in
-           build_cm'
-             sctx
-             ~dir
-             ~in_context:Js_of_ocaml.In_context.default
-             ~mode
-             ~src
-             ~target
-             ~config:(Some (Action_builder.return config))
-             ~sourcemap:Js_of_ocaml.Sourcemap.Inline
-             ~shapes
-           |> Super_context.add_rule sctx ~dir)))
+           Rules.narrow (Target_mask.files [ target ]) (fun () ->
+             build_cm'
+               sctx
+               ~dir
+               ~in_context:Js_of_ocaml.In_context.default
+               ~mode
+               ~src
+               ~target
+               ~config:(Some (Action_builder.return config))
+               ~sourcemap:Js_of_ocaml.Sourcemap.Inline
+               ~shapes
+             |> Super_context.add_rule sctx ~dir))))
   | _ -> Memo.return ()
 ;;
 
@@ -1229,9 +1232,30 @@ let build_exe
 
 let runner = "node"
 
-let js_of_ocaml_runtest_alias ~dir ~mode =
-  let+ js_of_ocaml = jsoo_env ~dir ~mode in
-  match js_of_ocaml.runtest_alias with
-  | Some a -> a
-  | None -> Alias0.runtest
+let js_of_ocaml_runtest_alias =
+  let make mode =
+    let name =
+      match (mode : Js_of_ocaml.Mode.t) with
+      | JS -> "js-runtest-alias"
+      | Wasm -> "wasm-runtest-alias"
+    in
+    Env_stanza_db.inherited
+      ~name
+      ~root:(fun _ _ -> Memo.return None)
+      ~f:(fun ~parent ~dir:_ (local : Dune_env.config) ->
+        let local =
+          Js_of_ocaml.Mode.select ~mode ~js:local.js_of_ocaml ~wasm:local.wasm_of_ocaml
+        in
+        (* Overridden parent aliases must also be registered as standard. *)
+        let+ parent = parent in
+        let alias = Option.first_some local.runtest_alias parent in
+        Option.iter alias ~f:Alias0.register_as_standard;
+        alias)
+    |> Staged.unstage
+  in
+  let js = make JS in
+  let wasm = make Wasm in
+  fun ~dir ~mode ->
+    let+ alias = Js_of_ocaml.Mode.select ~mode ~js ~wasm dir in
+    Option.value alias ~default:Alias0.runtest
 ;;

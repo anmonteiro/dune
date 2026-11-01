@@ -2,6 +2,16 @@
 
 open Import
 
+val generated_sources : dir:Path.Build.t -> Buildable.t -> Path.Build.t list
+
+val rule_targets
+  :  dir:Path.Build.t
+  -> source_files:(Path.Build.t * Filename.Array.Set.t) list
+  -> lib_config:Lib_config.t
+  -> dialects:Dialect.DB.t
+  -> Buildable.t
+  -> Target_mask.t
+
 (** Make sure all rules produces by [f] record the library dependencies for
     [dune external-lib-deps] and depend on the generation of the .merlin file.
 

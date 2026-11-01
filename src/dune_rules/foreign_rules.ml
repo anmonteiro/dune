@@ -364,21 +364,25 @@ let build_c ~sctx ~dir ~expander ~include_flags (loc, (src : Foreign.Source.t), 
 (* TODO: [requires] is a confusing name, probably because it's too general: it
    looks like it's a list of libraries we depend on. *)
 let header_files dir_contents =
-  let header_ext = Filename.Extension.to_string Foreign_language.header_extension in
+  let extensions = Filename.Extension.Set.singleton Foreign_language.header_extension in
   Dir_contents.dirs dir_contents
-  |> List.fold_left ~init:[] ~f:(fun acc dc ->
-    Dir_contents.text_files dc
-    |> Filename.Array.Set.fold ~init:acc ~f:(fun fn acc ->
-      if String.ends_with (Filename.to_string fn) ~suffix:header_ext
-      then Path.relative_fname (Path.build (Dir_contents.dir dc)) fn :: acc
-      else acc))
+  |> Memo.List.concat_map ~f:(fun dc ->
+    let dir = Dir_contents.dir dc in
+    let+ files =
+      Dir_contents.text_files dc ~mask:(Target_mask.file_extensions ~dir extensions)
+    in
+    Filename.Array.Set.to_list_map files ~f:(Path.relative_fname (Path.build dir)))
 ;;
 
 let build_include_flags ~sctx ~dir ~expander ~dir_contents ~requires ~src =
   let includes =
-    let h_files = header_files dir_contents in
+    let headers =
+      let open Action_builder.O in
+      let+ h_files = Action_builder.of_memo (header_files dir_contents) in
+      Command.Args.Hidden_deps (Dep.Set.of_files h_files)
+    in
     Command.Args.S
-      [ Hidden_deps (Dep.Set.of_files h_files)
+      [ Dyn headers
       ; Resolve.args
           (let open Resolve.O in
            let+ libs = requires in
@@ -392,6 +396,16 @@ let build_include_flags ~sctx ~dir ~expander ~dir_contents ~requires ~src =
     include_dir_flags ~expander ~dir ~include_dirs:(Foreign.Source.include_dirs src)
   in
   Command.Args.S [ includes; extra_flags ]
+;;
+
+let object_path ~dir ~ext_obj name =
+  Path.Build.relative dir (name ^ Filename.Extension.to_string ext_obj)
+;;
+
+let rule_targets ~dir ~ext_obj ~kinds =
+  match kinds with
+  | [] -> Target_mask.empty
+  | _ :: _ -> Target_mask.file_extensions ~dir (Filename.Extension.Set.singleton ext_obj)
 ;;
 
 let build_o_files
@@ -416,7 +430,7 @@ let build_o_files
         let include_flags =
           build_include_flags ~sctx ~dir ~expander ~dir_contents ~requires ~src
         in
-        let dst = Path.Build.relative dir (obj ^ Filename.Extension.to_string ext_obj) in
+        let dst = object_path ~dir ~ext_obj obj in
         let+ () = build_c ~sctx ~dir ~expander ~include_flags (loc, src, dst) in
         dst
       in

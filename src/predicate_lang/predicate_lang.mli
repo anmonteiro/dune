@@ -34,6 +34,9 @@ module Glob : sig
   val test : t -> standard:t -> string -> bool
   val of_glob : Dune_rpc.Private.Glob.t -> t
 
+  (** Parse a glob, raising [Invalid_argument] immediately if it is invalid. *)
+  val of_string : string -> t
+
   (** [of_string_list xs] return an expression that will match any element
       inside the list [xs] *)
   val of_string_list : string list -> t
@@ -41,6 +44,13 @@ module Glob : sig
   (** [of_string_list xs] return an expression that will only match any element
       inside the set [xs] *)
   val of_string_set : String.Set.t -> t
+
+  (** Recognise finite combinations of literal names. [None] means the set
+      could not be determined without evaluating a general predicate. *)
+  val finite_elements : t -> String.Set.t option
+
+  (** Conservatively check whether any match can end in this suffix. *)
+  val may_match_suffix : t -> string -> bool
 
   val compare : t -> t -> Ordering.t
   val equal : t -> t -> bool

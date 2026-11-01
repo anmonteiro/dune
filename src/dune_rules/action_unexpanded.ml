@@ -22,7 +22,7 @@ let validate_target_dir ~targets_dir ~loc targets path =
       ]
 ;;
 
-module Action_expander : sig
+module type Expansion = sig
   (* An applicative to help write action expansion. It is similar to
      [Action_builder.With_targets.t] but with some differences. The differences
      are as follow:
@@ -42,14 +42,6 @@ module Action_expander : sig
   val no_infer : 'a t -> 'a t
   val chdir : Path.Build.t -> 'a t -> 'a t
   val set_env : var:string -> value:string t -> (value:string -> 'a) t -> 'a t
-
-  val run
-    :  'a t
-    -> chdir:Path.Build.t
-    -> targets_dir:Path.Build.t option
-    -> expander:Expander.t
-    -> 'a Action_builder.With_targets.t Memo.t
-
   val with_expander : (Expander.t -> 'a t Memo.t) -> 'a t
 
   (* String with vars expansion *)
@@ -97,6 +89,17 @@ module Action_expander : sig
       val string : String_with_vars.t -> f:(string -> 'a t) -> 'a t
     end
   end
+end
+
+module Action_expander : sig
+  include Expansion
+
+  val run
+    :  'a t
+    -> chdir:Path.Build.t
+    -> targets_dir:Path.Build.t option
+    -> expander:Expander.t
+    -> 'a Action_builder.With_targets.t Memo.t
 end = struct
   open Action_builder.O
 
@@ -465,164 +468,290 @@ end = struct
   end
 end
 
-let rec expand (t : Dune_lang.Action.t) : Action.t Action_expander.t =
-  let module A = Action_expander in
-  let module E = Action_expander.E in
-  let open Action_expander.O in
-  let module O (* [O] for "outcome" *) = Action in
-  let expand_run ~force_host prog args =
-    let+ args = A.all (List.map args ~f:E.strings)
-    and+ prog, more_args = E.prog_and_args ~force_host prog in
-    let args = List.concat args in
-    prog, more_args @ args
-  in
-  let expand_run_action ~force_host ~action_name args =
-    let string_args =
-      List.filter_map args ~f:(function
-        | Slang.Literal sw -> Some sw
-        | _ -> None)
+module Expand (A : Expansion) = struct
+  let rec expand (t : Dune_lang.Action.t) : Action.t A.t =
+    let module E = A.E in
+    let open A.O in
+    let module O (* [O] for "outcome" *) = Action in
+    let expand_run ~force_host prog args =
+      let+ args = A.all (List.map args ~f:E.strings)
+      and+ prog, more_args = E.prog_and_args ~force_host prog in
+      let args = List.concat args in
+      prog, more_args @ args
     in
-    if List.length string_args < List.length args
-    then
-      User_error.raise
-        [ Pp.textf "All arguments to \"%s\" action must be strings" action_name ];
-    match string_args with
-    | prog :: args ->
-      let+ prog, args = expand_run ~force_host prog args in
-      O.Run { prog; args = Appendable_list.of_list args; can_run_in_action_runner = true }
-    | [] ->
-      User_error.raise
-        [ Pp.textf "\"%s\" action must have at least one argument" action_name ]
-  in
-  match t with
-  | Run args -> expand_run_action ~force_host:false ~action_name:"run" args
-  | Runexec args -> expand_run_action ~force_host:true ~action_name:"runexec" args
-  | With_accepted_exit_codes (pred, t) ->
-    let+ t = expand t in
-    O.With_accepted_exit_codes (pred, t)
-  | Dynamic_run (prog, args) ->
-    let+ prog, args = expand_run ~force_host:false prog args in
-    Action_plugin.action ~prog ~args
-  | Chdir (fn, t) ->
-    E.At_rule_eval_stage.path fn ~f:(fun dir ->
-      A.chdir
-        (Expander0.as_in_build_dir dir ~loc:(String_with_vars.loc fn) ~what:"Directory")
-        (let+ t = expand t in
-         O.Chdir (dir, t)))
-  | Setenv (var, value, t) ->
-    E.At_rule_eval_stage.string var ~f:(fun var ->
-      A.set_env
-        ~var
-        ~value:(E.string value)
-        (let+ t = expand t in
-         fun ~value -> O.Setenv (var, value, t)))
-  | Redirect_out (outputs, fn, perm, t) ->
-    let+ fn = E.target fn
-    and+ t = expand t in
-    O.Redirect_out (outputs, fn, perm, t)
-  | Redirect_in (inputs, fn, t) ->
-    let+ fn = E.dep fn
-    and+ t = expand t in
-    O.Redirect_in (inputs, fn, t)
-  | Ignore (outputs, t) ->
-    let+ t = expand t in
-    O.Ignore (outputs, t)
-  | Progn l ->
-    let+ l = A.all (List.map l ~f:expand) in
-    O.Progn l
-  | Concurrent l ->
-    let+ l = A.all (List.map l ~f:expand) in
-    O.Concurrent l
-  | Echo xs ->
-    let+ l = A.all (List.map xs ~f:E.strings) in
-    let l = List.concat l in
-    O.Echo l
-  | Cat xs ->
-    A.with_expander (fun expander ->
-      let version = Expander.project expander |> Dune_project.dune_version in
-      let open Action_expander.O in
-      Memo.return
-        (if version >= (3, 10)
-         then
-           let+ xs = A.all (List.map xs ~f:E.deps) in
-           O.Cat (List.concat xs)
-         else
-           let+ xs = A.all (List.map xs ~f:E.dep) in
-           O.Cat xs))
-  | Copy (x, y) ->
-    let+ x = E.dep x
-    and+ y = E.target y in
-    O.Copy (x, y)
-  | Symlink (x, y) ->
-    let+ x = E.dep x
-    and+ y = E.target y in
-    O.Symlink (x, y)
-  | Copy_and_add_line_directive (x, y) ->
-    A.with_expander (fun expander ->
-      Expander.context expander
-      |> Context.DB.get
-      |> Memo.map ~f:(fun context ->
-        let+ x = E.dep x
-        and+ y = E.target y in
-        Copy_line_directive.action context ~src:x ~dst:y))
-  | System x ->
-    let+ x = E.string x in
-    O.System x
-  | Bash x ->
-    let+ script = E.string x in
-    O.Bash { script; can_run_in_action_runner = true }
-  | Write_file (fn, perm, s) ->
-    let+ fn = E.target fn
-    and+ s = E.string s in
-    O.Write_file (fn, perm, s)
-  | Mkdir x ->
-    (* This code path should in theory be unreachable too, but we don't delete
+    let expand_run_action ~force_host ~action_name args =
+      let string_args =
+        List.filter_map args ~f:(function
+          | Slang.Literal sw -> Some sw
+          | _ -> None)
+      in
+      if List.length string_args < List.length args
+      then
+        User_error.raise
+          [ Pp.textf "All arguments to \"%s\" action must be strings" action_name ];
+      match string_args with
+      | prog :: args ->
+        let+ prog, args = expand_run ~force_host prog args in
+        O.Run
+          { prog; args = Appendable_list.of_list args; can_run_in_action_runner = true }
+      | [] ->
+        User_error.raise
+          [ Pp.textf "\"%s\" action must have at least one argument" action_name ]
+    in
+    match t with
+    | Run args -> expand_run_action ~force_host:false ~action_name:"run" args
+    | Runexec args -> expand_run_action ~force_host:true ~action_name:"runexec" args
+    | With_accepted_exit_codes (pred, t) ->
+      let+ t = expand t in
+      O.With_accepted_exit_codes (pred, t)
+    | Dynamic_run (prog, args) ->
+      let+ prog, args = expand_run ~force_host:false prog args in
+      Action_plugin.action ~prog ~args
+    | Chdir (fn, t) ->
+      E.At_rule_eval_stage.path fn ~f:(fun dir ->
+        A.chdir
+          (Expander0.as_in_build_dir dir ~loc:(String_with_vars.loc fn) ~what:"Directory")
+          (let+ t = expand t in
+           O.Chdir (dir, t)))
+    | Setenv (var, value, t) ->
+      E.At_rule_eval_stage.string var ~f:(fun var ->
+        A.set_env
+          ~var
+          ~value:(E.string value)
+          (let+ t = expand t in
+           fun ~value -> O.Setenv (var, value, t)))
+    | Redirect_out (outputs, fn, perm, t) ->
+      let+ fn = E.target fn
+      and+ t = expand t in
+      O.Redirect_out (outputs, fn, perm, t)
+    | Redirect_in (inputs, fn, t) ->
+      let+ fn = E.dep fn
+      and+ t = expand t in
+      O.Redirect_in (inputs, fn, t)
+    | Ignore (outputs, t) ->
+      let+ t = expand t in
+      O.Ignore (outputs, t)
+    | Progn l ->
+      let+ l = A.all (List.map l ~f:expand) in
+      O.Progn l
+    | Concurrent l ->
+      let+ l = A.all (List.map l ~f:expand) in
+      O.Concurrent l
+    | Echo xs ->
+      let+ l = A.all (List.map xs ~f:E.strings) in
+      let l = List.concat l in
+      O.Echo l
+    | Cat xs ->
+      A.with_expander (fun expander ->
+        let version = Expander.project expander |> Dune_project.dune_version in
+        let open A.O in
+        Memo.return
+          (if version >= (3, 10)
+           then
+             let+ xs = A.all (List.map xs ~f:E.deps) in
+             O.Cat (List.concat xs)
+           else
+             let+ xs = A.all (List.map xs ~f:E.dep) in
+             O.Cat xs))
+    | Copy (x, y) ->
+      let+ x = E.dep x
+      and+ y = E.target y in
+      O.Copy (x, y)
+    | Symlink (x, y) ->
+      let+ x = E.dep x
+      and+ y = E.target y in
+      O.Symlink (x, y)
+    | Copy_and_add_line_directive (x, y) ->
+      let+ x = E.dep x
+      and+ y = E.target y
+      and+ context =
+        A.with_expander (fun expander ->
+          Expander.context expander |> Context.DB.get |> Memo.map ~f:A.return)
+      in
+      Copy_line_directive.action context ~src:x ~dst:y
+    | System x ->
+      let+ x = E.string x in
+      O.System x
+    | Bash x ->
+      let+ script = E.string x in
+      O.Bash { script; can_run_in_action_runner = true }
+    | Write_file (fn, perm, s) ->
+      let+ fn = E.target fn
+      and+ s = E.string s in
+      O.Write_file (fn, perm, s)
+    | Mkdir x ->
+      (* This code path should in theory be unreachable too, but we don't delete
        it to remember about the check in in case we expose [mkdir] in the syntax
        one day. *)
-    let+ path = E.path x in
-    (match Path.as_in_build_dir path with
-     | Some path -> O.Mkdir path
-     | None ->
-       User_error.raise
-         ~loc:(String_with_vars.loc x)
-         [ Pp.text "(mkdir ...) is not supported for paths outside of the workspace:"
-         ; Pp.seq
-             (Pp.verbatim "  ")
-             (Dune_lang.pp
-                (List
-                   [ Dune_sexp.atom "mkdir"
-                   ; Dune_sexp.atom_or_quoted_string (Path.to_string path)
-                   ]))
-         ])
-  | Diff { optional; file1; file2; mode; directory_diffs } ->
-    let+ file1 = E.dep_if_exists file1
-    and+ () = E.source_tree_if_directory file1
-    and+ file2 =
-      if optional
-      then E.consume_file file2
-      else
-        let+ p = E.dep file2 in
-        Expander0.as_in_build_dir p ~loc:(String_with_vars.loc file2) ~what:"File"
+      let+ path = E.path x in
+      (match Path.as_in_build_dir path with
+       | Some path -> O.Mkdir path
+       | None ->
+         User_error.raise
+           ~loc:(String_with_vars.loc x)
+           [ Pp.text "(mkdir ...) is not supported for paths outside of the workspace:"
+           ; Pp.seq
+               (Pp.verbatim "  ")
+               (Dune_lang.pp
+                  (List
+                     [ Dune_sexp.atom "mkdir"
+                     ; Dune_sexp.atom_or_quoted_string (Path.to_string path)
+                     ]))
+           ])
+    | Diff { optional; file1; file2; mode; directory_diffs } ->
+      let+ file1 = E.dep_if_exists file1
+      and+ () = E.source_tree_if_directory file1
+      and+ file2 =
+        if optional
+        then E.consume_file file2
+        else
+          let+ p = E.dep file2 in
+          Expander0.as_in_build_dir p ~loc:(String_with_vars.loc file2) ~what:"File"
+      in
+      Action.diff ~optional ~mode ~directory_diffs file1 file2
+    | No_infer t -> A.no_infer (expand t)
+    | Pipe (outputs, l) ->
+      let+ l = A.all (List.map l ~f:expand) in
+      O.Pipe (outputs, l)
+    | Cram script ->
+      let+ script = E.dep script in
+      Cram_exec.action script
+    | Format_dune_file (src, dst) ->
+      let+ src = E.dep src
+      and+ dst = E.target dst
+      and+ version =
+        A.with_expander (fun expander ->
+          Expander.project expander
+          |> Dune_project.dune_version
+          |> A.return
+          |> Memo.return)
+      in
+      Format_dune_file.action ~version src dst
+    | Withenv _ | Substitute _ | Patch _ | When _ ->
+      (* these can only be provided by the package language which isn't expanded here *)
+      assert false
+  ;;
+end
+
+module Expanded = Expand (Action_expander)
+
+let expand = Expanded.expand
+
+module Target_inference = struct
+  type env =
+    { dir : Path.Build.t option
+    ; targets_dir : Path.Build.t
+    ; declared_targets : String_with_vars.t Targets_spec.t
+    }
+
+  type targets =
+    { known : Path.Build.Set.t
+    ; unknown : bool
+    }
+
+  module A = struct
+    type 'a t = env -> targets -> targets
+
+    let return _ _ targets = targets
+    let map t ~f:_ = t
+    let both a b env targets = b env (a env targets)
+  end
+
+  include A
+  include Applicative.Make (A)
+
+  let no_infer _ = return ()
+
+  let chdir dir t env targets =
+    let dir = Option.map env.dir ~f:(fun _ -> dir) in
+    t { env with dir } targets
+  ;;
+
+  let set_env ~var:_ ~value t = both value t
+  let with_expander _ = return ()
+
+  module E = struct
+    let string _ = return ()
+    let strings _ = return ()
+    let dep _ = return ()
+    let deps _ = return ()
+    let dep_if_exists _ = return ()
+    let source_tree_if_directory _ = return ()
+    let path _ = return ()
+    let prog_and_args ~force_host:_ _ = return ()
+
+    let relative_path dir text =
+      match Path.relative (Path.build dir) text with
+      | path -> Some path
+      | exception User_error.E _ ->
+        (* Real action expansion owns diagnostics, including for paths that
+           escape the workspace. Disabled rules need not expand at all. *)
+        None
+    ;;
+
+    let literal_path sw env =
+      let open Option.O in
+      let* dir = env.dir in
+      let* text = String_with_vars.text_only sw in
+      relative_path dir text
+    ;;
+
+    let target_path sw env =
+      let open Option.O in
+      let* path =
+        match String_with_vars.pform_only sw, env.declared_targets with
+        | Some (Var Target), Static { targets = [ (target, _) ]; multiplicity = One }
+        | ( Some (Var Targets)
+          , Static { targets = [ (target, _) ]; multiplicity = Multiple } ) ->
+          let* text = String_with_vars.text_only target in
+          relative_path env.targets_dir text
+        | _ -> literal_path sw env
+      in
+      let* path = Path.as_in_build_dir path in
+      Option.some_if
+        (Option.equal Path.Build.equal (Path.Build.parent path) (Some env.targets_dir))
+        path
+    ;;
+
+    let target sw env targets =
+      match target_path sw env with
+      | None -> { targets with unknown = true }
+      | Some path -> { targets with known = Path.Build.Set.add targets.known path }
+    ;;
+
+    let consume_file sw env targets =
+      match target_path sw env with
+      | None -> targets
+      | Some path -> { targets with known = Path.Build.Set.remove targets.known path }
+    ;;
+
+    module At_rule_eval_stage = struct
+      let path sw ~f env targets =
+        match Option.bind (literal_path sw env) ~f:Path.as_in_build_dir with
+        | Some path -> f (Path.build path) env targets
+        | None -> f (Path.build env.targets_dir) { env with dir = None } targets
+      ;;
+
+      let string sw ~f = f (Option.value (String_with_vars.text_only sw) ~default:"")
+    end
+  end
+
+  let run t ~dir ~targets =
+    let targets =
+      t
+        { dir = Some dir; targets_dir = dir; declared_targets = targets }
+        { known = Path.Build.Set.empty; unknown = false }
     in
-    Action.diff ~optional ~mode ~directory_diffs file1 file2
-  | No_infer t -> A.no_infer (expand t)
-  | Pipe (outputs, l) ->
-    let+ l = A.all (List.map l ~f:expand) in
-    O.Pipe (outputs, l)
-  | Cram script ->
-    let+ script = E.dep script in
-    Cram_exec.action script
-  | Format_dune_file (src, dst) ->
-    A.with_expander (fun expander ->
-      let version = Expander.project expander |> Dune_project.dune_version in
-      let open Action_expander.O in
-      Memo.return
-        (let+ src = E.dep src
-         and+ dst = E.target dst in
-         Format_dune_file.action ~version src dst))
-  | Withenv _ | Substitute _ | Patch _ | When _ ->
-    (* these can only be provided by the package language which isn't expanded here *)
-    assert false
+    if targets.unknown
+    then Target_mask.files_in_directory dir
+    else Target_mask.files (Path.Build.Set.to_list targets.known)
+  ;;
+end
+
+module Infer_targets = Expand (Target_inference)
+
+let rule_targets ~dir ~targets t =
+  Target_inference.run (Infer_targets.expand t) ~dir ~targets
 ;;
 
 let expand_no_targets t sandbox ~loc ~chdir ~deps:deps_written_by_user ~expander ~what =

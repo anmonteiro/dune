@@ -38,6 +38,14 @@ end
 
 type error = Missing_run_t of Cram_test.t
 
+let test_dir ~dir test =
+  let prefix_with, _ = Path.Build.extract_build_context_dir_exn dir in
+  let path = Cram_test.path test in
+  let parent = Path.Source.parent_exn path in
+  let basename = Path.Source.basename path |> Filename.to_string in
+  Path.Build.append_source prefix_with (Path.Source.relative parent (".cram." ^ basename))
+;;
+
 let missing_run_t (error : Cram_test.t) =
   let dir =
     match error with
@@ -100,18 +108,7 @@ let test_rule
     let* () = if enabled then add_extra_aliases_deps () else Memo.return () in
     let prefix_with, _ = Path.Build.extract_build_context_dir_exn dir in
     let script = Path.Build.append_source prefix_with (Cram_test.script test) in
-    let base_path =
-      Path.Build.append_source
-        prefix_with
-        (let path =
-           match test with
-           | File f -> f
-           | Dir d -> d.dir
-         in
-         let dir = Path.Source.parent_exn path in
-         let basename = Path.Source.basename path |> Filename.to_string in
-         Path.Source.relative dir (".cram." ^ basename))
-    in
+    let base_path = test_dir ~dir test in
     let script_sh = Path.Build.relative base_path "cram.sh" in
     let output = Path.Build.relative base_path "cram.out" in
     let* () =
@@ -250,6 +247,16 @@ let collect_stanzas =
     | Some dir -> collect_whole_subtree [ acc ] dir
 ;;
 
+let applies_to_test (stanza : Cram_stanza.t) name =
+  match stanza.applies_to with
+  | Whole_subtree -> true
+  | Files_matching_in_this_dir pred ->
+    Predicate_lang.Glob.test
+      pred
+      ~standard:Predicate_lang.true_
+      (Cram_test.Name.to_string name)
+;;
+
 let spec_for_test ~stanzas ~dune_version test =
   let name =
     match test with
@@ -262,15 +269,7 @@ let spec_for_test ~stanzas ~dune_version test =
       stanzas
       ~init
       ~f:(fun (runtest_alias, (acc : Spec.t)) { dir; stanza; prepared } ->
-        match
-          match stanza.applies_to with
-          | Whole_subtree -> true
-          | Files_matching_in_this_dir pred ->
-            Predicate_lang.Glob.test
-              pred
-              ~standard:Predicate_lang.true_
-              (Cram_test.Name.to_string name)
-        with
+        match applies_to_test stanza name with
         | false -> Memo.return (runtest_alias, acc)
         | true ->
           let+ { expander; deps } = Memo.Lazy.force prepared in
@@ -475,6 +474,32 @@ let cram_tests dir =
       >>| List.filter_opt
     in
     file_tests @ dir_tests
+;;
+
+let rule_targets ~dir source_dir =
+  let* tests = cram_tests source_dir in
+  match tests with
+  | [] -> Memo.return Target_mask.empty
+  | _ :: _ ->
+    let+ stanzas = collect_stanzas ~dir in
+    let dune_version = Dune_project.dune_version (Source_tree.Dir.project source_dir) in
+    List.fold_left tests ~init:Target_mask.empty ~f:(fun targets test ->
+      let test =
+        match test with
+        | Ok test | Error (Missing_run_t test) -> test
+      in
+      let name = Cram_test.name test ~dune_version in
+      let aliases =
+        Cram_test.Name.to_alias name
+        :: Alias0.runtest
+        :: List.filter_map stanzas ~f:(fun { stanza; _ } ->
+          if applies_to_test stanza name then stanza.alias else None)
+      in
+      Target_mask.union
+        targets
+        (Target_mask.union
+           (Target_mask.aliases (List.map aliases ~f:(Alias.make ~dir)))
+           (Target_mask.subtree (test_dir ~dir test))))
 ;;
 
 let rules ~sctx ~dir source_dir =

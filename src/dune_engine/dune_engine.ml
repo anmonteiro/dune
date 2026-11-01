@@ -18,6 +18,7 @@ module Dtemp = Dtemp
 module Rules = Rules
 module Rule = Rule
 module Target_promotion = Target_promotion
+module Target_mask = Target_mask
 module Build_context = Build_context
 module Build_config = Build_config
 module Build_loop = Build_loop

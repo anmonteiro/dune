@@ -1,10 +1,10 @@
-This test demonstrates that an incorrect implementation prevents all rules from
-being loaded in the same directory
+An incorrect implementation must not prevent independent data rules from being
+loaded in the same directory.
 
   $ make_dune_project 3.7
 
-We define an invalid library along with a rule and an executable that should be
-buildable despite the presence of this library
+We define an invalid library along with an independent rule and an executable.
+Compilation still shares module discovery with the invalid library.
 
   $ cat >dune <<EOF
   > (library
@@ -19,11 +19,6 @@ buildable despite the presence of this library
 
   $ touch foo.ml
   $ dune build ./test
-  File "dune", line 4, characters 13-23:
-  4 |  (implements fake-dummy))
-                   ^^^^^^^^^^
-  Error: Library "fake-dummy" not found.
-  [1]
   $ dune build ./foo.exe
   File "dune", line 4, characters 13-23:
   4 |  (implements fake-dummy))

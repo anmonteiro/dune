@@ -13,6 +13,8 @@ let meta_file ~dir { name; libraries = _; site = _, (pkg, site); _ } =
     ]
 ;;
 
+let rule_targets ~dir t = Target_mask.files [ meta_file ~dir t ]
+
 let resolve_libs t public_libs =
   Resolve.Memo.List.map t.libraries ~f:(Lib.DB.resolve public_libs)
 ;;

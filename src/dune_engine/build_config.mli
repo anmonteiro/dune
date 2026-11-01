@@ -50,7 +50,6 @@ module Gen_rules : sig
   type t =
     | Rules of Rules.t
     | Unknown_context
-    | Redirect_to_parent of Rules.t
 
   val make
     :  ?build_dir_only_sub_dirs:Build_only_sub_dirs.t

@@ -414,6 +414,36 @@ let gen_rules_for_single_file stanza ~sctx ~dir ~expander ~mdx_prog ~mdx_prog_ge
 let name = "mdx_gen"
 let for_ = Compilation_mode.Ocaml
 
+let main_module ~dir =
+  Module.generated ~kind:Impl ~src_dir:dir ~for_ [ Module_name.of_checked_string name ]
+;;
+
+let source_path ~dir =
+  Module.file (main_module ~dir) ~ml_kind:Impl
+  |> Option.value_exn
+  |> Path.as_in_build_dir_exn
+;;
+
+let exe_target t = Exe_target.executables Nonempty_list.[ t.loc, name ]
+let obj_dir ~dir t = Obj_dir.make_for_exe_target ~dir (exe_target t)
+let exe_extension = Filename.Extension.bc_exe
+
+let exe_path ~dir =
+  Path.Build.relative dir (name ^ Filename.Extension.to_string exe_extension)
+;;
+
+let rule_targets ~dir t =
+  let aliases = Target_mask.aliases [ Alias.make Alias0.runtest ~dir ] in
+  if Dune_lang.Syntax.Version.Infix.(t.version >= (0, 2))
+  then
+    Target_mask.union
+      aliases
+      (Target_mask.union
+         (Target_mask.files [ source_path ~dir; exe_path ~dir ])
+         (Target_mask.subtree (Obj_dir.obj_dir (obj_dir ~dir t))))
+  else aliases
+;;
+
 let mdx_prog_gen t ~sctx ~dir ~scope ~mdx_prog =
   let loc = t.loc in
   let* ocaml_toolchain = Context.ocaml (Super_context.context sctx) in
@@ -438,7 +468,7 @@ let mdx_prog_gen t ~sctx ~dir ~scope ~mdx_prog =
     in
     let open Command.Args in
     let prelude_args = S (List.concat_map t.preludes ~f:(Prelude.to_args ~dir)) in
-    let stdout_to = Path.Build.relative dir "mdx_gen.ml-gen" in
+    let stdout_to = source_path ~dir in
     (* We call mdx to generate the testing executable source *)
     Command.run_dyn_prog
       ~dir:(Path.build dir)
@@ -457,9 +487,10 @@ let mdx_prog_gen t ~sctx ~dir ~scope ~mdx_prog =
   let* () = Super_context.add_rule sctx ~loc ~dir action in
   (* We build the generated executable linking in the libs from the libraries
      field *)
-  let main_module_name = Module_name.of_checked_string name in
+  let main_module = main_module ~dir in
+  let main_module_name = Module.name main_module in
   let dune_version = Scope.project scope |> Dune_project.dune_version in
-  let exe_target = Exe_target.executables Nonempty_list.[ t.loc, name ] in
+  let exe_target = exe_target t in
   let* cctx =
     let lib name = Lib_dep.Direct (loc, Lib_name.of_string name) in
     let compile_info =
@@ -475,11 +506,8 @@ let mdx_prog_gen t ~sctx ~dir ~scope ~mdx_prog =
     in
     let requires_compile = Lib.Compile.direct_requires compile_info ~for_
     and requires_link = Lib.Compile.requires_link compile_info ~for_ in
-    let obj_dir = Obj_dir.make_for_exe_target ~dir exe_target in
-    let modules =
-      Module.generated ~kind:Impl ~src_dir:dir ~for_ [ main_module_name ]
-      |> Modules.With_vlib.singleton_exe
-    in
+    let obj_dir = obj_dir ~dir t in
+    let modules = Modules.With_vlib.singleton_exe main_module in
     let flags = Ocaml_flags.default ~dune_version ~profile:Release in
     Compilation_context.create
       ~super_context:sctx
@@ -496,7 +524,7 @@ let mdx_prog_gen t ~sctx ~dir ~scope ~mdx_prog =
       ~package:None
       for_
   in
-  let ext = Filename.Extension.bc_exe in
+  let ext = exe_extension in
   let link_args =
     let open Action_builder.O in
     let+ link_flags =
@@ -515,7 +543,7 @@ let mdx_prog_gen t ~sctx ~dir ~scope ~mdx_prog =
       ~promote:None
       ~env:(Action_builder.return Env.empty)
   in
-  Path.Build.relative dir (name ^ Filename.Extension.to_string ext)
+  exe_path ~dir
 ;;
 
 (** Generates the rules for a given mdx stanza *)
