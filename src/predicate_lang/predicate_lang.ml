@@ -242,7 +242,7 @@ module Glob = struct
 
     let compare x y =
       match x, y with
-      | Glob x, Glob y -> Glob.compare (unproxy x) (unproxy y)
+      | Glob { repr = x; _ }, Glob { repr = y; _ } -> String.compare x y
       | Glob _, _ -> Lt
       | _, Glob _ -> Gt
       | Literal x, Literal y -> String.compare x y
