@@ -233,19 +233,8 @@ module Current_run = struct
 end
 
 let current_run =
-  let node = dep_node Current_run.memo () in
   let read = Current_run.exec () in
-  let computation =
-    Fiber.of_thunk (fun () ->
-      if Deps_collector.is_enabled ()
-      then read
-      else (
-        match node.state, node.value with
-        | Cached, Ok run when Run.is_current (Dep_node.last_validated_at node) ->
-          Fiber.return run
-        | _ -> read))
-  in
-  fun () -> computation
+  fun () -> read
 ;;
 
 let of_non_reproducible_fiber fiber =

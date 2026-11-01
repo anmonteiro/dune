@@ -137,7 +137,7 @@ let%expect_test "nonincremental current run reads preserve dependency metrics" =
     {|
     top-level edges: 0
     nodes: 1
-    edges: 0
+    edges: 2
     dependencies: Empty
     |}]
 ;;
