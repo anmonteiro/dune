@@ -199,6 +199,97 @@ let read_cleanup_entries ~dir =
   read dir, read (anonymous_actions_dir dir)
 ;;
 
+module Source_copy_rules = struct
+  type generation = unit ref
+
+  type node =
+    { mutable rules : (Filename.t, Rule.t) Table.t option
+    ; mutable children : Path.Build.Set.t
+    ; mutable source_filenames : Filename.Array.Set.t
+    ; mutable generation : generation
+    }
+
+  type t = node Path.Build.Table.t
+
+  let get =
+    Memo.exec
+      (Memo.create
+         "source-copy-rules"
+         ~input:(module Unit)
+         (fun () -> Memo.return (Path.Build.Table.create 16 : t)))
+  ;;
+
+  let rec find_or_create t dir =
+    Path.Build.Table.find_or_add t dir ~f:(fun dir ->
+      Option.iter (Path.Build.parent dir) ~f:(fun parent ->
+        let parent = find_or_create t parent in
+        parent.children <- Path.Build.Set.add parent.children dir);
+      { rules = None
+      ; children = Path.Build.Set.empty
+      ; source_filenames = Filename.Array.Set.empty
+      ; generation = ref ()
+      })
+  ;;
+
+  let generation t dir = (find_or_create t dir).generation
+
+  let update_inventory t dir source_filenames =
+    let node = find_or_create t dir in
+    if node.source_filenames != source_filenames
+    then (
+      Option.iter node.rules ~f:(fun rules ->
+        let previous = Table.length rules in
+        Table.filteri_inplace rules ~f:(fun ~key ~data:_ ->
+          Filename.Array.Set.mem source_filenames key);
+        if Table.length rules <> previous then node.generation <- ref ();
+        if Table.length rules = 0 then node.rules <- None);
+      node.source_filenames <- source_filenames)
+  ;;
+
+  let rules t dir =
+    let node = find_or_create t dir in
+    match node.rules with
+    | Some rules -> rules
+    | None ->
+      let rules = Table.create (module Filename) 16 in
+      node.rules <- Some rules;
+      rules
+  ;;
+
+  let forget_file t path =
+    match Path.Build.Table.find t (Path.Build.parent_exn path) with
+    | None -> ()
+    | Some node ->
+      Option.iter node.rules ~f:(fun rules ->
+        let name = Path.Build.basename path in
+        if Table.mem rules name
+        then (
+          Table.remove rules name;
+          node.generation <- ref ();
+          if Table.length rules = 0 then node.rules <- None))
+  ;;
+
+  let forget_subtree t dir =
+    match Path.Build.Table.find t dir with
+    | None -> ()
+    | Some node ->
+      let rec remove dir node =
+        Path.Build.Set.iter node.children ~f:(fun child ->
+          remove child (Path.Build.Table.find_exn t child));
+        Path.Build.Table.remove t dir
+      in
+      remove dir node;
+      Option.iter (Path.Build.parent dir) ~f:(fun parent ->
+        let parent = Path.Build.Table.find_exn t parent in
+        parent.children <- Path.Build.Set.remove parent.children dir)
+  ;;
+
+  let forget_path t path =
+    forget_file t path;
+    forget_subtree t path
+  ;;
+end
+
 module Cleanup = struct
   type entry =
     { name : Filename.t
@@ -258,6 +349,7 @@ module Cleanup = struct
 
   type t =
     { dir : Path.Build.t
+    ; source_copy_rules : Source_copy_rules.t
     ; mutable files : entries Lazy.t
     ; mutable anonymous_actions : entries Lazy.t
     ; mutable refined : Rules.Producer_id.Set.t
@@ -407,7 +499,14 @@ module Cleanup = struct
     | Anonymous_actions -> anonymous_actions_dir path
   ;;
 
-  let remove location ~path ~kind =
+  let retire_source_copies source_copy_rules location path =
+    match location with
+    | Anonymous_actions -> ()
+    | Files -> Source_copy_rules.forget_path source_copy_rules path
+  ;;
+
+  let remove source_copy_rules location ~path ~kind =
+    retire_source_copies source_copy_rules location path;
     let path = actual_path location path in
     match kind with
     | Unix.S_DIR ->
@@ -424,7 +523,7 @@ module Cleanup = struct
     entries
   ;;
 
-  let create_entries ~dir ~files_pending location targets entries =
+  let create_entries ~source_copy_rules ~dir ~files_pending location targets entries =
     let snapshot =
       if
         Memo.is_incremental ()
@@ -452,7 +551,7 @@ module Cleanup = struct
              | Pending -> Some { name; kind; removed = false }
              | Stale ->
                let path = Path.Build.relative_fname dir name in
-               remove location ~path ~kind;
+               remove source_copy_rules location ~path ~kind;
                None)
            |> Array.of_list
            |> sort_entries)
@@ -483,6 +582,7 @@ module Cleanup = struct
   ;;
 
   let create
+        ~source_copy_rules
         ~dir
         ~entries:(files, anonymous_actions)
         ~file_targets
@@ -505,9 +605,17 @@ module Cleanup = struct
       ; pending = Rules.Pending.of_mask targets_to_keep
       }
     in
-    let files, initial_files = create_entries ~dir ~files_pending Files targets files in
+    let files, initial_files =
+      create_entries ~source_copy_rules ~dir ~files_pending Files targets files
+    in
     let anonymous_actions, initial_anonymous_actions =
-      create_entries ~dir ~files_pending:false Anonymous_actions targets anonymous_actions
+      create_entries
+        ~source_copy_rules
+        ~dir
+        ~files_pending:false
+        Anonymous_actions
+        targets
+        anonymous_actions
     in
     (* After an ownership change, fresh snapshots certify unchanged survivors,
        including entries later forgotten as live. *)
@@ -523,7 +631,13 @@ module Cleanup = struct
           }
       else None
     in
-    { dir; files; anonymous_actions; refined = Rules.Producer_id.Set.empty; replay }
+    { dir
+    ; source_copy_rules
+    ; files
+    ; anonymous_actions
+    ; refined = Rules.Producer_id.Set.empty
+    ; replay
+    }
   ;;
 
   let unchanged_array_survivors previous current =
@@ -610,7 +724,7 @@ module Cleanup = struct
     | Removed
     | Changed of entry
 
-  let refine_entry ~dir location targets ({ name; kind; _ } as entry) =
+  let refine_entry ~source_copy_rules ~dir location targets ({ name; kind; _ } as entry) =
     match status location ~initial:false targets ~dir ~name ~kind with
     | Live -> Removed
     | Pending -> Unchanged
@@ -620,6 +734,7 @@ module Cleanup = struct
       let path = Path.Build.relative_fname dir name in
       (match Path.Untracked.lstat (Path.build (actual_path location path)) with
        | Error ((Unix.ENOENT | ENOTDIR), _, _) ->
+         retire_source_copies source_copy_rules location path;
          entry.removed <- true;
          Removed
        | Error error -> Unix_error.Detailed.raise error
@@ -629,35 +744,39 @@ module Cleanup = struct
           | Pending ->
             if kind = entry.kind then Unchanged else Changed { entry with kind }
           | Stale ->
-            remove location ~path ~kind;
+            remove source_copy_rules location ~path ~kind;
             entry.removed <- true;
             Removed))
   ;;
 
-  let rec refine_block ~dir location targets changed entries =
+  let rec refine_block ~source_copy_rules ~dir location targets changed entries =
     match entries with
     | [] -> entries, false
     | entry :: rest ->
       let change =
         if intersects_entry ~dir changed entry
-        then refine_entry ~dir location targets entry
+        then refine_entry ~source_copy_rules ~dir location targets entry
         else Unchanged
       in
-      let rest', grew = refine_block ~dir location targets changed rest in
+      let rest', grew =
+        refine_block ~source_copy_rules ~dir location targets changed rest
+      in
       (match change with
        | Unchanged -> (if rest == rest' then entries else entry :: rest'), grew
        | Removed -> rest', grew
        | Changed entry -> entry :: rest', true)
   ;;
 
-  let rec refine_entries ~dir location targets changed names entries =
+  let rec refine_entries ~source_copy_rules ~dir location targets changed names entries =
     if not (intersects_summary changed names (summary entries))
     then entries, false
     else (
       match entries with
       | Empty -> Empty, false
       | Block { summary = old_summary; entries = block } ->
-        let block', grew = refine_block ~dir location targets changed block in
+        let block', grew =
+          refine_block ~source_copy_rules ~dir location targets changed block
+        in
         if block == block'
         then entries, false
         else (
@@ -675,9 +794,11 @@ module Cleanup = struct
             in
             Block { summary; entries = block' }, grew)
       | Node { summary = old_summary; left; right } ->
-        let left', left_grew = refine_entries ~dir location targets changed names left in
+        let left', left_grew =
+          refine_entries ~source_copy_rules ~dir location targets changed names left
+        in
         let right', right_grew =
-          refine_entries ~dir location targets changed names right
+          refine_entries ~source_copy_rules ~dir location targets changed names right
         in
         let grew = left_grew || right_grew in
         let entries =
@@ -753,11 +874,19 @@ module Cleanup = struct
     in
     let names = changed_names ~dir:t.dir changed in
     let files, files_grew =
-      refine_entries ~dir:t.dir Files targets changed names (Lazy.force t.files)
+      refine_entries
+        ~source_copy_rules:t.source_copy_rules
+        ~dir:t.dir
+        Files
+        targets
+        changed
+        names
+        (Lazy.force t.files)
     in
     t.files <- ready_inventory files;
     let anonymous_actions, actions_grew =
       refine_entries
+        ~source_copy_rules:t.source_copy_rules
         ~dir:t.dir
         Anonymous_actions
         targets
@@ -846,14 +975,6 @@ end = struct
       src_path
   ;;
 
-  let source_copy_rules =
-    Memo.exec
-      (Memo.create
-         "source-copy-rules"
-         ~input:(module Path.Build)
-         (fun _ -> Memo.return (Table.create (module Filename) 16)))
-  ;;
-
   let create_copy_rules ~dir ~ctx_dir ~non_target_source_filenames =
     if Filename.Array.Set.is_empty non_target_source_filenames
     then Memo.return []
@@ -861,7 +982,8 @@ end = struct
       (* Source inventory is checked by the caller. Cache only requested copies,
          sharing their identity across views and unrelated source-name changes. *)
       let build_dir = Path.Build.append_source ctx_dir dir in
-      let+ rules = source_copy_rules build_dir in
+      let+ cache = Source_copy_rules.get () in
+      let rules = Source_copy_rules.rules cache build_dir in
       Filename.Array.Set.to_list_map non_target_source_filenames ~f:(fun filename ->
         Table.find_or_add rules filename ~f:(fun filename ->
           let src_path = Path.Source.relative_fname dir filename in
@@ -1669,6 +1791,11 @@ end = struct
                 then directory_info build_dir
                 else read_directory_info build_dir normal
               in
+              let* source_copy_rules = Source_copy_rules.get () in
+              Source_copy_rules.update_inventory
+                source_copy_rules
+                dir
+                info.source_files.source_filenames;
               let* cleanup_state =
                 if Memo.is_incremental ()
                 then Cleanup_state.get build_dir >>| Option.some
@@ -1704,6 +1831,7 @@ end = struct
                   in
                   let entries = read_cleanup_entries ~dir in
                   Cleanup.create
+                    ~source_copy_rules
                     ~dir
                     ~entries
                     ~file_targets
@@ -1734,6 +1862,26 @@ end = struct
       ; cleanup_targets : Cleanup.targets Lazy.t
       }
   end
+
+  let retire_selected_source_copies
+        { Cleanup.source_copy_rules; _ }
+        { Compiled_selection.loaded = { rules_here; _ }; collected; _ }
+    =
+    (* The original collection excludes synthesized copies. Check the compiled
+       owner as fallback rules can have been replaced by those copies. *)
+    List.iter collected.rules ~f:(fun (rule : Rule.t) ->
+      match rule.info with
+      | Source_file_copy _ -> ()
+      | From_dune_file _ | Internal ->
+        Filename.Set.iter rule.targets.files ~f:(fun name ->
+          let path = Path.Build.relative_fname rule.targets.root name in
+          match Path.Build.Map.find rules_here.by_file_targets path with
+          | Some owner when owner == rule ->
+            Source_copy_rules.forget_path source_copy_rules path
+          | None | Some _ -> ()));
+    Path.Build.Map.iteri rules_here.by_directory_targets ~f:(fun path _ ->
+      Source_copy_rules.forget_path source_copy_rules path)
+  ;;
 
   let compile_selection
         ({ Dir_triage.Build_directory.dir; _ } as build_dir)
@@ -1872,6 +2020,7 @@ end = struct
           { build_dir : Dir_triage.Build_directory.t
           ; state : state
           ; info : Initial_directory.info
+          ; source_copy_generation : Source_copy_rules.generation
           }
 
     let equal a b =
@@ -1880,6 +2029,7 @@ end = struct
       | Normal a, Normal b ->
         a.state == b.state
         && a.info == b.info
+        && a.source_copy_generation == b.source_copy_generation
         && a.build_dir.context_type == b.build_dir.context_type
       | ( Under_directory_target { directory_target_ancestor = a }
         , Under_directory_target { directory_target_ancestor = b } ) ->
@@ -1904,7 +2054,15 @@ end = struct
                    -> Memo.return (Under_directory_target { directory_target_ancestor })
                  | Initial_directory.Normal initial ->
                    let+ state = Cleanup_state.get build_dir in
-                   Normal { build_dir; state; info = initial.info })))
+                   (* Capture the token, not its mutable cell: an ancestor can
+                      retire copies while this directory's metadata is unchanged. *)
+                   let source_copy_generation =
+                     Source_copy_rules.generation
+                       initial.cleanup.source_copy_rules
+                       build_dir.dir
+                   in
+                   Normal
+                     { build_dir; state; info = initial.info; source_copy_generation })))
     ;;
   end
 
@@ -1961,6 +2119,7 @@ end = struct
            in
            Code_error.raise "Rule cleanup replayed before directory preparation" details
          | Some { Initial_directory.cleanup; _ } ->
+           retire_selected_source_copies cleanup compiled;
            (* A receipt belongs to this full payload, not just its selected
               rule. Skipped live entries remain safe: later views either
               reveal their owner or retain a pending ancestor declaration. *)
@@ -1996,7 +2155,7 @@ end = struct
              Memo.return
                (Compiled_request.Loaded
                   (Loaded.Build_under_directory_target { directory_target_ancestor }))
-           | Normal { build_dir; state = prepared; info } ->
+           | Normal { build_dir; state = prepared; info; source_copy_generation = _ } ->
              let* selection = Rules.load_path_with_pending info.rules target in
              let request = Target target in
              let+ compiled = compile_selection build_dir info ~request selection in
@@ -2012,6 +2171,7 @@ end = struct
         { Initial_directory.cleanup; completed_targets; _ }
         ({ Compiled_selection.loaded; collected; _ } as compiled)
     =
+    retire_selected_source_copies cleanup compiled;
     refine_cleanup cleanup compiled;
     let+ loaded =
       match context_type, request with
@@ -2153,7 +2313,8 @@ end = struct
                 Memo.return
                   (Compiled_request.Loaded
                      (Loaded.Build_under_directory_target { directory_target_ancestor }))
-              | Normal { build_dir; state = prepared; info } ->
+              | Normal { build_dir; state = prepared; info; source_copy_generation = _ }
+                ->
                 let request = Files selector in
                 let* selection =
                   Rules.load_with_pending
