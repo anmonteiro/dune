@@ -71,3 +71,26 @@ Removing the unrelated DLL does not change the successful result.
 
   $ rm _build/default/dllb_stubs$ext_dll
   $ dune build app/main.bc --sandbox=none
+
+An explicit request to disable link sandboxing is rejected even when the
+bytecode executable has no foreign stubs. Unpatched Dune accepts this stanza.
+
+  $ cat >app/dune <<'EOF'
+  > (executable
+  >  (name plain)
+  >  (modules plain)
+  >  (modes byte exe)
+  >  (link_deps (sandbox none)))
+  > EOF
+  $ echo 'let () = ()' >app/plain.ml
+  $ dune build app/plain.bc
+  File "app/dune", line 2, characters 7-12:
+  2 |  (name plain)
+             ^^^^^
+  Error: This rule forbids all sandboxing modes (but it also requires
+  sandboxing)
+  [1]
+
+Native linking still accepts the same sandbox constraint.
+
+  $ dune build app/plain.exe
