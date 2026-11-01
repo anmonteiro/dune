@@ -109,6 +109,39 @@ let%expect_test "non-incremental map_reduce_seq preserves early errors" =
     |}]
 ;;
 
+let%expect_test "nonincremental current run reads preserve dependency metrics" =
+  let open Memo.O in
+  in_non_incremental_mode ~f:(fun () ->
+    Memo.reset Memo.Invalidation.empty;
+    let read = Memo.current_run () in
+    let (_ : Memo.Run.t) = run read in
+    Memo.Metrics.reset ();
+    let (_ : Memo.Run.t) = run read in
+    printfn "top-level edges: %d" (Counter.read Memo.Metrics.Compute.edges);
+    let node =
+      Memo.lazy_node ~name:"nonincremental current run consumer" (fun () ->
+        let* (_ : Memo.Run.t) = read in
+        let+ (_ : Memo.Run.t) = read in
+        ())
+    in
+    run (Memo.Node.read node);
+    printfn "nodes: %d" (Counter.read Memo.Metrics.Compute.nodes);
+    printfn "edges: %d" (Counter.read Memo.Metrics.Compute.edges);
+    let deps =
+      Memo.For_tests.get_deps_structured node |> Option.value_exn |> Dyn.to_string
+    in
+    printfn "dependencies: %s" deps;
+    Memo.Metrics.assert_invariants ();
+    Memo.reset Memo.Invalidation.empty);
+  [%expect
+    {|
+    top-level edges: 0
+    nodes: 1
+    edges: 0
+    dependencies: Empty
+    |}]
+;;
+
 let%expect_test "non-incremental mode preserves early errors outside Memo nodes" =
   in_non_incremental_mode ~f:(fun () ->
     let trace = ref [] in

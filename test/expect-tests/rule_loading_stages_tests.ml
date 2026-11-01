@@ -7877,6 +7877,40 @@ let%expect_test "literal extensions in predicate intersections" =
   [%expect {| literal suffix matches: true |}]
 ;;
 
+let%expect_test "target mask unions distinguish escaped literals from wildcards" =
+  let dir = path "default/escaped-literal-mask" in
+  let file = Path.Build.relative dir "foo.ml" in
+  let literal = Predicate_lang.Glob.of_string {|\*.ml|} in
+  let wildcard = Predicate_lang.Glob.of_string "*.ml" in
+  let test predicate =
+    Predicate_lang.Glob.test predicate ~standard:Predicate_lang.false_ "foo.ml"
+  in
+  printfn "literal matches: %b; wildcard matches: %b" (test literal) (test wildcard);
+  printfn "predicates compare equal: %b" (Predicate_lang.Glob.equal literal wildcard);
+  let complement predicate =
+    Target_mask.files_matching ~dir (Predicate_lang.not predicate)
+  in
+  let broad = complement literal in
+  let narrow = complement wildcard in
+  List.iter
+    [ "not literal", broad
+    ; "not wildcard", narrow
+    ; "union", Target_mask.union broad narrow
+    ; "reverse union", Target_mask.union narrow broad
+    ]
+    ~f:(fun (label, mask) ->
+      printfn "%s matches: %b" label (Target_mask.mem_file mask file));
+  [%expect
+    {|
+    literal matches: false; wildcard matches: true
+    predicates compare equal: true
+    not literal matches: true
+    not wildcard matches: false
+    union matches: false
+    reverse union matches: true
+    |}]
+;;
+
 let%expect_test "target mask locations grow and shrink without mixing kinds" =
   let dir = path "default/location-transitions" in
   let a = Path.Build.relative dir "a/item" in
