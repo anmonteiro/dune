@@ -751,12 +751,61 @@ let compile_context (lib : Library.t) ~sctx ~dir_contents ~expander ~scope ~for_
     ~for_
 ;;
 
-let rule_targets ~dir ~source_files ~lib_config ~dialects (lib : Library.t) =
+let generated_source_targets (lib : Library.t) ~dir ~include_subdirs =
+  let main_module_name =
+    match lib.stdlib, lib.implements, lib.wrapped with
+    | None, None, This (Simple true | Yes_with_transition _) ->
+      Module_name.of_string_opt (Lib_name.Local.to_string (snd lib.name))
+    | _ -> None
+  in
+  let ext = Filename.Extension.ml_gen in
+  match main_module_name with
+  | None -> Target_mask.file_extensions ~dir (Filename.Extension.Set.singleton ext)
+  | Some name ->
+    let filename name =
+      Module_name.Unique.of_name_assuming_needs_no_mangling name
+      |> Module_name.Unique.artifact_filename ~ext
+    in
+    (* A handwritten interface uses [main__], while an explicit root module
+       keeps its own unmangled source filename. *)
+    let files =
+      filename name
+      :: filename (Module_name.add_suffix name "__")
+      :: List.map (Option.to_list lib.buildable.modules.root_module) ~f:(fun (_, name) ->
+        filename name)
+      |> Filename.Set.of_list
+      |> Target_mask.files_named ~dir
+    in
+    (match (include_subdirs : Include_subdirs.t) with
+     | No | Include Unqualified -> files
+     | Include (Qualified _) ->
+       let nested =
+         let prefix =
+           Module_name.Unique.of_name_assuming_needs_no_mangling name
+           |> Module_name.Unique.to_string
+           |> Glob.escape
+         in
+         Predicate_lang.Glob.of_string (prefix ^ "__*" ^ Filename.Extension.to_string ext)
+       in
+       Target_mask.union files (Target_mask.files_matching ~dir nested))
+;;
+
+let rule_targets
+      ~dir
+      ~source_files
+      ~include_subdirs
+      ~lib_config
+      ~dialects
+      (lib : Library.t)
+  =
   let+ sub_systems = Sub_system.rule_targets ~dir lib in
   let obj_dir = Library.obj_dir lib ~dir in
   let module_targets =
     List.fold_left source_files ~init:Target_mask.empty ~f:(fun acc (dir, _) ->
-      Target_mask.union acc (Module_compilation.rule_targets ~dir ~obj_dir))
+      let generated_sources = generated_source_targets lib ~dir ~include_subdirs in
+      Target_mask.union
+        acc
+        (Module_compilation.rule_targets ~dir ~obj_dir ~generated_sources))
   in
   List.fold_left
     [ module_targets

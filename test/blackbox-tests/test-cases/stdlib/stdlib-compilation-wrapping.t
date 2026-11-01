@@ -14,6 +14,7 @@ Compile a library with `(stdlib ..)` and wrapped settings
   >  (stdlib
   >   (internal_modules Camlinternal*)))
   > EOF
+  > dune build stdlib/.mystdlib.objs/byte/mystdlib.cmi
   > dune build
   > find _build/default/stdlib -iname '*.cmi' | sort;
   > }
