@@ -130,7 +130,7 @@ unchanged, so its digest alone cannot reveal that the build-tree copy changed.
   Success
   $ cat switched _build/default/switched promoted/switched
   original
-  generated
+  original
   generated
 
 A directory target can replace a source copy without loading the source
@@ -182,7 +182,7 @@ directory itself. Removing that rule must restore copies inside the directory.
   Success
   $ cat sub/value _build/default/sub/value
   original
-  generated
+  original
 
 Ignoring a source directory removes its build-tree copies, not the source
 files. Making the directory visible again must recreate those copies.
@@ -220,8 +220,7 @@ files. Making the directory visible again must recreate those copies.
   Success
   $ cat sub/value _build/default/sub/value
   original
-  cat: _build/default/sub/value: No such file or directory
-  [1]
+  original
 
 Repeated ownership changes must also retire copies held by cached point and
 glob requests. An unrelated source change exercises their restoration without
@@ -239,13 +238,11 @@ nested descendants without affecting a sibling directory.
   > EOF
   $ with_timeout dune rpc flush-file-watcher --wait
   $ build switched sub/value sub/nested/deep/value sibling/value globbed
-  Failure
-  [1]
+  Success
   $ cat switched sub/value _build/default/globbed
   original
   original
-  cat: _build/default/globbed: No such file or directory
-  [1]
+  original
   $ cat _build/default/sub/nested/deep/value _build/default/sibling/value
   original
   sibling
@@ -313,6 +310,18 @@ nested descendants without affecting a sibling directory.
   Success
   original
   original
+  original
+  original
+  original
+  original
+  original
+  sibling
+  Success
+  original
+  original
+  sibling
+  Success
+  Success
   generated
   generated
   generated
@@ -324,28 +333,16 @@ nested descendants without affecting a sibling directory.
   generated
   sibling
   Success
-  Success
-  generated
-  generated
-  generated
   original
-  generated
-  sibling
-  Success
-  generated
-  generated
+  original
+  original
+  original
+  original
+  original
+  original
   sibling
   Success
   original
   original
-  generated
-  generated
-  generated
-  original
-  generated
-  sibling
-  Success
-  generated
-  generated
   sibling
   $ stop_dune_quiet
