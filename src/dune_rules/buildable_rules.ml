@@ -38,9 +38,12 @@ let generated_sources ~dir (buildable : Buildable.t) =
 let rule_targets ~dir ~source_files ~lib_config ~dialects (buildable : Buildable.t) =
   let generated = generated_sources ~dir buildable in
   let sources =
-    generated
-    @ List.concat_map source_files ~f:(fun (dir, files) ->
-      Filename.Array.Set.to_list_map files ~f:(Path.Build.relative_fname dir))
+    (* Families cover ordinary basenames, but exclude dot-leading names. *)
+    List.fold_left source_files ~init:generated ~f:(fun acc (dir, files) ->
+      Filename.Array.Set.fold files ~init:acc ~f:(fun file acc ->
+        if String.starts_with (Filename.to_string file) ~prefix:"."
+        then Path.Build.relative_fname dir file :: acc
+        else acc))
   in
   let source_dirs =
     List.fold_left
