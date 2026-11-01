@@ -92,18 +92,4 @@ Each command starts a fresh process and only loads the overridden directory.
 None of its tests use these ancestor aliases, but requesting them must succeed.
 
   $ dune build @overridden/runtest-workspace-js @overridden/runtest-context-js @overridden/runtest-project-js
-  Error: Alias "runtest-context-js" specified on the command line is empty.
-  It is not defined in overridden or any of its descendants.
-  Error: Alias "runtest-project-js" specified on the command line is empty.
-  It is not defined in overridden or any of its descendants.
-  Error: Alias "runtest-workspace-js" specified on the command line is empty.
-  It is not defined in overridden or any of its descendants.
-  [1]
   $ dune build @overridden/runtest-workspace-wasm @overridden/runtest-context-wasm @overridden/runtest-project-wasm
-  Error: Alias "runtest-context-wasm" specified on the command line is empty.
-  It is not defined in overridden or any of its descendants.
-  Error: Alias "runtest-project-wasm" specified on the command line is empty.
-  It is not defined in overridden or any of its descendants.
-  Error: Alias "runtest-workspace-wasm" specified on the command line is empty.
-  It is not defined in overridden or any of its descendants.
-  [1]
