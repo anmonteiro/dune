@@ -236,3 +236,68 @@ condition is not a literal false.
   [
     "stub.c"
   ]
+
+A copy_files rule can own the database too. Its wildcard declaration must be
+resolved before deciding whether to generate the built-in database.
+
+  $ mkdir ../copy-owned && cd ../copy-owned
+  $ make_dune_project 3.23
+  $ mkdir inputs
+  $ echo '[{"file":"external.c"}]' > inputs/compile_commands.json
+  $ echo 'int stub(void) { return 0; }' > stub.c
+  $ cat > dune <<EOF
+  > (foreign_library (archive_name stubs) (language c) (names stub))
+  > (copy_files inputs/*.json)
+  > EOF
+  $ dune build compile_commands.json @check
+  $ cat _build/default/compile_commands.json
+  [{"file":"external.c"}]
+  $ test ! -f compile_commands.json
+
+Conversely, a wildcard that can match the database name does not own it unless
+it actually produces that file. The built-in database must then be generated.
+
+  $ mv inputs/compile_commands.json inputs/other.json
+  $ dune build compile_commands.json other.json @check
+  $ jq '[.[].file]' compile_commands.json
+  [
+    "stub.c"
+  ]
+  $ cat _build/default/other.json
+  [{"file":"external.c"}]
+
+A disabled rule declaring the database does not own it either.
+
+  $ mkdir ../disabled-owner && cd ../disabled-owner
+  $ make_dune_project 3.23
+  $ echo 'int stub(void) { return 0; }' > stub.c
+  $ cat > dune <<EOF
+  > (foreign_library (archive_name stubs) (language c) (names stub))
+  > (rule
+  >  (target compile_commands.json)
+  >  (enabled_if false)
+  >  (action (write-file compile_commands.json disabled)))
+  > EOF
+  $ dune build compile_commands.json @check
+  $ jq '[.[].file]' compile_commands.json
+  [
+    "stub.c"
+  ]
+
+Directory targets also take precedence over the built-in database.
+
+  $ mkdir ../directory-owned && cd ../directory-owned
+  $ make_dune_project 3.23
+  $ echo '(using directory-targets 0.1)' >> dune-project
+  $ echo 'int stub(void) { return 0; }' > stub.c
+  $ cat > dune <<EOF
+  > (foreign_library (archive_name stubs) (language c) (names stub))
+  > (rule
+  >  (target (dir compile_commands.json))
+  >  (action
+  >   (system "mkdir compile_commands.json && echo owned > compile_commands.json/marker")))
+  > EOF
+  $ dune build compile_commands.json @check
+  $ cat _build/default/compile_commands.json/marker
+  owned
+  $ test ! -e compile_commands.json
