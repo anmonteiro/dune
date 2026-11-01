@@ -35,6 +35,11 @@ Nested group interfaces inside renamed directories use their public path.
   >   print_endline Renamed.Public.Exposed.Leaf.value
   > EOF
 
+The generated aliases can be requested before compiling any library module.
+
+  $ dune build lib/renamed__Public__Exposed__.ml-gen
+  $ dune build lib/renamed__Public.ml-gen lib/renamed.ml-gen
+
   $ dune exec ./app/main.exe
   from renamed dir
   from renamed nested group interface

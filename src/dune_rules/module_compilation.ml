@@ -1010,15 +1010,13 @@ let build_root_module cctx root_module =
   build_module_rules cctx root_module
 ;;
 
-let rule_targets ~dir ~obj_dir =
+let rule_targets ~dir ~obj_dir ~generated_sources =
   List.fold_left
     [ Target_mask.subtree (Obj_dir.obj_dir obj_dir)
     ; Target_mask.subtree (Path.Build.relative dir Melange.Source.dir)
     ; Target_mask.subtree
         (Module.wrapped_compat_dir (Path.build dir) |> Path.as_in_build_dir_exn)
-    ; Target_mask.file_extensions
-        ~dir
-        (Filename.Extension.Set.singleton Filename.Extension.ml_gen)
+    ; generated_sources
     ]
     ~init:(Target_mask.aliases [ Alias.make Alias0.all ~dir ])
     ~f:Target_mask.union
@@ -1095,7 +1093,24 @@ let build_all cctx =
 let build_all cctx =
   let dir = Compilation_context.dir cctx in
   let obj_dir = Compilation_context.obj_dir cctx in
-  Rules.narrow (rule_targets ~dir ~obj_dir) (fun () -> build_all cctx)
+  let generated_sources =
+    let add_source m sources =
+      let source =
+        Module.file m ~ml_kind:Impl |> Option.value_exn |> Path.as_in_build_dir_exn
+      in
+      source :: sources
+    in
+    Modules.With_vlib.fold_no_vlib_with_aliases
+      (Compilation_context.modules cctx)
+      ~init:[]
+      ~normal:(fun m sources ->
+        match Module.kind m with
+        | Root -> add_source m sources
+        | _ -> sources)
+      ~alias:(fun group sources -> add_source (Modules.Group.alias group) sources)
+    |> Target_mask.files
+  in
+  Rules.narrow (rule_targets ~dir ~obj_dir ~generated_sources) (fun () -> build_all cctx)
 ;;
 
 let empty_intf_path path = Path.set_extension path ~ext:Filename.Extension.mli

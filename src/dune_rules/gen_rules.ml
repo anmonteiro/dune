@@ -198,6 +198,7 @@ let stanza_targets
       ~sctx
       ~dir
       ~source_files
+      ~include_subdirs
       ~lib_config
       ~dialects
       ~project
@@ -205,7 +206,8 @@ let stanza_targets
       stanza
   =
   match Stanza.repr stanza with
-  | Library.T lib -> Lib_rules.rule_targets ~dir ~source_files ~lib_config ~dialects lib
+  | Library.T lib ->
+    Lib_rules.rule_targets ~dir ~source_files ~include_subdirs ~lib_config ~dialects lib
   | Executables.T exes ->
     Memo.return
       (Exe_rules.rule_targets ~dir ~source_files ~lib_config ~dialects ~project exes)
@@ -260,6 +262,7 @@ let gen_rules_for_stanzas
       sctx
       standalone_or_root
       ~source_files
+      ~include_subdirs
       ~lib_config
       ~obj_dirs
       ~cctxs
@@ -279,6 +282,7 @@ let gen_rules_for_stanzas
           ~sctx
           ~dir:ctx_dir
           ~source_files
+          ~include_subdirs
           ~lib_config
           ~dialects
           ~project
@@ -680,7 +684,7 @@ let source_file_hints ({ Source_file_dir.dir; files; stanzas; _ } : Source_file_
   dir, Filename.Array.Set.union files generated
 ;;
 
-let gen_rules_standalone_or_root sctx ~dir ~source_dir:_ =
+let gen_rules_standalone_or_root sctx ~dir ~include_subdirs =
   let* sctx = sctx in
   let* standalone_or_root =
     Dir_contents.triage ~dir sctx
@@ -741,6 +745,7 @@ let gen_rules_standalone_or_root sctx ~dir ~source_dir:_ =
             sctx
             standalone_or_root
             ~source_files
+            ~include_subdirs
             ~lib_config
             ~obj_dirs
             ~cctxs
@@ -844,8 +849,16 @@ let gen_rules_regular_directory (sctx : Super_context.t Memo.t) ~src_dir ~compon
                (Gen_rules.Rules.create (gen_rules_source_only sctx ~dir source_dir)))
         | Generated | Is_component_of_a_group_but_not_the_root _ ->
           Memo.return (make_rules Gen_rules.Rules.empty)
-        | Standalone (source_dir, _) | Group_root { source_dir; _ } ->
-          let+ rules = gen_rules_standalone_or_root sctx ~dir ~source_dir in
+        | Standalone _ ->
+          let+ rules = gen_rules_standalone_or_root sctx ~dir ~include_subdirs:No in
+          make_rules rules
+        | Group_root { qualification = _, qualification; _ } ->
+          let+ rules =
+            gen_rules_standalone_or_root
+              sctx
+              ~dir
+              ~include_subdirs:(Include qualification)
+          in
           make_rules rules
       in
       let opam_rules = Opam_create.gen_rules sctx ~dir ~nearest_src_dir ~src_dir in

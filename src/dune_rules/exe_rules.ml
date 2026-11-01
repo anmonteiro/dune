@@ -37,7 +37,14 @@ let rule_targets ~dir ~source_files ~lib_config ~dialects ~project (exes : Execu
   let obj_dir = Executables.obj_dir exes ~dir in
   let modules =
     List.fold_left source_files ~init:Target_mask.empty ~f:(fun acc (dir, _) ->
-      Target_mask.union acc (Module_compilation.rule_targets ~dir ~obj_dir))
+      let generated_sources =
+        Target_mask.file_extensions
+          ~dir
+          (Filename.Extension.Set.singleton Filename.Extension.ml_gen)
+      in
+      Target_mask.union
+        acc
+        (Module_compilation.rule_targets ~dir ~obj_dir ~generated_sources))
   in
   let wasm =
     Nonempty_list.to_list exes.names

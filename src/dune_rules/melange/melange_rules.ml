@@ -559,8 +559,13 @@ let melange_compile_flags ~sctx ~dir (mel : Melange_stanzas.Emit.t) =
 let emit_rule_targets ~dir (mel : Melange_stanzas.Emit.t) =
   let exe_target = Melange_stanzas.Emit.exe_target mel in
   let obj_dir = Obj_dir.make_for_exe_target ~dir exe_target in
+  let generated_sources =
+    Target_mask.file_extensions
+      ~dir
+      (Filename.Extension.Set.singleton Filename.Extension.ml_gen)
+  in
   List.fold_left
-    [ Module_compilation.rule_targets ~dir ~obj_dir
+    [ Module_compilation.rule_targets ~dir ~obj_dir ~generated_sources
     ; Target_mask.subtree (Path.Build.relative dir Melange.Source.dir)
     ; Target_mask.subtree (Melange_stanzas.Emit.target_dir ~dir mel)
     ; Pp_spec_rules.lint_rule_targets ~dir mel.lint

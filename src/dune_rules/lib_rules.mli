@@ -3,6 +3,7 @@ open Import
 val rule_targets
   :  dir:Path.Build.t
   -> source_files:(Path.Build.t * Filename.Array.Set.t) list
+  -> include_subdirs:Include_subdirs.t
   -> lib_config:Lib_config.t
   -> dialects:Dialect.DB.t
   -> Library.t
