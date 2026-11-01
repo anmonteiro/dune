@@ -7858,6 +7858,100 @@ let%expect_test "preprocessing output families preserve filename transformations
     |}]
 ;;
 
+let%expect_test "preprocessing families retain exceptional source inventories" =
+  let module Dialect = Dune_lang.Dialect in
+  let dir = path "default/pp-inventory" in
+  let relative name = Path.Build.relative dir name in
+  let dialect =
+    let open Dune_lang in
+    Parser.parse_string
+      ~fname:"dune-project"
+      ~mode:Parser.Mode.Single
+      {|((name custom)
+         (implementation (extension cppo.ml) (preprocess (progn)))
+         (interface (extension "x[ab].mli") (preprocess (progn))))|}
+    |> Decoder.parse
+         (Syntax.set Stanza.syntax (Active (3, 25)) (Decoder.enter Dialect.decode))
+         Univ_map.empty
+  in
+  let dialects = Dialect.DB.add Dialect.DB.empty ~loc:Loc.none Dialect.ocaml in
+  let dialects = Dialect.DB.add dialects ~loc:Loc.none dialect in
+  let physical =
+    List.map
+      [ "x.ml"
+      ; "x.mli"
+      ; "x.cppo.ml"
+      ; "x.x[ab].mli"
+      ; ".ml"
+      ; ".mli"
+      ; ".cppo.ml"
+      ; ".x[ab].mli"
+      ]
+      ~f:relative
+  in
+  let generated =
+    List.map
+      [ "selected/deep/chosen.ml"; "selected/deep/chosen.cppo.ml"; "ctypes_generated.ml" ]
+      ~f:relative
+  in
+  let dot_leading =
+    List.filter physical ~f:(fun path ->
+      String.starts_with (Path.Build.basename path |> Filename.to_string) ~prefix:".")
+  in
+  let check label config =
+    let preprocess = Dune_lang.Module_reference.Per_item.for_all config in
+    let exact paths =
+      Dune_rules.Pp_spec_rules.rule_targets ~dialects ~preprocess paths
+      |> Target_mask.exact_file_names
+      |> Option.value_exn
+      |> Path.Build.Map.to_list
+      |> List.concat_map ~f:(fun (dir, names) ->
+        Filename.Set.to_list_map names ~f:(Path.Build.relative_fname dir))
+    in
+    let families =
+      Dune_rules.Pp_spec_rules.rule_target_families
+        ~dir
+        ~dialects
+        ~preprocess
+        ~empty_intf:false
+    in
+    let retained = generated @ dot_leading in
+    let reduced =
+      Target_mask.union families (Target_mask.files (generated @ exact retained))
+    in
+    let covered mask paths = List.for_all paths ~f:(Target_mask.mem_file mask) in
+    printfn
+      "%s preserves every exact output: %b"
+      label
+      (covered reduced (generated @ exact (generated @ physical)));
+    printfn
+      "%s needs dot-leading exceptions: %b"
+      label
+      (not (covered families (exact dot_leading)));
+    printfn
+      "%s needs nested generated exceptions: %b"
+      label
+      (not (covered families (exact generated)));
+    printfn
+      "%s keeps literal extension characters: %b"
+      label
+      (not (Target_mask.mem_file reduced (relative "x.xa.mli.mli")))
+  in
+  check "none" Dune_lang.Preprocess.No_preprocessing;
+  check "action" (Dune_lang.Preprocess.Action (Loc.none, Dune_lang.Action.Progn []));
+  [%expect
+    {|
+    none preserves every exact output: true
+    none needs dot-leading exceptions: true
+    none needs nested generated exceptions: true
+    none keeps literal extension characters: true
+    action preserves every exact output: true
+    action needs dot-leading exceptions: true
+    action needs nested generated exceptions: true
+    action keeps literal extension characters: true
+    |}]
+;;
+
 let%expect_test "literal extensions in predicate intersections" =
   let dir = path "default/literal-extension-intersection" in
   let extensions =
