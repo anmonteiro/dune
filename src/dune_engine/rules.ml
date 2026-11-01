@@ -2403,19 +2403,12 @@ let prefix_rules prefix ~f =
   let open Memo.O in
   let* res, rules = collect f in
   let rules =
-    Path.Build.Map.map rules ~f:(fun dir_rules ->
-      Id.Map.to_list (dir_rules : Dir_rules.Nonempty.t :> Dir_rules.t)
-      |> Id.Map.of_list_map_exn ~f:(fun (id, data) ->
-        match (data : Dir_rules.data) with
-        | Alias _ -> id, data
-        | Rule rule ->
-          let action =
-            let open Action_builder.O in
-            prefix >>> rule.action
-          in
-          Id.gen (), Dir_rules.Rule (Rule.set_action rule action))
-      |> Dir_rules.Nonempty.create
-      |> Option.value_exn)
+    map_rules rules ~f:(fun rule ->
+      let action =
+        let open Action_builder.O in
+        prefix >>> rule.action
+      in
+      Rule.set_action rule action)
   in
   let+ () = produce rules in
   res

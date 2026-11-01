@@ -66,8 +66,7 @@ let%expect_test "created generated rules share dependency-tracked generation" =
     let rules =
       match generated with
       | Gen_rules.Rules { rules; _ } -> rules
-      | Unknown_context ->
-        Code_error.raise "Expected a normal generated-rules result" []
+      | Unknown_context -> Code_error.raise "Expected a normal generated-rules result" []
     in
     ignore (run rules : Rules.t);
     printfn "%s: calls=%d" label !calls
@@ -99,9 +98,7 @@ let%expect_test "empty generated rules retain subdirectory declarations" =
   let build_dir_only_sub_dirs =
     Build_config.Gen_rules.Build_only_sub_dirs.singleton ~dir Subdir_set.empty
   in
-  let declared =
-    Gen_rules.make ~build_dir_only_sub_dirs (Memo.return Rules.empty)
-  in
+  let declared = Gen_rules.make ~build_dir_only_sub_dirs (Memo.return Rules.empty) in
   List.iter
     [ "empty left", Gen_rules.no_rules, declared
     ; "empty right", declared, Gen_rules.no_rules

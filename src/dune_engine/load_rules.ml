@@ -1039,7 +1039,9 @@ end = struct
     lazy
       (Dir_set.union
          (Lazy.force inherited_descendants)
-         (Build_only_sub_dirs.find declarations dir |> Subdir_set.to_dir_set))
+         (Path.Build.Map.find declarations dir
+          |> Option.value ~default:Subdir_set.empty
+          |> Subdir_set.to_dir_set))
   ;;
 
   module Normal = struct
@@ -1597,7 +1599,8 @@ end = struct
     in
     let local_subdirs =
       local_subdirs_to_keep
-        (Build_only_sub_dirs.find normal.build_dir_only_sub_dirs dir)
+        (Path.Build.Map.find normal.build_dir_only_sub_dirs dir
+         |> Option.value ~default:Subdir_set.empty)
         ~source_dirs
     in
     let+ partial_directory_is_visible =
@@ -1646,7 +1649,8 @@ end = struct
                 (Initial_directory.Under_directory_target { directory_target_ancestor })
             | Normal normal ->
               let build_dir_only_sub_dirs =
-                Build_only_sub_dirs.find normal.build_dir_only_sub_dirs dir
+                Path.Build.Map.find normal.build_dir_only_sub_dirs dir
+                |> Option.value ~default:Subdir_set.empty
               in
               check_directory_targets
                 ~dir
@@ -1752,7 +1756,9 @@ end = struct
       =
       normal
     in
-    let build_dir_only_sub_dirs = Build_only_sub_dirs.find declared_subdirs dir in
+    let build_dir_only_sub_dirs =
+      Path.Build.Map.find declared_subdirs dir |> Option.value ~default:Subdir_set.empty
+    in
     let* source_dirs, collected, rules_here =
       compile_directory_rules
         build_dir

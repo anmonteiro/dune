@@ -56,11 +56,9 @@ let%expect_test "rule lookup, invalidation and generator directory bounds" =
                     Rules.Produce.rule rule)
                 else Rules.Produce.rule rule))
         in
-        Memo.return
-          (Build_config.Gen_rules.Gen_rules_result.rules_here
-             (Build_config.Gen_rules.Rules.create rules)))
+        Memo.return (Build_config.Gen_rules.make rules))
       else if not (Path.Build.equal dir context.build_dir)
-      then Memo.return Build_config.Gen_rules.Gen_rules_result.no_rules
+      then Memo.return Build_config.Gen_rules.no_rules
       else (
         incr generator_runs;
         let targets =
@@ -70,9 +68,7 @@ let%expect_test "rule lookup, invalidation and generator directory bounds" =
         let rule =
           Rule.make ~targets (Action_builder.return (Action.Full.make Action.empty))
         in
-        Memo.return
-          (Build_config.Gen_rules.Gen_rules_result.rules_here
-             (Build_config.Gen_rules.Rules.create (Memo.return (Rules.of_rules [ rule ])))))
+        Memo.return (Build_config.Gen_rules.make (Memo.return (Rules.of_rules [ rule ]))))
     ;;
   end
   in
@@ -92,7 +88,7 @@ let%expect_test "rule lookup, invalidation and generator directory bounds" =
     ~promote_source:(fun ~chmod:_ ~delete_dst_if_it_is_a_directory:_ ~src:_ ~dst:_ ->
       Fiber.return ())
     ~sandboxing_preference:[]
-    ~rule_generator:(module Rule_generator)
+    ~rule_generator:Rule_generator.gen_rules
     ~implicit_default_alias:(fun _ -> Memo.return None)
     ~execution_parameters:(fun _ ~dir:_ ->
       Memo.return Execution_parameters.builtin_default)

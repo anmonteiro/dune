@@ -878,51 +878,51 @@ and build_rule_target path rule =
              Digest.Feed.string hasher (Path.Local.to_string path)))
       contents
   in
-    let* { facts = _; targets } =
-      Memo.push_stack_frame
-        (fun () -> execute_rule rule)
-        ~human_readable_description:(fun () ->
-          Pp.text (Path.to_string_maybe_quoted (Path.build path)))
-    in
-    (match Targets.Produced.find_any targets path with
-     | Some (Left digest) -> Memo.return (digest, File_target)
-     | Some (Right contents) ->
-       let digest = directory_digest contents in
-       Memo.return (digest, Dir_target { targets })
-     | None ->
-       (* CR-someday amokhov: The most important reason we end up here is
+  let* { facts = _; targets } =
+    Memo.push_stack_frame
+      (fun () -> execute_rule rule)
+      ~human_readable_description:(fun () ->
+        Pp.text (Path.to_string_maybe_quoted (Path.build path)))
+  in
+  match Targets.Produced.find_any targets path with
+  | Some (Left digest) -> Memo.return (digest, File_target)
+  | Some (Right contents) ->
+    let digest = directory_digest contents in
+    Memo.return (digest, Dir_target { targets })
+  | None ->
+    (* CR-someday amokhov: The most important reason we end up here is
         [No_such_file]. I think some of the outcomes above are impossible
         but some others will benefit from a better error. To be refined. *)
-       let target =
-         Path.Build.drop_build_context_exn path |> Path.Source.to_string_maybe_quoted
-       in
-       let matching_dirs =
-         Filename.Set.to_list_map rule.targets.dirs ~f:(fun dir ->
-           (* CR-someday rleshchinskiy: This test can probably be simplified. *)
-           let dir = Path.Build.relative_fname rule.targets.root dir in
-           match Path.Build.is_descendant path ~of_:dir with
-           | true -> [ dir ]
-           | false -> [])
-         |> List.concat
-       in
-       let matching_target =
-         match matching_dirs with
-         | [ dir ] ->
-           Path.Build.drop_build_context_exn dir |> Path.Source.to_string_maybe_quoted
-         | [] | _ :: _ ->
-           Code_error.raise
-             "Multiple matching directory targets"
-             [ "targets", Targets.Validated.to_dyn rule.targets ]
-       in
-       User_error.raise
-         ~loc:(Rule.loc rule)
-         ~needs_stack_trace:true
-         [ Pp.textf
-             "This rule defines a directory target %S that matches the requested path %S \
-              but the rule's action didn't produce it"
-             matching_target
-             target
-         ])
+    let target =
+      Path.Build.drop_build_context_exn path |> Path.Source.to_string_maybe_quoted
+    in
+    let matching_dirs =
+      Filename.Set.to_list_map rule.targets.dirs ~f:(fun dir ->
+        (* CR-someday rleshchinskiy: This test can probably be simplified. *)
+        let dir = Path.Build.relative_fname rule.targets.root dir in
+        match Path.Build.is_descendant path ~of_:dir with
+        | true -> [ dir ]
+        | false -> [])
+      |> List.concat
+    in
+    let matching_target =
+      match matching_dirs with
+      | [ dir ] ->
+        Path.Build.drop_build_context_exn dir |> Path.Source.to_string_maybe_quoted
+      | [] | _ :: _ ->
+        Code_error.raise
+          "Multiple matching directory targets"
+          [ "targets", Targets.Validated.to_dyn rule.targets ]
+    in
+    User_error.raise
+      ~loc:(Rule.loc rule)
+      ~needs_stack_trace:true
+      [ Pp.textf
+          "This rule defines a directory target %S that matches the requested path %S \
+           but the rule's action didn't produce it"
+          matching_target
+          target
+      ]
 
 and dep_on_anonymous_action anon =
   Action_builder.record_success
@@ -1103,7 +1103,7 @@ let file_exists fn =
            |> Option.value_exn
            |> Path.Build.relative_fname targets.root
          in
-          let+ path_map = build_directory_targets (Path.build directory_target_ancestor) in
+         let+ path_map = build_directory_targets (Path.build directory_target_ancestor) in
          (* Inside a directory target, directory names count as existing files too. *)
          Targets.Produced.mem_any path_map path))
 ;;
