@@ -7903,10 +7903,10 @@ let%expect_test "target mask unions distinguish escaped literals from wildcards"
   [%expect
     {|
     literal matches: false; wildcard matches: true
-    predicates compare equal: true
+    predicates compare equal: false
     not literal matches: true
     not wildcard matches: false
-    union matches: false
+    union matches: true
     reverse union matches: true
     |}]
 ;;
