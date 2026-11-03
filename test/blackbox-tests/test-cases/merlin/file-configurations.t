@@ -11,7 +11,7 @@ configurations. File keeps returning the legacy list of directives.
   $ export BUILD_PATH_PREFIX_MAP="/OCAMLC_WHERE=$ocamlc_where:$BUILD_PATH_PREFIX_MAP"
 
 The complete response includes the compilation mode, default flag, source kind,
-and Merlin directives, using the same schema as Merlin's decoder.
+counterpart and Merlin directives, using the same schema as Merlin's decoder.
 
   $ query_ocaml_merlin_configurations_pp example.ml | tee implementation.out
   (CONFIGURATIONS
@@ -19,6 +19,7 @@ and Merlin directives, using the same schema as Merlin's decoder.
      (MODE ocaml)
      (DEFAULT true)
      (KIND implementation)
+     (COUNTERPART $TESTCASE_ROOT/example.mli)
      (DIRECTIVES
       ((INDEX $TESTCASE_ROOT/_build/default/.example.objs/cctx.ocaml-index)
        (STDLIB /OCAMLC_WHERE)
@@ -35,9 +36,10 @@ Absolute source paths and build paths select the same configuration.
   >   query_ocaml_merlin_configurations_pp "$file" | diff implementation.out -
   > done
 
-The interface has the same directives but its own source kind.
+The interface has the same directives but its own source kind and counterpart.
 
-  $ sed 's/KIND implementation/KIND interface/' implementation.out > interface.out
+  $ sed -e 's/KIND implementation/KIND interface/' \
+  >   -e 's#example.mli)#example.ml)#' implementation.out > interface.out
   $ query_ocaml_merlin_configurations_pp example.mli | diff interface.out -
 
 The legacy directives are unchanged. Wrapping them in the new envelope gives
@@ -46,7 +48,7 @@ exactly the same canonical S-expression as the plural request.
   $ query_ocaml_merlin_pp example.ml > directives
   $ {
   >   printf '%s\n' '(CONFIGURATIONS ((CONFIG (MODE ocaml) (DEFAULT true)'
-  >   printf '%s\n' '(KIND implementation) (DIRECTIVES'
+  >   printf '(KIND implementation) (COUNTERPART "%s/example.mli") (DIRECTIVES\n' "$PWD"
   >   cat directives
   >   printf '))))\n'
   > } > expected.sexp

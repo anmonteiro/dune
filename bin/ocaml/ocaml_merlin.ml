@@ -58,7 +58,9 @@ end = struct
       Sexp.(List [ Atom "CONFIGURATIONS-ERROR"; Atom msg ])
     ;;
 
-    let file_configuration { Merlin.Processed.mode; is_default; kind; directives; _ } =
+    let file_configuration
+          { Merlin.Processed.mode; is_default; kind; counterpart; directives }
+      =
       let mode =
         match mode with
         | Compilation_mode.Ocaml -> "ocaml"
@@ -67,14 +69,22 @@ end = struct
       let kind =
         Root.Ocaml.Ml_kind.choose kind ~impl:"implementation" ~intf:"interface"
       in
-      Sexp.(
-        List
-          [ Atom "CONFIG"
-          ; List [ Atom "MODE"; Atom mode ]
-          ; List [ Atom "DEFAULT"; Atom (Bool.to_string is_default) ]
-          ; List [ Atom "KIND"; Atom kind ]
-          ; List [ Atom "DIRECTIVES"; directives ]
-          ])
+      let open Sexp in
+      let counterpart =
+        match counterpart with
+        | None -> []
+        | Some path ->
+          [ List [ Atom "COUNTERPART"; Atom (Path.to_absolute_filename path) ] ]
+      in
+      let fields =
+        [ List [ Atom "MODE"; Atom mode ]
+        ; List [ Atom "DEFAULT"; Atom (Bool.to_string is_default) ]
+        ; List [ Atom "KIND"; Atom kind ]
+        ]
+        @ counterpart
+        @ [ List [ Atom "DIRECTIVES"; directives ] ]
+      in
+      List (Atom "CONFIG" :: fields)
     ;;
 
     let make_configurations configurations =
