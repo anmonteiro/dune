@@ -608,6 +608,61 @@ The old `File` query still returns the default OCaml Merlin configuration.
   $ query_ocaml_merlin_pp "$PWD/mixed/foo.ml" --root mixed | grep -E 'MELC_STDLIB|\.objs/melange|pp_melange'
   [1]
 
+The plural request returns both modes, with the default first. Each entry has
+the directives of its own compilation mode.
+
+  $ query_ocaml_merlin_configurations_pp "$PWD/mixed/foo.ml" --root mixed \
+  >   | grep -E 'CONFIGURATIONS|MODE|DEFAULT|KIND|STDLIB|\(B .*\.mixed\.objs|pp_(ocaml|melange)' \
+  >   | sed -E 's#-pp "[^"]*/sh #-pp "$SHELL #'
+  (CONFIGURATIONS
+     (MODE ocaml)
+     (DEFAULT true)
+     (KIND implementation)
+       (STDLIB /OCAMLC_WHERE)
+       (B $TESTCASE_ROOT/mixed/_build/default/.mixed.objs/byte)
+        (-pp "$SHELL ./pp_ocaml.sh"))
+     (MODE melange)
+     (DEFAULT false)
+     (KIND implementation)
+       (STDLIB /MELC_STDLIB/melange)
+       (B $TESTCASE_ROOT/mixed/_build/default/.mixed.objs/melange)
+        (-pp "$SHELL ./pp_melange.sh"))
+
+Only the first matching stanza contributes configurations.
+
+  $ cp mixed/_build/default/.merlin-conf/lib-mixed \
+  >   mixed/_build/default/.merlin-conf/lib-000-mixed-copy
+  $ query_ocaml_merlin_configurations_pp "$PWD/mixed/foo.ml" --root mixed \
+  >   | grep -Eo '\(MODE (ocaml|melange)\)'
+  (MODE ocaml)
+  (MODE melange)
+  $ rm mixed/_build/default/.merlin-conf/lib-000-mixed-copy
+
+Conditional sources only return their applicable mode, even when it is not
+the stanza's default. Melange-only libraries have a default Melange mode.
+
+  $ for file in platform.ml platform.melange.ml iface.melange.mli melange_only.ml; do
+  >   printf '%s:\n' "$file"
+  >   query_ocaml_merlin_configurations_pp "$PWD/mixed/$file" --root mixed \
+  >     | grep -E 'MODE|DEFAULT|KIND'
+  > done
+  platform.ml:
+     (MODE ocaml)
+     (DEFAULT true)
+     (KIND implementation)
+  platform.melange.ml:
+     (MODE melange)
+     (DEFAULT false)
+     (KIND implementation)
+  iface.melange.mli:
+     (MODE melange)
+     (DEFAULT false)
+     (KIND interface)
+  melange_only.ml:
+     (MODE melange)
+     (DEFAULT true)
+     (KIND implementation)
+
 Exact conditional source matches take precedence over another configuration's
 fallback lookup by filename without extension.
 

@@ -60,6 +60,17 @@ Request config for file in alt context using --context
    (B $TESTCASE_ROOT/_build/alt/.bar.objs/byte)
    (UNIT_NAME bar))
 
+The plural request uses the same explicitly selected build context.
+
+  $ query_ocaml_merlin_configurations_pp "$FILE2" --context alt \
+  >   | grep -E 'MODE|DEFAULT|KIND|\(B .*\.bar\.objs'
+     (MODE ocaml)
+     (DEFAULT true)
+     (KIND implementation)
+       (B $TESTCASE_ROOT/_build/alt/.bar.objs/byte)
+  $ query_ocaml_merlin_configurations_pp "$FILE2"
+  (CONFIGURATIONS-ERROR "No config found for file bar.ml. Try calling 'dune build'.")
+
 Request config for default context without using --context
 
   $ query_ocaml_merlin_pp "$FILE1" | grep -i "$lib1" | sed 's/^[^:]*:[^:]*://'
