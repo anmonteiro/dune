@@ -663,6 +663,32 @@ the stanza's default. Melange-only libraries have a default Melange mode.
      (DEFAULT true)
      (KIND implementation)
 
+Source metadata is selected independently for every applicable mode.
+
+  $ query_ocaml_merlin_configurations_pp "$PWD/mixed/iface.ml" --root mixed \
+  >   | grep -E 'MODE|KIND|COUNTERPART'
+     (MODE ocaml)
+     (KIND implementation)
+     (COUNTERPART $TESTCASE_ROOT/mixed/iface.mli)
+     (MODE melange)
+     (KIND implementation)
+     (COUNTERPART $TESTCASE_ROOT/mixed/iface.melange.mli)
+
+Interface queries report the authored implementation counterpart.
+
+  $ query_ocaml_merlin_configurations_pp "$PWD/mixed/iface.melange.mli" \
+  >   --root mixed | grep -E 'MODE|KIND|COUNTERPART'
+     (MODE melange)
+     (KIND interface)
+     (COUNTERPART $TESTCASE_ROOT/mixed/iface.ml)
+
+The counterpart field is absent when that mode has no opposite-kind source.
+
+  $ query_ocaml_merlin_configurations_pp "$PWD/mixed/melange_only.ml" \
+  >   --root mixed | grep -E 'MODE|KIND|COUNTERPART'
+     (MODE melange)
+     (KIND implementation)
+
 Exact conditional source matches take precedence over another configuration's
 fallback lookup by filename without extension.
 

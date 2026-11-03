@@ -616,6 +616,10 @@ The list is nonempty, with OCaml before Melange when both apply. ``DEFAULT``
 identifies the stanza's default mode, which need not apply to a conditional
 source file. Clients should ignore unknown fields in a ``CONFIG`` entry.
 
+An optional ``COUNTERPART`` field contains the absolute path of the authored
+source of the opposite kind in that mode. It is absent when no such source
+exists.
+
 A failed plural lookup returns ``(CONFIGURATIONS-ERROR <message>)``. Legacy
 ``File`` errors remain ``((ERROR <message>))``. Both request forms can be used on
 the same connection; ``Halt`` or end of input ends the session. Malformed
