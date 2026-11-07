@@ -79,12 +79,17 @@ let%expect_test "directory metrics count directory scans" =
   let second = Path.relative dir "second" in
   Path.mkdir_p first;
   Path.mkdir_p second;
+  Path.mkdir_p (Path.relative second "subdir");
+  Io.write_file_exn (Path.relative second "file") "contents";
   let count_before = Counter.read Metrics.Directory_read.count in
   let time_before = Counter.Timer.read Metrics.Directory_read.time in
   ignore (Readdir.read_directory (Path.to_string first) |> ok_exn : Filename.t list);
-  ignore
-    (Readdir.read_directory_with_kinds (Path.to_string second) |> ok_exn
-     : (Filename.t * Unix.file_kind) list);
+  let entries = Readdir.read_directory_with_kinds (Path.to_string second) |> ok_exn in
+  entries
+  |> List.sort ~compare:(fun (a, _) (b, _) -> Filename.compare a b)
+  |> Dyn.list (Dyn.pair Filename.to_dyn File_kind.to_dyn)
+  |> Dune_tests_common.print_dyn;
+  [%expect {| [ ("file", S_REG); ("subdir", S_DIR) ] |}];
   Dune_tests_common.print_dyn
     (Dyn.record
        [ "count", Dyn.int (Counter.read Metrics.Directory_read.count - count_before)
