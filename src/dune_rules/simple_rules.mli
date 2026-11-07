@@ -17,6 +17,9 @@ module Alias_rules : sig
     -> unit Memo.t
 end
 
+val rule_targets : dir:Path.Build.t -> Rule_conf.t -> Target_mask.t
+val copy_files_targets : dir:Path.Build.t -> Copy_files.t -> Target_mask.t
+
 (** Interpret a [(rule ...)] stanza and return the targets it produces, if any. *)
 val user_rule
   :  Super_context.t

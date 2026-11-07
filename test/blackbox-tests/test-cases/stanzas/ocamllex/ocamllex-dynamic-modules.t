@@ -85,3 +85,34 @@ Flags support the ordered set language and variable expansion. In particular,
   $ dune trace cat \
   >   | jq_dune -c 'processesBrief | select(.prog == "ocamllex") | .args'
   ["-ml","-q","-o","mod.ml","mod.mll"]
+
+Dynamic module names can refer to copied inputs.
+
+  $ mkdir -p copied-input/inputs
+  $ make_trivial_ocamllex copied-input/inputs/lexer.mll
+  $ cat >copied-input/dune <<EOF
+  > (copy_files inputs/*.mll)
+  > (rule
+  >  (target parsers)
+  >  (action (write-file %{target} lexer)))
+  > (ocamllex (modules (:include parsers)))
+  > (library (name copied_input) (modes byte))
+  > EOF
+  $ cat >copied-input/copied_input.ml <<EOF
+  > let lex = Lexer.lex
+  > EOF
+  $ dune build copied-input/copied_input.cma copied-input/lexer.ml
+
+Explicit module names can refer to inputs from rules with inferred targets.
+
+  $ mkdir -p inferred-input/inputs
+  $ make_trivial_ocamllex inferred-input/inputs/lexer.mll
+  $ cat >inferred-input/dune <<EOF
+  > (rule (copy inputs/lexer.mll lexer.mll))
+  > (ocamllex lexer)
+  > (library (name inferred_input) (modes byte))
+  > EOF
+  $ cat >inferred-input/inferred_input.ml <<EOF
+  > let lex = Lexer.lex
+  > EOF
+  $ dune build inferred-input/inferred_input.cma inferred-input/lexer.ml

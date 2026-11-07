@@ -14,4 +14,5 @@ val empty : t
 val universal : t
 val of_string_exn : Loc.t -> string -> t
 val of_string : string -> t
+val escape : string -> string
 val matching_extensions : Filename.Extension.t list -> t

@@ -18,6 +18,12 @@ rule targeting the same filename.
   Error: Multiple rules generated for _build/default/mylib.cma:
   - dune:1
   - file present in source tree
+  -> required by { dir = In_build_dir "default"
+     ; predicate = True
+     ; only_generated_files = true
+     }
+  -> required by alias all
+  -> required by alias default
   Hint: rm -f mylib.cma
   [1]
   $ rm mylib.cma
@@ -26,6 +32,12 @@ rule targeting the same filename.
   Error: Multiple rules generated for _build/default/foo.xyz:
   - dune:4
   - file present in source tree
+  -> required by { dir = In_build_dir "default"
+     ; predicate = True
+     ; only_generated_files = true
+     }
+  -> required by alias all
+  -> required by alias default
   Hint: rm -f foo.xyz
   [1]
 

@@ -214,3 +214,29 @@ From dune 3.25 onward, cram aliases keep the full test name:
   $ dune build @mytest.t
 
   $ dune test mytest.t
+
+Before dune 2.0, alias names may be dots. They belong to their stanza's
+directory, rather than naming its parent or the directory itself.
+
+  $ mkdir legacy
+  $ cd legacy
+  $ cat > dune-project << EOF
+  > (lang dune 1.0)
+  > EOF
+  $ cat > dune << EOF
+  > (alias (name .))
+  > (alias (name ..))
+  > (alias (name ordinary))
+  > EOF
+  $ dune show aliases --root .
+  .
+  ..
+  all
+  default
+  ocaml-index
+  ordinary
+  pkg-install
+  revdep
+  revdep-check
+  revdep-install
+  revdep-runtest

@@ -1,6 +1,6 @@
 virtual libraries may not implement their virtual modules
 
-  $ dune build
+  $ dune build .foo.objs/byte/foo.cmi
   File "dune", line 3, characters 18-21:
   3 |  (virtual_modules foo bar))
                         ^^^

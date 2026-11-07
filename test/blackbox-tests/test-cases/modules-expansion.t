@@ -5,9 +5,8 @@ Begin by setting up a project and check the versioning guards.
 
   $ make_dune_project 3.11
 
-As we will see later in the test, it is imperative that build dependencies
-needed to evaluate the `(modules)` field not live in the same directory as the
-containing stanza. We will put them in a subdirectory:
+First, put the build dependency needed to evaluate the `(modules)` field in a
+subdirectory:
 
   $ mkdir -p gen
 
@@ -122,6 +121,8 @@ We can also use special forms such as `%{read-lines:}`:
 
 Interaction with `(include_subdirs)` when the dependencies are in the subtree:
 
+  $ make_dune_project 3.25
+
   $ cat >dune <<EOF
   > (include_subdirs unqualified)
   > (library
@@ -131,13 +132,8 @@ Interaction with `(include_subdirs)` when the dependencies are in the subtree:
   > EOF
 
   $ dune build lib.cma
-  Error: Dependency cycle between:
-     (modules) field at dune:2
-  -> %{read-lines:gen/lst} at dune:5
-  -> (modules) field at dune:2
-  [1]
 
-Let's move the gen subdirectory out of the hierarchy:
+Dependencies outside the hierarchy continue to work:
 
   $ rm dune
   $ mkdir -p lib/sub
@@ -156,9 +152,7 @@ Let's move the gen subdirectory out of the hierarchy:
 
   $ rm -rf lib
 
-Next, we illustrate the issue mentioned above: the build dependencies must not
-live in the same directory as the containing stanza, otherwise a cycle
-appears. We need to handle this cycle gracefully and report it to the user.
+The dependency can also live in the same directory as the containing stanza.
 
   $ cat >dune <<EOF
   > (rule (with-stdout-to lst (echo "mod")))
@@ -166,11 +160,7 @@ appears. We need to handle this cycle gracefully and report it to the user.
   > EOF
 
   $ dune exec ./mod.exe
-  Error: Dependency cycle between:
-     (modules) field at dune:2
-  -> (:include _build/default/lst) at dune:2
-  -> (modules) field at dune:2
-  [1]
+  Hello, Mod!
 
 Let's do one example with a generated source file:
 

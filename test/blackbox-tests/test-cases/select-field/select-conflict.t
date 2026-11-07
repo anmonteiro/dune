@@ -25,5 +25,7 @@ a conflicting rule
   Error: Multiple rules generated for _build/default/lexer.ml:
   - dune:1
   - dune:5
+  -> required by transitive deps of foo__Lexer.impl in _build/default
+  -> required by _build/default/.foo.objs/byte/foo__Lexer.cmo
+  -> required by _build/default/foo.cma
   [1]
-

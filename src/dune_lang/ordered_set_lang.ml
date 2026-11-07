@@ -124,6 +124,17 @@ let decode =
   { ast; loc = Some loc; context }
 ;;
 
+let has_standard t =
+  let rec loop : type a b. (a, b) Ast.t -> bool = function
+    | Ast.Standard -> true
+    | Ast.Element _ -> false
+    | Ast.Union l -> List.exists ~f:loop l
+    | Ast.Diff (l, r) -> loop l || loop r
+    | Ast.Include _ -> false
+  in
+  loop t.ast
+;;
+
 let is_standard t =
   match (t.ast : ast_expanded) with
   | Ast.Standard -> true
@@ -323,17 +334,7 @@ module Unexpanded = struct
       (Option.forall ~f:is_expanded)
   ;;
 
-  let has_standard t =
-    let rec loop ast =
-      match ast with
-      | Ast.Standard -> true
-      | Ast.Element _ -> false
-      | Ast.Union l -> List.exists ~f:loop l
-      | Ast.Diff (l, r) -> loop l || loop r
-      | Ast.Include _ -> false
-    in
-    loop t.ast
-  ;;
+  let has_standard = has_standard
 
   type position =
     | Pos

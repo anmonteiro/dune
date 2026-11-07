@@ -7,10 +7,15 @@ stanza.
   $ mkdir -p gen
 
 We define rules that create files (in the syntax expected by `modules`) that
-each contain a single module name:
+each contain a single module name. Configuration files must already be available
+to this generation-time action, without explicit configuration dependencies:
 
-  $ cat >gen/dune <<EOF
-  > (rule (with-stdout-to lst (echo my_parser)))
+  $ cat >gen/dune <<'EOF'
+  > (rule
+  >  (progn
+  >   (bash "test -s \"$INSIDE_DUNE/.dune/configurator\"")
+  >   (bash "test -s \"$INSIDE_DUNE/.dune/configurator.v2\"")
+  >   (with-stdout-to lst (echo my_parser))))
   > EOF
 
 `.mly` unit present in the working tree. `lib.ml` references it

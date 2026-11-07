@@ -30,6 +30,14 @@ val infer_interface : Compilation_context.t -> Module.t -> unit Memo.t
 
 val build_all : Compilation_context.t -> unit Memo.t
 
+val rule_targets
+  :  dir:Path.Build.t
+  -> obj_dir:Path.Build.t Obj_dir.t
+  -> generated_sources:Target_mask.t
+  -> Target_mask.t
+
+val empty_intf_path : Path.t -> Path.t
+
 val with_empty_intf
   :  sctx:Super_context.t
   -> dir:Path.Build.t

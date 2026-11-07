@@ -29,6 +29,24 @@ val extraction_wrapper_name : Rocq_stanza.Extraction.t -> string
 
 (** ** Rules for Rocq stanzas *)
 
+val theory_rule_targets
+  :  dir:Path.Build.t
+  -> source_files:(Path.Build.t * Filename.Array.Set.t) list
+  -> Rocq_stanza.Theory.t
+  -> Target_mask.t
+
+val extraction_rule_targets
+  :  dir:Path.Build.t
+  -> source_files:(Path.Build.t * Filename.Array.Set.t) list
+  -> Rocq_stanza.Extraction.t
+  -> Target_mask.t
+
+val rocqpp_rule_targets
+  :  dir:Path.Build.t
+  -> source_files:(Path.Build.t * Filename.Array.Set.t) list
+  -> Rocq_stanza.Rocqpp.t
+  -> Target_mask.t
+
 (** [rocq.theory] stanza rules *)
 val setup_theory_rules
   :  sctx:Super_context.t

@@ -16,6 +16,12 @@ val test : t -> string -> bool
 (** Returns textual representation of a glob. *)
 val to_string : t -> string
 
+(** Return the exact matched string when the glob contains no wildcard. *)
+val as_literal : t -> string option
+
+(** A literal suffix shared by every match, or the empty string when unknown. *)
+val literal_suffix : t -> string
+
 (** Converts string to glob. Throws [Invalid_argument] exception if string is
     not a valid glob. *)
 val of_string : string -> t
@@ -25,6 +31,9 @@ val to_dyn : t -> Dyn.t
 val of_string_exn : Loc.t -> string -> t
 val compare : t -> t -> Ordering.t
 val hash : t -> int
+
+(** Escape text so it is interpreted literally inside a glob. *)
+val escape : string -> string
 
 (** [matching_extensions xs] return a glob that will match any of the dot-prefixed
     extensions in [xs]. *)
