@@ -3223,15 +3223,20 @@ let%expect_test "completed file views remain local to each Memo run" =
          let open Memo.O in
          let+ enabled = Memo.Var.read cleanup_context_enabled in
          let contexts =
-           [ context, Build_config.Context_type.Empty
-           ; selection_context, Build_config.Context_type.With_sources
-           ; inherited_context, Build_config.Context_type.Empty
-           ; coverage_context, Build_config.Context_type.Empty
-           ; selector_context, Build_config.Context_type.Empty
-           ]
+           Context_name.Map.of_list_exn
+             [ context.name, Build_config.Context_type.Empty
+             ; selection_context.name, Build_config.Context_type.With_sources
+             ; inherited_context.name, Build_config.Context_type.Empty
+             ; coverage_context.name, Build_config.Context_type.Empty
+             ; selector_context.name, Build_config.Context_type.Empty
+             ]
          in
          if enabled
-         then contexts @ [ cleanup_context, Build_config.Context_type.With_sources ]
+         then
+           Context_name.Map.set
+             contexts
+             cleanup_context.name
+             Build_config.Context_type.With_sources
          else contexts))
     ~promote_source:(fun ~chmod:_ ~delete_dst_if_it_is_a_directory:_ ~src:_ ~dst:_ ->
       Fiber.return ())

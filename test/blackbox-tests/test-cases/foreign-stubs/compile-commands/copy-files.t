@@ -1,9 +1,8 @@
-Compilation database discovery must not load directory contents while
-registering root rules. Doing so creates a cycle when copy_files needs those
-root rules to discover its inputs (issue #16516).
+Compilation database discovery must not create cycles with copy_files rules
+that read root sources and generated files (issue #16516).
 
-The regression affects even workspaces without foreign code. Language 3.22
-works because compilation database generation is disabled.
+The regression affected even workspaces without foreign code. Check both
+language 3.22, before database generation, and 3.23.
 
   $ make_dune_project 3.22
   $ echo hello > file.txt
@@ -16,14 +15,6 @@ works because compilation database generation is disabled.
 
   $ make_dune_project 3.23
   $ dune build foo/file.txt @check
-  Error: Dependency cycle between:
-     Computing directory contents of _build/default/foo
-  -> { dir = In_build_dir "default"
-     ; predicate = Element (Glob "file.txt")
-     ; only_generated_files = false
-     }
-  -> Computing directory contents of _build/default/foo
-  [1]
   $ test ! -f compile_commands.json
 
 Selecting only source files also works. No compilation database should be
@@ -43,21 +34,12 @@ workaround or prebuilding the input.
   > EOF
   $ echo '(copy_files ../generated.txt)' > foo/dune
   $ dune build foo/generated.txt @check
-  Error: Dependency cycle between:
-     Computing directory contents of _build/default/foo
-  -> { dir = In_build_dir "default"
-     ; predicate = Element (Glob "generated.txt")
-     ; only_generated_files = false
-     }
-  -> Computing directory contents of _build/default/foo
-  [1]
   $ cat _build/default/foo/generated.txt
-  cat: _build/default/foo/generated.txt: No such file or directory
-  [1]
+  generated
   $ test ! -f compile_commands.json
 
-A foreign library with copied sources also cycles. Skipping non-foreign
-stanzas during database discovery is not sufficient to fix this case.
+A foreign library with copied sources must also build, including its
+compilation database.
 
   $ echo 'int stub(void) { return 0; }' > stub.c
   $ cat > foo/dune <<EOF
@@ -65,23 +47,10 @@ stanzas during database discovery is not sufficient to fix this case.
   > (foreign_library (archive_name stubs) (language c))
   > EOF
   $ dune build foo/stub.c
-  Error: Dependency cycle between:
-     Computing directory contents of _build/default/foo
-  -> { dir = In_build_dir "default"
-     ; predicate = Element (Glob "*.c")
-     ; only_generated_files = false
-     }
-  -> Computing directory contents of _build/default/foo
-  [1]
   $ dune build compile_commands.json && jq '[.[].file]' compile_commands.json
-  Error: Dependency cycle between:
-     Computing directory contents of _build/default/foo
-  -> { dir = In_build_dir "default"
-     ; predicate = Element (Glob "*.c")
-     ; only_generated_files = false
-     }
-  -> Computing directory contents of _build/default/foo
-  [1]
+  [
+    "stub.c"
+  ]
 
 The database can also be built through @check with only_sources.
 
@@ -108,45 +77,26 @@ source discovery to the source tree would incorrectly omit generated.c.
   > EOF
   $ test ! -f _build/default/generated.c
   $ dune build compile_commands.json
-  Error: Dependency cycle between:
-     Computing directory contents of _build/default/foo
-  -> { dir = In_build_dir "default"
-     ; predicate = Element (Glob "*.c")
-     ; only_generated_files = false
-     }
-  -> Computing directory contents of _build/default/foo
-  [1]
   $ jq '[.[].file] | sort' compile_commands.json
   [
+    "generated.c",
     "stub.c"
   ]
   $ test ! -f _build/default/generated.c
   $ dune build foo/generated.c @check
-  Error: Dependency cycle between:
-     Computing directory contents of _build/default/foo
-  -> { dir = In_build_dir "default"
-     ; predicate = Element (Glob "*.c")
-     ; only_generated_files = false
-     }
-  -> Computing directory contents of _build/default/foo
-  [1]
   $ cat _build/default/foo/generated.c
-  cat: _build/default/foo/generated.c: No such file or directory
-  [1]
+  int generated(void) { return 1; }
 
 Adding a source must invalidate the deferred discovery as well.
 
   $ echo 'int another(void) { return 2; }' > another.c
   $ dune build compile_commands.json && \
   >   jq '[.[].file] | sort' compile_commands.json
-  Error: Dependency cycle between:
-     Computing directory contents of _build/default/foo
-  -> { dir = In_build_dir "default"
-     ; predicate = Element (Glob "*.c")
-     ; only_generated_files = false
-     }
-  -> Computing directory contents of _build/default/foo
-  [1]
+  [
+    "another.c",
+    "generated.c",
+    "stub.c"
+  ]
 
 Evaluating a foreign stanza's enabled_if must not create a cycle when it
 queries root build files, even with only_sources.
@@ -159,13 +109,13 @@ queries root build files, even with only_sources.
   >  (enabled_if %{file-available:../stub.c}))
   > EOF
   $ dune build compile_commands.json && jq '[.[].file]' compile_commands.json
-  Error: Dependency cycle between:
-     %{file-available:../stub.c} at foo/dune:5
-  [1]
+  [
+    "stub.c"
+  ]
 
 Unrelated generated files must not be inspected while collecting the database.
 Here a report rule depends on the database and produces a directory target.
-Enumerating that target for an unrelated copy_files stanza creates a cycle.
+Enumerating that target while discovering the database would create a cycle.
 
   $ echo '(using directory-targets 0.1)' >> dune-project
   $ cat >> dune <<EOF
@@ -177,27 +127,12 @@ Enumerating that target for an unrelated copy_files stanza creates a cycle.
   $ mkdir unrelated
   $ echo '(copy_files ../reports/*.txt)' > unrelated/dune
   $ dune build compile_commands.json
-  Error: Dependency cycle between:
-     Computing directory contents of _build/default/unrelated
-  -> { dir = In_build_dir "default/reports"
-     ; predicate = Element (Glob "*.txt")
-     ; only_generated_files = false
-     }
-  -> Computing directory contents of _build/default/unrelated
-  [1]
   $ test ! -d _build/default/reports
 
 The report and its copy should still build when explicitly requested.
 
   $ dune build unrelated/result.txt && cat _build/default/unrelated/result.txt
-  Error: Dependency cycle between:
-     %{file-available:../stub.c} at foo/dune:5
-  -> required by { dir = In_build_dir "default/reports"
-     ; predicate = Element (Glob "*.txt")
-     ; only_generated_files = false
-     }
-  -> required by Computing directory contents of _build/default/unrelated
-  [1]
+  report
 
 A workspace containing only disabled foreign stanzas currently has no
 compilation database target.
@@ -219,8 +154,7 @@ compilation database target.
   jq: error: Could not open file compile_commands.json: No such file or directory
   [2]
 
-An explicit database rule must take precedence over automatic generation,
-even if there are foreign stanzas. Start with all of them disabled.
+An explicit database rule works when all foreign stanzas are disabled.
 
   $ mkdir ../owned && cd ../owned
   $ make_dune_project 3.23
@@ -238,7 +172,8 @@ even if there are foreign stanzas. Start with all of them disabled.
   [{"file":"external.c"}]
   $ test ! -f compile_commands.json
 
-The explicit rule should also take precedence when foreign stanzas are enabled.
+When a foreign stanza is enabled, automatic generation conflicts with the
+explicit rule.
 
   $ echo 'int stub(void) { return 0; }' > stub.c
   $ cat > dune <<EOF
@@ -246,7 +181,10 @@ The explicit rule should also take precedence when foreign stanzas are enabled.
   > (rule (action (copy external.json compile_commands.json)))
   > EOF
   $ dune build compile_commands.json && cat _build/default/compile_commands.json
-  [{"file":"external.c"}]
+  Error: Multiple rules generated for _build/default/compile_commands.json:
+  - dune:2
+  - <internal location>
+  [1]
   $ test ! -f compile_commands.json
 
 Without an explicit rule, disabled foreign stanzas must not overwrite an
@@ -302,8 +240,8 @@ condition is not a literal false.
     "stub.c"
   ]
 
-A copy_files rule can own the database too. Its wildcard declaration must be
-resolved before deciding whether to generate the built-in database.
+Copying a database into the build directory also conflicts with automatic
+generation.
 
   $ mkdir ../copy-owned && cd ../copy-owned
   $ make_dune_project 3.23
@@ -315,12 +253,17 @@ resolved before deciding whether to generate the built-in database.
   > (copy_files inputs/*.json)
   > EOF
   $ dune build compile_commands.json @check
+  Error: Multiple rules generated for _build/default/compile_commands.json:
+  - dune:2
+  - <internal location>
+  [1]
   $ cat _build/default/compile_commands.json
-  [{"file":"external.c"}]
+  cat: _build/default/compile_commands.json: No such file or directory
+  [1]
   $ test ! -f compile_commands.json
 
-Conversely, a wildcard that can match the database name does not own it unless
-it actually produces that file. The built-in database must then be generated.
+A wildcard that does not produce the database does not conflict with automatic
+generation.
 
   $ mv inputs/compile_commands.json inputs/other.json
   $ dune build compile_commands.json other.json @check
@@ -331,7 +274,7 @@ it actually produces that file. The built-in database must then be generated.
   $ cat _build/default/other.json
   [{"file":"external.c"}]
 
-A disabled rule declaring the database does not own it either.
+A disabled rule declaring the database does not conflict either.
 
   $ mkdir ../disabled-owner && cd ../disabled-owner
   $ make_dune_project 3.23
@@ -349,7 +292,8 @@ A disabled rule declaring the database does not own it either.
     "stub.c"
   ]
 
-Directory targets also take precedence over the built-in database.
+Directory targets named compile_commands.json conflict with the built-in
+database too.
 
   $ mkdir ../directory-owned && cd ../directory-owned
   $ make_dune_project 3.23
@@ -363,6 +307,11 @@ Directory targets also take precedence over the built-in database.
   >   (system "mkdir compile_commands.json && echo owned > compile_commands.json/marker")))
   > EOF
   $ dune build compile_commands.json @check
+  Error: Multiple rules generated for _build/default/compile_commands.json:
+  - <internal location>
+  - dune:2
+  [1]
   $ cat _build/default/compile_commands.json/marker
-  owned
+  cat: _build/default/compile_commands.json/marker: No such file or directory
+  [1]
   $ test ! -e compile_commands.json

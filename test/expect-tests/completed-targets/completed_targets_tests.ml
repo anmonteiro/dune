@@ -84,7 +84,9 @@ let%expect_test "rule lookup, invalidation and generator directory bounds" =
   end
   in
   Build_config.set
-    ~contexts:(Memo.Lazy.of_val [ context, Build_config.Context_type.Empty ])
+    ~contexts:
+      (Memo.Lazy.of_val
+         (Context_name.Map.singleton context.name Build_config.Context_type.Empty))
     ~promote_source:(fun ~chmod:_ ~delete_dst_if_it_is_a_directory:_ ~src:_ ~dst:_ ->
       Fiber.return ())
     ~sandboxing_preference:[]
