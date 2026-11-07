@@ -3,6 +3,7 @@ requiring distinct DLLs with the same basename, which cannot both be selected
 by a single directory search order. See #9979.
 
   $ make_dune_project 3.13
+  $ ext_dll=$(ocamlc -config-var ext_dll)
   $ mkdir a b common
   $ cat >common/dune <<'EOF'
   > (foreign_library (archive_name shared) (language c) (names stubs))
@@ -59,19 +60,38 @@ dependencies of main; neither DLL is an unrelated build artifact.
   > #include <caml/mlvalues.h>
   > CAMLprim value b_value(value unit) { return Val_int(2); }
   > EOF
-  $ dune build main.bc
-  File "_none_", line 1:
-  Error: Error while linking .main.eobjs/byte/dune__exe__Main.cmo:
-         The external function b_value is not available
+  $ dune build main.bc >error 2>&1
   [1]
+  $ sed "s/$ext_dll/.EXT_DLL/g" error
+  File "dune", line 2, characters 7-11:
+  2 |  (name main)
+             ^^^^
+  Error: Conflicting bytecode DLLs named "dllshared.EXT_DLL":
+  - _build/default/a/dllshared.EXT_DLL
+  - _build/default/b/dllshared.EXT_DLL
 
-Reversing the order only changes which required primitive is missing. A useful
-diagnostic should identify the two conflicting DLL providers.
+Reversing the order reports the same conflicting DLL providers.
 
   $ sed 's/(libraries a b)/(libraries b a)/' dune > dune.new
   $ mv dune.new dune
-  $ dune build main.bc
-  File "_none_", line 1:
-  Error: Error while linking .main.eobjs/byte/dune__exe__Main.cmo:
-         The external function a_value is not available
+  $ dune build main.bc >error 2>&1
   [1]
+  $ sed "s/$ext_dll/.EXT_DLL/g" error
+  File "dune", line 2, characters 7-11:
+  2 |  (name main)
+             ^^^^
+  Error: Conflicting bytecode DLLs named "dllshared.EXT_DLL":
+  - _build/default/a/dllshared.EXT_DLL
+  - _build/default/b/dllshared.EXT_DLL
+
+Creating a bytecode plugin does not resolve the DLLs at link time. It must
+remain possible to archive these libraries together.
+
+  $ cat >dune <<'EOF'
+  > (executable
+  >  (name main)
+  >  (modes (byte plugin))
+  >  (libraries a b)
+  >  (embed_in_plugin_libraries a b))
+  > EOF
+  $ dune build main.cma

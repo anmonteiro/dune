@@ -67,3 +67,32 @@ must still be found at link time and called successfully at runtime.
   $ dune build main.bc
   $ ocamlrun -I _build/default/local _build/default/main.bc
   10 20
+
+Temporarily select a local b with a different primitive. Switching back to the
+META-only facade must remove the old DLL selection while keeping local a.
+
+  $ mkdir replacement
+  $ cat >replacement/dune <<'EOF'
+  > (library
+  >  (name b)
+  >  (foreign_stubs (language c) (names b_stubs)))
+  > EOF
+  $ echo 'external value : unit -> int = "replacement_b"' >replacement/b.ml
+  $ cat >replacement/b_stubs.c <<'EOF'
+  > #include <caml/mlvalues.h>
+  > CAMLprim value replacement_b(value unit) { return Val_int(30); }
+  > EOF
+  $ sed 's/consumer.a pkg.facade/consumer.a b/' dune >dune.new
+  $ mv dune.new dune
+  $ echo 'let () = Printf.printf "%d %d\n" (A.value ()) (B.value ())' >main.ml
+  $ dune build main.bc --sandbox=none
+  $ ocamlrun -I _build/default/local -I _build/default/replacement \
+  >   _build/default/main.bc
+  10 30
+
+  $ sed 's/consumer.a b/consumer.a pkg.facade/' dune >dune.new
+  $ mv dune.new dune
+  $ echo 'let () = Printf.printf "%d %d\n" (A.value ()) (Facade.value ())' >main.ml
+  $ dune build main.bc --sandbox=none
+  $ ocamlrun -I _build/default/local _build/default/main.bc
+  10 20

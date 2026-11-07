@@ -1,6 +1,5 @@
-Bytecode linking can pick C stubs from an unrelated installed or local library
-when a shared search directory contains a DLL with the same name. Changing the
-order of local and installed directories can expose either collision.
+Selecting the required DLLs individually prevents unrelated local or installed
+stubs from shadowing them, including DLLs declared as link dependencies.
 
 See https://github.com/ocaml/dune/issues/9979.
 
@@ -68,17 +67,11 @@ And we try to build an executable depending on the (local) `libA` and the (insta
   > EOF
 
   $ OCAMLPATH=./install/lib dune build exeA.bc
-  File "_none_", line 1:
-  Error: Error while linking .exeA.eobjs/byte/dune__exe__ExeA.cmo:
-         The external function dummy2 is not available
-  [1]
 
-The error comes from passing as flags `-I ./install/lib/pkgA/../stublibs -I
-libA` so the `dlllibA_stubs.so` in `./install/lib/stublibs` takes precedence
-over the one in `libA`.
+The selected local `libA` DLL takes precedence over the installed one,
+even though `pkgA.libB` precedes `libA` in the library list.
 
-If we list `libA` __before__ `pkgA.libB`, the build succeeds because the include
-flags look like `-I libA -I ./install/lib/pkgA/../stublibs`:
+Listing `libA` before `pkgA.libB` also succeeds:
 
   $ cat >dune <<EOF
   > (executable
@@ -116,13 +109,23 @@ the same directory as local `libA`. The executable still uses installed
   $ mv dune.new dune
   $ OCAMLPATH=./install/lib dune build exeA.bc
 
-Putting the local directory first now selects the unrelated local `libB` stubs.
+Putting the local library first also works: the selected installed `libB` DLL
+takes precedence over the unrelated local DLL.
 
   $ sed 's/(libraries pkgA\.libB libA)/(libraries libA pkgA.libB)/' \
   >   dune > dune.new
   $ mv dune.new dune
   $ OCAMLPATH=./install/lib dune build exeA.bc
-  File "_none_", line 1:
-  Error: Error while linking .exeA.eobjs/byte/dune__exe__ExeA.cmo:
-         The external function dummy1 is not available
-  [1]
+
+An unrelated DLL explicitly listed in `link_deps` must not replace the selected
+installed DLL, even though it would also be present in a sandbox.
+
+  $ cat >dune <<EOF
+  > (executable
+  >  (name exeA)
+  >  (modes byte)
+  >  (libraries pkgA.libB libA)
+  >  (link_deps libA/dlllibB_stubs%{ext_dll})
+  >  (modules exeA))
+  > EOF
+  $ OCAMLPATH=./install/lib dune build exeA.bc

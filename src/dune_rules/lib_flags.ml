@@ -323,19 +323,26 @@ module Lib_and_module = struct
   module L = struct
     type nonrec t = t list
 
+    let for_instance sctx ~(lib_config : Lib_config.t) lib =
+      let build_dir = Context.build_dir (Super_context.context sctx) in
+      Lib.Parameterised.for_instance ~build_dir ~ext_lib:(Some lib_config.ext_lib) lib
+    ;;
+
+    let dll_files sctx ts ~lib_config =
+      List.concat_map ts ~f:(function
+        | Module _ -> []
+        | Lib lib ->
+          let lib = for_instance sctx ~lib_config lib in
+          Lib_info.foreign_dll_files (Lib.info lib))
+    ;;
+
     let link_flags sctx ts ~(lib_config : Lib_config.t) ~mode =
       let open Action_builder.O in
-      let build_dir = Context.build_dir (Super_context.context sctx) in
       Command.Args.Dyn
         (let+ l =
            Action_builder.List.map ts ~f:(function
              | Lib t ->
-               let t =
-                 Lib.Parameterised.for_instance
-                   ~build_dir
-                   ~ext_lib:(Some lib_config.ext_lib)
-                   t
-               in
+               let t = for_instance sctx ~lib_config t in
                let+ { Link_params.hidden_deps; include_dirs; deps } =
                  Action_builder.of_memo (Link_params.get sctx t mode lib_config)
                in
