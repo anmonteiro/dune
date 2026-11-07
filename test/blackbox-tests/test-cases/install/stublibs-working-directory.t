@@ -67,6 +67,21 @@ Bytecode linking requires a sandbox even when the global preference is none.
 
   $ dune build app/main.bc --sandbox=none
 
+An explicit sandbox constraint also rejects the executable that uses stubs.
+
+  $ sed 's/(link_deps /(link_deps (sandbox none) /' app/dune >app/dune.new
+  $ mv app/dune.new app/dune
+  $ dune build app/main.bc
+  File "app/dune", line 2, characters 7-11:
+  2 |  (name main)
+             ^^^^
+  Error: This rule forbids all sandboxing modes (but it also requires
+  sandboxing)
+  [1]
+
+  $ sed 's/(sandbox none) //' app/dune >app/dune.new
+  $ mv app/dune.new app/dune
+
 Removing the unrelated DLL does not change the successful result.
 
   $ rm _build/default/dllb_stubs$ext_dll
