@@ -5,6 +5,7 @@
   stdune
   dune_digest
   dune_engine
+  dune_lang
   dune_rules
   dune_tests_common
   targets
