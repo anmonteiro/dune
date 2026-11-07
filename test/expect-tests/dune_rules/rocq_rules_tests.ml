@@ -63,18 +63,18 @@ let%expect_test "Rocq 0.12 expected-output alias masks" =
   [%expect
     {|
     flat:
-      root aliases: runtest=true foo.diff=false
+      root aliases: runtest=true foo.diff=true
       sub aliases: runtest=false foo.diff=false
       files: foo.vo=true foo.output=true sub/foo.vo=false sub/foo.output=false
       unrelated: root-file=false child-file=false diff-file=false directory=false
     generated:
-      root aliases: runtest=true foo.diff=false
+      root aliases: runtest=true foo.diff=true
       sub aliases: runtest=false foo.diff=false
       files: foo.vo=true foo.output=true sub/foo.vo=false sub/foo.output=false
       unrelated: root-file=false child-file=false diff-file=false directory=false
     qualified:
-      root aliases: runtest=true foo.diff=false
-      sub aliases: runtest=false foo.diff=false
+      root aliases: runtest=true foo.diff=true
+      sub aliases: runtest=true foo.diff=true
       files: foo.vo=true foo.output=true sub/foo.vo=true sub/foo.output=true
       unrelated: root-file=false child-file=false diff-file=false directory=false
     |}]
@@ -172,16 +172,16 @@ let%expect_test "Rocq 0.12 unknown-module alias masks" =
   [%expect
     {|
     empty:
-      root aliases: runtest=true unknown.diff=false
+      root aliases: runtest=true unknown.diff=true
       root inputs: unknown.v=false unknown.expected=false unrelated.txt=false
       sub aliases: runtest=false unknown.diff=false
       sub inputs: unknown.v=false unknown.expected=false unrelated.txt=false
       unrelated aliases: runtest=false unknown.diff=false
       unrelated inputs: unknown.v=false unknown.expected=false unrelated.txt=false
     qualified:
-      root aliases: runtest=true unknown.diff=false
+      root aliases: runtest=true unknown.diff=true
       root inputs: unknown.v=false unknown.expected=false unrelated.txt=false
-      sub aliases: runtest=false unknown.diff=false
+      sub aliases: runtest=true unknown.diff=true
       sub inputs: unknown.v=false unknown.expected=false unrelated.txt=false
       unrelated aliases: runtest=false unknown.diff=false
       unrelated inputs: unknown.v=false unknown.expected=false unrelated.txt=false

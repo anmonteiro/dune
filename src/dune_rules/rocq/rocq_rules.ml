@@ -766,6 +766,13 @@ module Per_file = struct
   ;;
 end
 
+let output_diff_alias file =
+  let dir = Path.Build.parent_exn file in
+  let basename = Path.Build.basename file |> Filename.remove_extension in
+  let name = Alias.Name.of_string (Filename.to_string basename ^ ".diff") in
+  Alias.make ~dir name
+;;
+
 let setup_output_diff_rule ~loc ~dir ~sctx ~rocq_lang_version ~rocq_sources rocq_module =
   match Rocq_sources.expected_file ~rocq_lang_version rocq_sources rocq_module with
   | None -> Memo.return ()
@@ -779,11 +786,8 @@ let setup_output_diff_rule ~loc ~dir ~sctx ~rocq_lang_version ~rocq_sources rocq
       ; directory_diffs = true
       }
     in
-    let alias_dir = Path.Build.parent_exn expected in
-    let basename = Path.Build.basename expected |> Filename.remove_extension in
-    let alias_name = Alias.Name.of_string (Filename.to_string basename ^ ".diff") in
-    let alias = Alias.make ~dir:alias_dir alias_name in
-    let runtest_alias = Alias.make ~dir:alias_dir Alias0.runtest in
+    let alias = output_diff_alias expected in
+    let runtest_alias = Alias.make ~dir:(Alias.dir alias) Alias0.runtest in
     Simple_rules.Alias_rules.add
       sctx
       ~loc
@@ -1084,6 +1088,19 @@ let module_rule_targets
       else objects)
   in
   let targets = Target_mask.files (files modules) in
+  let targets =
+    if rocq_lang_version < (0, 12)
+    then targets
+    else (
+      let aliases =
+        List.concat_map modules ~f:(fun m ->
+          let alias =
+            Rocq_module.source m |> Path.as_in_build_dir_exn |> output_diff_alias
+          in
+          [ alias; Alias.make ~dir:(Alias.dir alias) Alias0.runtest ])
+      in
+      Target_mask.union targets (Target_mask.aliases aliases))
+  in
   let directory_group =
     match source_files with
     | [] | [ _ ] -> false
@@ -1105,7 +1122,18 @@ let module_rule_targets
       then Target_mask.file_extensions_in_subtree ~dir extensions
       else Target_mask.file_extensions ~dir extensions
     in
-    Target_mask.union targets generated)
+    let targets = Target_mask.union targets generated in
+    if rocq_lang_version < (0, 12)
+    then targets
+    else (
+      (* Diff aliases follow physical source directories, not mapped namespaces. *)
+      let dirs =
+        match source_files with
+        | [] -> [ dir ]
+        | _ :: _ -> List.map source_files ~f:fst
+      in
+      List.fold_left dirs ~init:targets ~f:(fun targets dir ->
+        Target_mask.union targets (Target_mask.aliases_in_directory dir))))
   else targets
 ;;
 
