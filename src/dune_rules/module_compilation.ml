@@ -389,7 +389,13 @@ let build_cm cctx ~force_write_cmi ~precompiled_cmi ~cm_kind (m : Module.t) =
   |> Memo.Option.iter ~f:Fun.id
 ;;
 
-let build_module ?(force_write_cmi = false) ?(precompiled_cmi = false) cctx m =
+let build_module
+      ~defer_jsoo_actions
+      ?(force_write_cmi = false)
+      ?(precompiled_cmi = false)
+      cctx
+      m
+  =
   let open Memo.O in
   let build_cm = build_cm cctx m ~force_write_cmi ~precompiled_cmi in
   match Compilation_context.for_ cctx with
@@ -413,7 +419,7 @@ let build_module ?(force_write_cmi = false) ?(precompiled_cmi = false) cctx m =
            (* Build *.cmo.js / *.wasmo *)
            let sctx = Compilation_context.super_context cctx in
            let dir = Compilation_context.dir cctx in
-           let action_with_targets =
+           let action () =
              Jsoo_rules.build_cm
                cctx
                ~dir
@@ -423,6 +429,31 @@ let build_module ?(force_write_cmi = false) ?(precompiled_cmi = false) cctx m =
                ~obj_dir
                ~deps:module_deps
                ~config:None
+           in
+           let action_with_targets =
+             if defer_jsoo_actions
+             then (
+               let target =
+                 Jsoo_rules.cm_target ~mode ~src:(Path.build src) ~obj_dir ~config:None
+               in
+               let expected = Targets.Validated.file target in
+               let build =
+                 let open Action_builder.O in
+                 let* { With_targets.build; targets } = Action_builder.delayed action in
+                 match Targets.validate targets with
+                 | Valid actual
+                   when Path.Build.equal actual.root expected.root
+                        && Filename.Set.equal actual.files expected.files
+                        && Filename.Set.is_empty actual.dirs -> build
+                 | _ ->
+                   Code_error.raise
+                     "Deferred compilation targets differ from their declaration"
+                     [ "target", Path.Build.to_dyn target
+                     ; "actual", Targets.to_dyn targets
+                     ]
+               in
+               Action_builder.with_targets build ~targets:(Targets.File.create target))
+             else action ()
            in
            Super_context.add_rule sctx ~dir action_with_targets)))
   | Melange ->
@@ -450,6 +481,9 @@ let build_module ?(force_write_cmi = false) ?(precompiled_cmi = false) cctx m =
     in
     Rules.Produce.Alias.add_deps (Alias.make Alias0.all ~dir) deps
 ;;
+
+let build_module_rules cctx m = build_module ~defer_jsoo_actions:true cctx m
+let build_module = build_module ~defer_jsoo_actions:false
 
 let build_inference_alias cctx ~name ~aliases =
   let sctx = Compilation_context.super_context cctx in
@@ -778,7 +812,7 @@ let build_alias_module cctx group =
        Action_builder.write_file_dyn (Path.as_in_build_dir_exn file) alias_file)
   in
   let cctx = Compilation_context.for_alias_module cctx alias_module in
-  build_module cctx alias_module
+  build_module_rules cctx alias_module
 ;;
 
 let root_source entries =
@@ -815,7 +849,7 @@ let build_root_module cctx root_module =
           let+ entries = entries in
           root_source entries))
   in
-  build_module cctx root_module
+  build_module_rules cctx root_module
 ;;
 
 let build_all cctx =
@@ -835,7 +869,7 @@ let build_all cctx =
          | Root -> build_root_module cctx m
          | Wrapped_compat ->
            let cctx = Lazy.force for_wrapped_compat in
-           build_module cctx m
+           build_module_rules cctx m
          | _ ->
            let cctx =
              if Modules.With_vlib.is_stdlib_alias modules m
@@ -845,7 +879,7 @@ let build_all cctx =
                Compilation_context.for_alias_module cctx m
              else cctx
            in
-           build_module cctx m))
+           build_module_rules cctx m))
 ;;
 
 let with_empty_intf ~sctx ~dir module_ =
