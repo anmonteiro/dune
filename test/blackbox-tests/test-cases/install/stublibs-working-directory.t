@@ -1,6 +1,6 @@
-The bytecode linker searches its working directory before any -I directory.
-Sandboxing prevents an unrelated root-level DLL from shadowing an installed
-dependency, even when no local stub directory is passed. See #9979.
+The bytecode linker normally searches its working directory before any -I
+directory. On OCaml 5 and later, -nocwd allows the selected DLLs to take
+precedence without changing the working directory. See #9979.
 
   $ mkdir -p producer app relative-stubs
   $ (cd producer && make_dune_project_with_package 3.13 pkg)
@@ -63,32 +63,36 @@ working directory must preserve the meaning of this flag.
   > let () = Printf.printf "%d %d\n" (B.value ()) (relative ())
   > EOF
 
-Bytecode linking requires a sandbox even when the global preference is none.
+OCaml 4 does not support -nocwd and retains its working-directory collision.
+Check that limitation before removing the unrelated DLL for the remaining
+compatibility checks on that compiler.
+
+  $ if [ "$(ocamlc -version | cut -d. -f1)" -lt 5 ]; then
+  >   dune build app/main.bc --sandbox=none >old-compiler.log 2>&1
+  >   test $? -eq 1 || exit 1
+  >   grep -q 'selected_b.*not available' old-compiler.log || exit 1
+  >   rm _build/default/dllb_stubs$ext_dll
+  > fi
+
+DLL selection works without sandboxing.
 
   $ dune build app/main.bc --sandbox=none
 
-An explicit sandbox constraint also rejects the executable that uses stubs.
+An explicit sandbox constraint is also respected for executables using stubs.
 
   $ sed 's/(link_deps /(link_deps (sandbox none) /' app/dune >app/dune.new
   $ mv app/dune.new app/dune
   $ dune build app/main.bc
-  File "app/dune", line 2, characters 7-11:
-  2 |  (name main)
-             ^^^^
-  Error: This rule forbids all sandboxing modes (but it also requires
-  sandboxing)
-  [1]
 
   $ sed 's/(sandbox none) //' app/dune >app/dune.new
   $ mv app/dune.new app/dune
 
 Removing the unrelated DLL does not change the successful result.
 
-  $ rm _build/default/dllb_stubs$ext_dll
+  $ rm -f _build/default/dllb_stubs$ext_dll
   $ dune build app/main.bc --sandbox=none
 
-An explicit request to disable link sandboxing is rejected even when the
-bytecode executable has no foreign stubs. Unpatched Dune accepts this stanza.
+The same sandbox constraint works when the bytecode executable has no stubs.
 
   $ cat >app/dune <<'EOF'
   > (executable
@@ -99,12 +103,6 @@ bytecode executable has no foreign stubs. Unpatched Dune accepts this stanza.
   > EOF
   $ echo 'let () = ()' >app/plain.ml
   $ dune build app/plain.bc
-  File "app/dune", line 2, characters 7-12:
-  2 |  (name plain)
-             ^^^^^
-  Error: This rule forbids all sandboxing modes (but it also requires
-  sandboxing)
-  [1]
 
 Native linking still accepts the same sandbox constraint.
 

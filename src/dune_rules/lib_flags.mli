@@ -9,6 +9,8 @@ module Lib_and_module : sig
   module L : sig
     type nonrec t = t list
 
+    val dll_files : Super_context.t -> t -> lib_config:Lib_config.t -> Path.t list
+
     val link_flags
       :  Super_context.t
       -> t

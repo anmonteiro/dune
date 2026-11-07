@@ -39,7 +39,7 @@ module Link_params = struct
     let include_dirs =
       let files =
         match mode with
-        | Byte -> if Lib.is_local t then [] else dll_files
+        | Byte -> dll_files
         | Byte_for_jsoo -> []
         | Byte_with_stubs_statically_linked_in | Native -> select_lib_files Mode.Native
       in
@@ -323,31 +323,26 @@ module Lib_and_module = struct
   module L = struct
     type nonrec t = t list
 
-    let link_flags sctx ts ~(lib_config : Lib_config.t) ~(mode : Link_mode.t) =
-      let open Action_builder.O in
+    let for_instance sctx ~(lib_config : Lib_config.t) lib =
       let build_dir = Context.build_dir (Super_context.context sctx) in
-      let ts =
-        List.map ts ~f:(function
-          | Module _ as t -> t
-          | Lib t ->
-            Lib
-              (Lib.Parameterised.for_instance
-                 ~build_dir
-                 ~ext_lib:(Some lib_config.ext_lib)
-                 t))
-      in
-      let local_dll_flags =
-        match mode with
-        | Byte ->
-          List.filter_map ts ~f:(function
-            | Lib t when Lib.is_local t -> Some (L.to_iflags (L.dll_dir_paths [ t ]))
-            | Lib _ | Module _ -> None)
-        | Byte_for_jsoo | Byte_with_stubs_statically_linked_in | Native -> []
-      in
+      Lib.Parameterised.for_instance ~build_dir ~ext_lib:(Some lib_config.ext_lib) lib
+    ;;
+
+    let dll_files sctx ts ~lib_config =
+      List.concat_map ts ~f:(function
+        | Module _ -> []
+        | Lib lib ->
+          let lib = for_instance sctx ~lib_config lib in
+          Lib_info.foreign_dll_files (Lib.info lib))
+    ;;
+
+    let link_flags sctx ts ~(lib_config : Lib_config.t) ~mode =
+      let open Action_builder.O in
       Command.Args.Dyn
         (let+ l =
            Action_builder.List.map ts ~f:(function
              | Lib t ->
+               let t = for_instance sctx ~lib_config t in
                let+ { Link_params.hidden_deps; include_dirs; deps } =
                  Action_builder.of_memo (Link_params.get sctx t mode lib_config)
                in
@@ -377,9 +372,7 @@ module Lib_and_module = struct
                      ]))
                |> Action_builder.return)
          in
-         (* Prefer local stubs over shared installed stub directories.
-            Sandboxing hides local DLLs that are not declared dependencies. *)
-         Command.Args.S (local_dll_flags @ l))
+         Command.Args.S l)
     ;;
   end
 end

@@ -165,6 +165,72 @@ let exe_path_from_name cctx ~name ~(linkage : Linkage.t) =
     (name ^ Filename.Extension.to_string linkage.ext)
 ;;
 
+let bytecode_dll_flags cctx ~loc ~exe link_time_code_gen =
+  let sctx = Compilation_context.super_context cctx in
+  let ocaml = Compilation_context.ocaml cctx in
+  let dlls =
+    let open Resolve.O in
+    let* { Link_time_code_gen.to_link; _ } = link_time_code_gen in
+    let files =
+      Lib_flags.Lib_and_module.L.dll_files sctx to_link ~lib_config:ocaml.lib_config
+    in
+    let+ dlls =
+      Resolve.List.fold_left files ~init:Filename.Map.empty ~f:(fun dlls src ->
+        let name = Path.basename src in
+        match Filename.Map.find dlls name with
+        | None -> Resolve.return (Filename.Map.set dlls name src)
+        | Some previous when Path.equal previous src -> Resolve.return dlls
+        | Some previous ->
+          Resolve.fail
+            (User_error.make
+               ~loc
+               [ Pp.textf "Conflicting bytecode DLLs named %S:" (Filename.to_string name)
+               ; Pp.enumerate
+                   (List.sort [ previous; src ] ~compare:Path.compare)
+                   ~f:(fun path -> Pp.verbatim (Path.to_string path))
+               ]))
+    in
+    Filename.Map.to_list dlls
+  in
+  let dll_dir =
+    Path.Build.relative
+      (Obj_dir.obj_dir (Compilation_context.obj_dir cctx))
+      (Filename.to_string (Path.Build.basename exe) ^ ".dlls")
+  in
+  let dst name = Path.Build.relative_fname dll_dir name in
+  let* () =
+    match Resolve.peek dlls with
+    | Error () -> Memo.return ()
+    | Ok dlls ->
+      Memo.parallel_iter dlls ~f:(fun (name, src) ->
+        Super_context.add_rule
+          sctx
+          ~dir:(Compilation_context.dir cctx)
+          ~loc
+          (Action_builder.symlink ~src ~dst:(dst name)))
+  in
+  Memo.return
+    (Resolve.args
+       (let open Resolve.O in
+        let+ dlls = dlls in
+        match dlls with
+        | [] -> Command.Args.empty
+        | _ :: _ ->
+          let build_dir = Context.build_dir (Super_context.context sctx) in
+          (* [-nocwd] lets the selected DLLs precede the working directory while
+             preserving the meaning of relative user flags. *)
+          Command.Args.S
+            [ As (if Ocaml.Version.supports_nocwd ocaml.version then [ "-nocwd" ] else [])
+            ; A "-I"
+            ; Path (Path.build dll_dir)
+            ; A "-I"
+            ; Path (Path.build build_dir)
+            ; Hidden_deps
+                (Dep.Set.of_files
+                   (List.map dlls ~f:(fun (name, _) -> Path.build (dst name))))
+            ]))
+;;
+
 let link_exe
       ~loc
       ~name
@@ -184,6 +250,13 @@ let link_exe
   let dir = Compilation_context.dir cctx in
   let mode = Link_mode.mode linkage_mode in
   let exe = exe_path_from_name cctx ~name ~linkage in
+  let* dll_flags =
+    match linkage_mode with
+    | Byte when Filename.Extension.equal linkage.ext Filename.Extension.bc ->
+      bytecode_dll_flags cctx ~loc ~exe link_time_code_gen
+    | Byte | Byte_for_jsoo | Byte_with_stubs_statically_linked_in | Native ->
+      Memo.return Command.Args.empty
+  in
   let action_with_targets =
     let ocaml_flags = Ocaml_flags.get (Compilation_context.flags cctx) (Ocaml mode) in
     let prefix =
@@ -211,11 +284,6 @@ let link_exe
        In each case, we could then pass the argument in dependency order, which
        would provide a better fix for this issue. *)
     let ocaml = Compilation_context.ocaml cctx in
-    let sandbox =
-      match linkage_mode with
-      | Byte -> Sandbox_config.inter sandbox Sandbox_config.needs_sandboxing
-      | Byte_for_jsoo | Byte_with_stubs_statically_linked_in | Native -> sandbox
-    in
     Action_builder.with_no_targets prefix
     >>> Command.run
           ~dir:(Path.build (Context.build_dir ctx))
@@ -223,7 +291,8 @@ let link_exe
           ~env
           ~forbid_action_runner:true
           (Ocaml_toolchain.compiler ocaml mode)
-          [ Command.Args.dyn ocaml_flags
+          [ dll_flags
+          ; Command.Args.dyn ocaml_flags
           ; A "-o"
           ; Target exe
           ; As linkage.flags

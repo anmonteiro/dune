@@ -1,6 +1,5 @@
-Prioritizing local stub directories fixes collisions with installed DLLs.
-Sandboxing hides unrelated local DLLs unless they are declared as link
-dependencies.
+Selecting the required DLLs individually prevents unrelated local or installed
+stubs from shadowing them, including DLLs declared as link dependencies.
 
 See https://github.com/ocaml/dune/issues/9979.
 
@@ -69,7 +68,7 @@ And we try to build an executable depending on the (local) `libA` and the (insta
 
   $ OCAMLPATH=./install/lib dune build exeA.bc
 
-The local `libA` directory is searched before the installed stub directory,
+The selected local `libA` DLL takes precedence over the installed one,
 even though `pkgA.libB` precedes `libA` in the library list.
 
 Listing `libA` before `pkgA.libB` also succeeds:
@@ -110,17 +109,16 @@ the same directory as local `libA`. The executable still uses installed
   $ mv dune.new dune
   $ OCAMLPATH=./install/lib dune build exeA.bc
 
-Putting the local library first also works: the unrelated local `libB` DLL
-is not a dependency of the link action and is absent from its sandbox.
+Putting the local library first also works: the selected installed `libB` DLL
+takes precedence over the unrelated local DLL.
 
   $ sed 's/(libraries pkgA\.libB libA)/(libraries libA pkgA.libB)/' \
   >   dune > dune.new
   $ mv dune.new dune
   $ OCAMLPATH=./install/lib dune build exeA.bc
 
-An unrelated DLL explicitly listed in `link_deps` is present in the sandbox.
-Putting the local directory first now selects that DLL instead of `pkgA.libB`.
-This is a regression: unpatched Dune successfully links the same stanza.
+An unrelated DLL explicitly listed in `link_deps` must not replace the selected
+installed DLL, even though it would also be present in a sandbox.
 
   $ cat >dune <<EOF
   > (executable
@@ -131,7 +129,3 @@ This is a regression: unpatched Dune successfully links the same stanza.
   >  (modules exeA))
   > EOF
   $ OCAMLPATH=./install/lib dune build exeA.bc
-  File "_none_", line 1:
-  Error: Error while linking .exeA.eobjs/byte/dune__exe__ExeA.cmo:
-         The external function dummy1 is not available
-  [1]

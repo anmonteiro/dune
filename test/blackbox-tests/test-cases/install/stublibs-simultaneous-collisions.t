@@ -1,6 +1,6 @@
 Two shared search directories can each contain the wrong DLL for a selected
-library. Sandboxed links select the required local and installed DLLs with
-either library order.
+library. Selecting the required DLLs individually works with either library
+order.
 See #9979 and #16789.
 
 Install an old a alongside the b that the executable will use.
