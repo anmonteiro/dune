@@ -1,5 +1,5 @@
-Melange compilation preserves explicit runtime settings and directory environments.
-The wrapper simulates runtime capabilities independently of compiler versions.
+Melange tunes source compilation using its linked runtime capabilities. Explicit
+settings are preserved, and JavaScript emission and user actions are unchanged.
 
   $ cat > dune-project <<'EOF'
   > (lang dune 3.25)
@@ -93,11 +93,11 @@ The wrapper simulates runtime capabilities independently of compiler versions.
   >   sort -u "$GC_LOG"
   > }
   $ build defaults
-  compile ocaml=unset legacy=unset man=parent runtime=yes
+  compile ocaml=Xsmall_heap_limit=16777216 legacy=unset man=parent runtime=yes
   emit ocaml=unset legacy=unset man=parent runtime=yes
-  interface ocaml=unset legacy=unset man=parent runtime=yes
+  interface ocaml=Xsmall_heap_limit=16777216 legacy=unset man=parent runtime=yes
   $ wc -l < "$PROBE_LOG" | tr -d ' '
-  0
+  1
   $ dune build --build-dir _build_defaults @runtime-env
   action: unset unset
 
@@ -134,20 +134,20 @@ the OCaml version reported by Melange or the context compiler.
   emit ocaml=unset legacy=unset man=parent runtime=fail
   interface ocaml=unset legacy=unset man=parent runtime=fail
   $ REPORTED_OCAML_VERSION=4.14.0 build older-context
-  compile ocaml=unset legacy=unset man=parent runtime=yes
+  compile ocaml=Xsmall_heap_limit=16777216 legacy=unset man=parent runtime=yes
   emit ocaml=unset legacy=unset man=parent runtime=yes
-  interface ocaml=unset legacy=unset man=parent runtime=yes
+  interface ocaml=Xsmall_heap_limit=16777216 legacy=unset man=parent runtime=yes
 
 The action environment is extended once. Directory-specific runtime parameters
 also suppress defaults, including an empty legacy setting.
 
   $ cat >> dune <<'EOF'
-  > (env (_ (env-vars (MANPATH directory))))
+  > (env (_ (env-vars (MANPATH local))))
   > EOF
   $ build path
-  compile ocaml=unset legacy=unset man=directory runtime=yes
-  emit ocaml=unset legacy=unset man=directory runtime=yes
-  interface ocaml=unset legacy=unset man=directory runtime=yes
+  compile ocaml=Xsmall_heap_limit=16777216 legacy=unset man=local runtime=yes
+  emit ocaml=unset legacy=unset man=local runtime=yes
+  interface ocaml=Xsmall_heap_limit=16777216 legacy=unset man=local runtime=yes
   $ cp dune.base dune
   $ cat >> dune <<'EOF'
   > (env (_ (env-vars (OCAMLRUNPARAM s=456789))))
@@ -171,11 +171,14 @@ The same compiler wrapper can select different runtimes in different directories
   $ mkdir unsupported
   $ cat > unsupported/dune <<'EOF'
   > (env (_ (env-vars (MELC_GC no))))
-  > (library (name unsupported) (wrapped false) (modes melange))
+  > (library
+  >  (name unsupported)
+  >  (wrapped false)
+  >  (modes melange))
   > EOF
   $ echo 'let message = "hello"' > unsupported/unsupported.ml
   $ build environments
+  compile ocaml=Xsmall_heap_limit=16777216 legacy=unset man=parent runtime=yes
   compile ocaml=unset legacy=unset man=parent runtime=no
-  compile ocaml=unset legacy=unset man=parent runtime=yes
   emit ocaml=unset legacy=unset man=parent runtime=yes
-  interface ocaml=unset legacy=unset man=parent runtime=yes
+  interface ocaml=Xsmall_heap_limit=16777216 legacy=unset man=parent runtime=yes
