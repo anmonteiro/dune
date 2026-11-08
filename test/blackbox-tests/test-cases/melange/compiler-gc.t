@@ -8,7 +8,6 @@ settings are preserved, and JavaScript emission and user actions are unchanged.
   $ unset OCAMLRUNPARAM CAMLRUNPARAM
   $ export REAL_MELC=$(command -v melc)
   $ export REAL_OCAML_BIN=$(dirname "$(command -v ocamlc)")
-  $ export GC_LOG="$PWD/gc.log"
   $ export PROBE_LOG="$PWD/probe.log"
   $ export MANPATH=parent
   $ mkdir bin
@@ -41,7 +40,7 @@ settings are preserved, and JavaScript emission and user actions are unchanged.
   >   done
   >   printf '%s ocaml=%s legacy=%s man=%s runtime=%s\n' "$phase" \
   >     "${OCAMLRUNPARAM-unset}" "${CAMLRUNPARAM-unset}" \
-  >     "$MANPATH" "${MELC_GC-yes}" >> "$GC_LOG"
+  >     "$MANPATH" "${MELC_GC-yes}"
   > fi
   > unset OCAMLRUNPARAM CAMLRUNPARAM
   > exec "$REAL_MELC" "$@"
@@ -87,10 +86,14 @@ settings are preserved, and JavaScript emission and user actions are unchanged.
   $ echo 'let message = "hello"' > lib.ml
   $ echo 'let message = Lib.message' > main.ml
   $ build () {
-  >   : > "$GC_LOG"
   >   : > "$PROBE_LOG"
-  >   dune build --cache=disabled --build-dir "_build_$1" @all || return
-  >   sort -u "$GC_LOG"
+  >   if dune build --display quiet --cache=disabled \
+  >     --build-dir "_build_$1" @all > gc.log 2>&1; then
+  >     sort -u gc.log
+  >   else
+  >     cat gc.log
+  >     return 1
+  >   fi
   > }
   $ build defaults
   compile ocaml=Xsmall_heap_limit=16777216 legacy=unset man=parent runtime=yes
@@ -165,7 +168,7 @@ also suppress defaults, including an empty legacy setting.
   emit ocaml=unset legacy= man=parent runtime=yes
   interface ocaml=unset legacy= man=parent runtime=yes
 
-The same compiler wrapper can select different runtimes in different directories.
+The compiler wrapper can select different runtimes in different directories.
 
   $ cp dune.base dune
   $ mkdir unsupported
