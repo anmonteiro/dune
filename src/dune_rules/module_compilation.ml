@@ -358,6 +358,11 @@ let build_cm cctx ~force_write_cmi ~precompiled_cmi ~cm_kind (m : Module.t) =
       >>> Command.run
             ~dir:(Path.build (Context.build_dir ctx))
             ~sandbox
+            ~env:
+              (Action_builder.of_memo
+                 (match mode with
+                  | Ocaml _ -> Memo.return Env.empty
+                  | Melange -> Melange_binary.compilation_env_overrides sctx ~dir))
             ~forbid_action_runner:true
             compiler
             [ flags
