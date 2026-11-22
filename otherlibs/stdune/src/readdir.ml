@@ -14,18 +14,6 @@ module File_kind = struct
       | S_FIFO
       | S_SOCK
       | UNKNOWN
-
-    let elim ~none ~some t =
-      match t with
-      | S_REG -> some (S_REG : Unix.file_kind)
-      | S_DIR -> some S_DIR
-      | S_CHR -> some S_CHR
-      | S_BLK -> some S_BLK
-      | S_LNK -> some S_LNK
-      | S_FIFO -> some S_FIFO
-      | S_SOCK -> some S_SOCK
-      | UNKNOWN -> none ()
-    ;;
   end
 end
 
@@ -82,19 +70,20 @@ let read_directory_with_kinds_exn dir_path =
     let rec loop acc =
       match readdir_with_kind_if_available dir with
       | End_of_directory -> acc
-      | Entry (base, kind) ->
-        let k kind = loop ((base, kind) :: acc) in
-        let skip () = loop acc in
-        File_kind.Option.elim
-          kind
-          ~none:(fun () ->
-            match Unix.lstat (Filename.append dir_path base) with
-            | exception Unix.Unix_error _ ->
-              (* File disappeared between readdir & lstat system calls. Handle
-                   as if readdir never told us about it *)
-              skip ()
-            | stat -> k stat.st_kind)
-          ~some:k
+      | Entry (base, File_kind.Option.S_REG) -> loop ((base, Unix.S_REG) :: acc)
+      | Entry (base, S_DIR) -> loop ((base, Unix.S_DIR) :: acc)
+      | Entry (base, S_CHR) -> loop ((base, Unix.S_CHR) :: acc)
+      | Entry (base, S_BLK) -> loop ((base, Unix.S_BLK) :: acc)
+      | Entry (base, S_LNK) -> loop ((base, Unix.S_LNK) :: acc)
+      | Entry (base, S_FIFO) -> loop ((base, Unix.S_FIFO) :: acc)
+      | Entry (base, S_SOCK) -> loop ((base, Unix.S_SOCK) :: acc)
+      | Entry (base, UNKNOWN) ->
+        (match Unix.lstat (Filename.append dir_path base) with
+         | exception Unix.Unix_error _ ->
+           (* File disappeared between readdir & lstat system calls. Handle
+              as if readdir never told us about it. *)
+           loop acc
+         | stat -> loop ((base, stat.st_kind) :: acc))
     in
     loop [])
 ;;
