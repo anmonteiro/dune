@@ -254,6 +254,7 @@ Dump-dot-merlin includes the melange flags
   SUFFIX .melange.ml .melange.mli
   SUFFIX .melange.re .melange.rei
   SUFFIX .melange.res .melange.resi
+  USE_PPX_CACHE
   # FLG -w @1..3@5..28@30..39@43@46..47@49..57@61..62@67@69-40 -strict-sequence -strict-formats -short-paths -keep-locs -g --mel-noassertfalse
   
 Check for flag directives ordering when another preprocessor is defined
@@ -723,7 +724,7 @@ Melange-only libraries have a default Melange configuration.
   melange_only.ml: melange true impl -
 
 A source copied through an intermediate file into both mode-specific
-implementations only returns the last recorded destination's mode.
+implementations returns both modes.
 
   $ mkdir fanout
   $ cat > fanout/dune-project <<EOF
@@ -748,10 +749,12 @@ implementations only returns the last recorded destination's mode.
   >   target.ml target.melange.ml input.txt intermediate.txt)
   target.ml: ocaml true impl -
   target.melange.ml: melange false impl -
+  input.txt: ocaml true impl -
   input.txt: melange false impl -
+  intermediate.txt: ocaml true impl -
   intermediate.txt: melange false impl -
 
-Sandboxed copies do not resolve back to their original sources.
+Sandboxed copies also resolve back to their original sources.
 
   $ mkdir sandboxed
   $ cp fanout/dune fanout/input.txt sandboxed/
@@ -762,10 +765,12 @@ Sandboxed copies do not resolve back to their original sources.
   $ dune build --root sandboxed @check
   $ (cd sandboxed && merlin_configurations \
   >   _build/default/.merlin-conf/lib-fanout input.txt intermediate.txt)
-  input.txt: none
-  intermediate.txt: none
+  input.txt: ocaml true impl -
+  input.txt: melange false impl -
+  intermediate.txt: ocaml true impl -
+  intermediate.txt: melange false impl -
 
-Rebuilding the destinations in the opposite order changes the returned mode.
+Rebuilding the destinations in the opposite order preserves both modes.
 
   $ printf 'let value = 2\n' > fanout/input.txt
   $ DUNE_SANDBOX=none dune build --root fanout target.melange.ml
@@ -774,9 +779,10 @@ Rebuilding the destinations in the opposite order changes the returned mode.
   $ (cd fanout && merlin_configurations \
   >   _build/default/.merlin-conf/lib-fanout input.txt)
   input.txt: ocaml true impl -
+  input.txt: melange false impl -
 
-Changing a destination's source leaves the old copy mapping in place. Here the
-original input still selects OCaml even though only Melange uses it now.
+Changing a destination's source replaces its old mapping. Only Melange uses
+the original input now.
 
   $ printf 'let value = 3\n' > fanout/alternate.txt
   $ sed 's/intermediate\.txt target\.ml)/alternate.txt target.ml)/' \
@@ -785,12 +791,12 @@ original input still selects OCaml even though only Melange uses it now.
   $ DUNE_SANDBOX=none dune build --root fanout @check
   $ (cd fanout && merlin_configurations \
   >   _build/default/.merlin-conf/lib-fanout input.txt alternate.txt)
-  input.txt: ocaml true impl -
+  input.txt: melange false impl -
   alternate.txt: ocaml true impl -
 
-Compound dialect suffixes also lose their readers in conditional sources.
-Exact queries select the right mode and kind, but filename fallback cannot
-distinguish the implementation from the interface in either mode.
+Compound dialect suffixes retain their readers and distinguish source kinds in
+both modes. Exact conditional source paths select one mode; untracked filenames
+use the fallback in both modes, even when their names contain `.melange`.
 
   $ mkdir compound
   $ cat > compound/dune-project <<EOF
@@ -826,17 +832,21 @@ distinguish the implementation from the interface in either mode.
   sample.intf.ml: ocaml true intf sample.impl.ml
   sample.melange.impl.ml: melange false impl sample.melange.intf.ml
   sample.melange.intf.ml: melange false intf sample.melange.impl.ml
-  sample.pp.impl.ml: none
-  sample.pp.intf.ml: none
-  sample.melange.pp.impl.ml: none
-  sample.melange.pp.intf.ml: none
+  sample.pp.impl.ml: ocaml true impl sample.intf.ml
+  sample.pp.impl.ml: melange false impl sample.melange.intf.ml
+  sample.pp.intf.ml: ocaml true intf sample.impl.ml
+  sample.pp.intf.ml: melange false intf sample.melange.impl.ml
+  sample.melange.pp.impl.ml: ocaml true impl sample.intf.ml
+  sample.melange.pp.impl.ml: melange false impl sample.melange.intf.ml
+  sample.melange.pp.intf.ml: ocaml true intf sample.impl.ml
+  sample.melange.pp.intf.ml: melange false intf sample.melange.impl.ml
   $ for file in sample.impl.ml sample.intf.ml \
   >   sample.melange.impl.ml sample.melange.intf.ml; do
   >   printf '%s: ' "$file"
   >   query_ocaml_merlin_pp "$PWD/compound/$file" --root compound \
   >     | grep -Eo '\(READER \([^)]*\)\)' || echo no-reader
   > done
-  sample.impl.ml: no-reader
-  sample.intf.ml: no-reader
-  sample.melange.impl.ml: no-reader
-  sample.melange.intf.ml: no-reader
+  sample.impl.ml: (READER (implementation))
+  sample.intf.ml: (READER (interface))
+  sample.melange.impl.ml: (READER (implementation))
+  sample.melange.intf.ml: (READER (interface))

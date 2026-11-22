@@ -117,6 +117,7 @@ let build_lib
          (Ok compiler)
          ~dir:(Path.build (Context.build_dir ctx))
          ~forbid_action_runner:true
+         ~env:(Ocaml_runtime_env.toolchain sctx ~dir Env.empty)
     |> Super_context.add_rule ~dir sctx ~loc:lib.buildable.loc)
 ;;
 
@@ -401,6 +402,7 @@ let build_shared (lib : Library.t) ~native_archives ~sctx ~dir ~flags =
          ~dir:(Path.build (Context.build_dir ctx))
          ~forbid_action_runner:true
          (Ok ocamlopt)
+         ~env:(Ocaml_runtime_env.toolchain sctx ~dir Env.empty)
     |> Super_context.add_rule sctx ~dir ~loc:lib.buildable.loc)
 ;;
 
@@ -644,8 +646,8 @@ let library_rules
     let flags = Compilation_context.flags cctx in
     let preprocess =
       match for_ with
-      | Ocaml -> lib.buildable.preprocess.config
-      | Melange -> lib.buildable.melange_preprocess.config
+      | Ocaml -> lib.buildable.preprocess
+      | Melange -> lib.buildable.melange_preprocess
     in
     Merlin.make
       ~requires_compile
@@ -653,7 +655,8 @@ let library_rules
       ~stdlib_dir:lib_config.stdlib_dir
       ~flags
       ~modules
-      ~preprocess:(Preprocess.Per_module.without_instrumentation preprocess)
+      ~preprocess:(Preprocess.Per_module.without_instrumentation preprocess.config)
+      ~preprocessor_deps:preprocess.preprocessor_deps
       ~libname:(Some (snd lib.name))
       ~obj_dir
       ~dialects:(Dune_project.dialects (Scope.project scope))
@@ -678,59 +681,45 @@ let resolve_compile_info (lib : Library.t) ~dir ~scope =
   lib_id, local_lib, compile_info
 ;;
 
-let compile_context_data (lib : Library.t) ~dir_contents ~scope ~for_ =
+let compile_context_data lib ~sctx ~dir_contents ~expander ~scope ~for_ =
   let dir = Dir_contents.dir dir_contents in
   let libs = Scope.libs scope in
   let* lib_id, local_lib, compile_info = resolve_compile_info lib ~dir ~scope in
-  let+ source_modules =
+  let* source_modules =
     Dir_contents.ml dir_contents ~for_ >>= Ml_sources.modules ~libs ~for_:(Library lib_id)
   in
-  let parameters = Lib.parameters local_lib in
-  local_lib, compile_info, source_modules, parameters
+  let+ cctx =
+    cctx
+      lib
+      ~sctx
+      ~source_modules
+      ~dir
+      ~scope
+      ~expander
+      ~parameters:(Lib.parameters local_lib)
+      ~compile_info
+      ~lib_info:(Lib.info local_lib)
+      ~for_
+  in
+  local_lib, compile_info, source_modules, cctx
 ;;
 
-let compile_context (lib : Library.t) ~sctx ~dir_contents ~expander ~scope ~for_ =
-  let dir = Dir_contents.dir dir_contents in
-  let* local_lib, compile_info, source_modules, parameters =
-    compile_context_data lib ~dir_contents ~scope ~for_
+let compile_context lib ~sctx ~dir_contents ~expander ~scope ~for_ =
+  let+ _, _, _, cctx =
+    compile_context_data lib ~sctx ~dir_contents ~expander ~scope ~for_
   in
-  let lib_info = Lib.info local_lib in
   cctx
-    lib
-    ~sctx
-    ~source_modules
-    ~dir
-    ~scope
-    ~expander
-    ~parameters
-    ~compile_info
-    ~lib_info
-    ~for_
 ;;
 
 let rules (lib : Library.t) ~sctx ~dir_contents ~expander ~scope =
   let dir = Dir_contents.dir dir_contents in
   let buildable = lib.buildable in
   let f ~for_ ~for_merlin =
-    let* local_lib, compile_info, source_modules, parameters =
-      compile_context_data lib ~dir_contents ~scope ~for_
-    in
-    let lib_info = Lib.info local_lib in
-    let* cctx =
-      cctx
-        lib
-        ~sctx
-        ~source_modules
-        ~dir
-        ~scope
-        ~expander
-        ~parameters
-        ~compile_info
-        ~lib_info
-        ~for_
+    let* local_lib, compile_info, source_modules, cctx =
+      compile_context_data lib ~sctx ~dir_contents ~expander ~scope ~for_
     in
     let* () =
-      let { Mode.Dict.byte; _ } = Lib_info.archives lib_info in
+      let { Mode.Dict.byte; _ } = Lib_info.archives (Lib.info local_lib) in
       let has_impl = Compilation_context.modules cctx |> Modules.With_vlib.has_impl in
       match for_, byte, has_impl with
       | Ocaml, _ :: _, false ->

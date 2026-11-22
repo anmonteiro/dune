@@ -41,6 +41,59 @@ type build =
       ; build_action : build_request -> unit Action_builder.t
       }
 
+module Rule_plugin = struct
+  type status =
+    | Starting
+    | Initialized
+    | Closed
+
+  type t =
+    { id : Dune_rpc.Id.t
+    ; mutable status : status
+    ; initialized : unit Session.t option Fiber.Ivar.t
+    }
+
+  let instances = Table.create (module Dune_rpc.Id) 16
+
+  let register ~id ~build ~exited =
+    let t = { id; status = Starting; initialized = Fiber.Ivar.create () } in
+    Dune_engine.Process.Build.register_rule_plugin
+      build
+      ~initialized:t.initialized
+      ~exited;
+    Table.add_exn instances id t;
+    t
+  ;;
+
+  let initialized t = Fiber.Ivar.read t.initialized
+
+  let close t =
+    let status = t.status in
+    t.status <- Closed;
+    Table.remove instances t.id;
+    let* () =
+      match status with
+      | Starting -> Fiber.Ivar.fill t.initialized None
+      | Initialized | Closed -> Fiber.return ()
+    in
+    initialized t
+    >>= function
+    | None -> Fiber.return ()
+    | Some session -> Session.close session
+  ;;
+
+  let on_upgrade session _menu =
+    match Session.initialize session |> Initialize.Request.id |> Table.find instances with
+    | None -> Fiber.return ()
+    | Some t ->
+      (match t.status with
+       | Initialized | Closed -> Session.close session
+       | Starting ->
+         t.status <- Initialized;
+         Fiber.Ivar.fill t.initialized (Some session))
+  ;;
+end
+
 module Clients = struct
   type entry = { session : unit Session.Stage1.t }
   type t = entry Session.Id.Map.t
@@ -54,16 +107,17 @@ module Clients = struct
   ;;
 
   let remove_session t (session : _ Session.Stage1.t) =
-    let id = Session.Stage1.id session in
-    Session.Id.Map.remove t id
+    Session.Stage1.id session |> Session.Id.Map.remove t
   ;;
 
   let to_list = Session.Id.Map.to_list
   let to_list_map = Session.Id.Map.to_list_map
 
   let repr =
-    let session_repr = Repr.abstract (Session.Stage1.to_dyn Dyn.unit) in
-    Repr.view (Repr.list session_repr) ~to_:(fun t ->
+    Session.Stage1.to_dyn Dyn.unit
+    |> Repr.abstract
+    |> Repr.list
+    |> Repr.view ~to_:(fun t ->
       Session.Id.Map.values t |> List.map ~f:(fun { session } -> session))
   ;;
 end
@@ -163,7 +217,14 @@ let handler (t : t Fdecl.t) : unit Handler.t =
     t.server.clients <- Clients.remove_session t.server.clients session;
     cancel_build_requests_for_session t session
   in
-  let rpc = Handler.create ~on_terminate ~on_init ~version:Dune_rpc.Version.latest () in
+  let rpc =
+    Handler.create
+      ~on_terminate
+      ~on_init
+      ~on_upgrade:Rule_plugin.on_upgrade
+      ~version:Dune_rpc.Version.latest
+      ()
+  in
   let () =
     let module Error = Build_system_error in
     let diff ~last ~(now : Error.Set.t) =
@@ -307,10 +368,13 @@ let handler (t : t Fdecl.t) : unit Handler.t =
       | Failure ->
         let diagnostics =
           current_errors ()
-          |> List.filter_map ~f:(fun error ->
+          |> List.map ~f:(fun error ->
             match Build_system_error.description error with
-            | `Exn _ -> None
-            | `Diagnostic compound_user_error -> Some compound_user_error)
+            | `Exn exn ->
+              Dune_rpc.Compound_user_error.make
+                ~main:(Dune_util.Report_error.user_message exn)
+                ~related:[]
+            | `Diagnostic compound_user_error -> compound_user_error)
         in
         Dune_rpc.Build_outcome_with_diagnostics.Failure diagnostics
     in
@@ -469,6 +533,7 @@ let handler (t : t Fdecl.t) : unit Handler.t =
     Handler.implement_request rpc Procedures.Public.build_dir f
   in
   Action_plugin.Server.implement_handler rpc;
+  Handler.declare_request rpc Dune_rpc.Rule_plugin.load_rules;
   Dune_rules_rpc.register rpc;
   rpc
 ;;

@@ -94,6 +94,61 @@ invalidate that result, first for source copies and then for new local rules.
   $ cat _build/default/child/result
   source
 
+Virtual children must receive updated inherited stanzas when their parent is
+reloaded, even though their source path has not changed.
+
+  $ cat > dune <<EOF
+  > (subdir generated
+  >  (rule (target result) (action (write-file result "first\n"))))
+  > EOF
+  $ build generated/result
+  Success
+  $ cat _build/default/generated/result
+  first
+  $ cat > dune <<EOF
+  > (subdir generated
+  >  (rule (target result) (action (write-file result "second\n"))))
+  > EOF
+  $ build generated/result
+  Success
+  $ cat _build/default/generated/result
+  second
+
+The same path can become physical, inherit a different status, and become
+virtual again without retaining the previous node's inputs.
+
+  $ mkdir generated
+  $ echo physical > generated/input
+  $ cat > generated/dune <<EOF
+  > (rule (target result) (deps input) (action (copy input result)))
+  > EOF
+  $ echo '(alias (name idle))' > dune
+  $ build generated/result
+  Success
+  $ cat _build/default/generated/result
+  physical
+  $ echo '(data_only_dirs generated)' > dune
+  $ build generated/result
+  Failure
+  [1]
+  $ build generated/input
+  Success
+  $ echo '(alias (name idle))' > dune
+  $ build generated/result
+  Success
+  $ cat _build/default/generated/result
+  physical
+  $ rm generated/dune generated/input
+  $ rmdir generated
+  $ cat > dune <<EOF
+  > (subdir generated
+  >  (rule (target result) (action (write-file result "virtual again\n"))))
+  > EOF
+  $ build generated/result
+  Success
+  $ cat _build/default/generated/result
+  virtual again
+
 We're done.
 
   $ stop_dune_quiet
@@ -279,3 +334,60 @@ Transitions must also work between separate Dune invocations.
   $ dune build result
   $ test ! -x _build/default/tree/value
   $ cmp tree/value _build/default/result
+  $ cd ..
+
+Source-change suppression must account for every build context and for direct
+readers of files that also have build-directory copies.
+
+  $ mkdir change-suppression
+  $ cd change-suppression
+  $ echo '(lang dune 3.0)' > dune-project
+  $ cat > dune-workspace <<EOF
+  > (lang dune 3.0)
+  > (context default)
+  > (context (default (name other)))
+  > EOF
+  $ cat > dune <<EOF
+  > (include rules.inc)
+  > (alias (name idle))
+  > (rule
+  >  (target result)
+  >  (deps data rules.inc)
+  >  (action (copy data result)))
+  > EOF
+  $ cat > rules.inc <<EOF
+  > (rule
+  >  (target included)
+  >  (action (with-stdout-to included (echo one))))
+  > EOF
+  $ echo one > data
+  $ start_dune @idle
+  $ build _build/default/result _build/other/result
+  Success
+
+An already updated copy in one context must not hide a stale copy in another.
+
+  $ chmod u+w _build/default/data
+  $ echo two > _build/default/data
+  $ echo two > data
+  $ build _build/other/result
+  Success
+  $ cat _build/other/result
+  two
+
+Even when all build copies match, a direct reader must observe the change.
+
+  $ chmod u+w _build/default/rules.inc _build/other/rules.inc
+  $ cat > .#rules.inc <<EOF
+  > (rule
+  >  (target included)
+  >  (action (with-stdout-to included (echo two))))
+  > EOF
+  $ cp .#rules.inc _build/default/rules.inc
+  $ cp .#rules.inc _build/other/rules.inc
+  $ cp .#rules.inc rules.inc
+  $ build _build/default/included
+  Success
+  $ cat _build/default/included
+  two
+  $ stop_dune_quiet

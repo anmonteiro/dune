@@ -228,6 +228,7 @@ let expand_artifact =
       let* module_ =
         match kind with
         | Cm_kind (Cmo | Cmx) -> lookup_module ~for_:Compilation_mode.Ocaml
+        | Melange _ -> lookup_module ~for_:Compilation_mode.Melange
         | Cm_kind Cmi | Cmt | Cmti ->
           let* ocaml = lookup_module ~for_:Compilation_mode.Ocaml in
           (match ocaml with
@@ -246,6 +247,7 @@ let expand_artifact =
             match kind with
             | Cm_kind Cmi -> Obj_dir.Module.cm_file obj_dir m ~kind:cmi_kind
             | Cm_kind kind -> Obj_dir.Module.cm_file obj_dir m ~kind:(Ocaml kind)
+            | Melange kind -> Obj_dir.Module.cm_file obj_dir m ~kind:(Melange kind)
             | Cmt -> Obj_dir.Module.cmt_file obj_dir m ~cm_kind:cmi_kind ~ml_kind:Impl
             | Cmti -> Some (Obj_dir.Module.cmti_file obj_dir m ~cm_kind:cmi_kind)
           with
@@ -293,7 +295,7 @@ let expand_melange_emit ~source t arg =
 let foreign_flags = Fdecl.create Dyn.opaque
 
 let cc t =
-  let make (language : Foreign_language.t) =
+  let make language =
     let+ cc =
       let* cc = Action_builder.of_memo @@ Fdecl.get foreign_flags ~dir:t.dir in
       Foreign_language.Dict.get cc language

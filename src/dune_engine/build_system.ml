@@ -264,7 +264,7 @@ let digest_env_subset d deps env =
 
 (* The current version of the rule digest scheme. We should increment it when
    making any changes to the scheme, to avoid collisions. *)
-let rule_digest_version = 36
+let rule_digest_version = 37
 
 let compute_rule_digest ~targets ~facts ~action ~sandbox_mode ~execution_parameters =
   let { Action.Full.action; props } = action in
@@ -287,8 +287,8 @@ let compute_rule_digest ~targets ~facts ~action ~sandbox_mode ~execution_paramet
       |> Execution_parameters.set_sandbox_actions false
       |> Execution_parameters.set_use_sandbox_policy false
   in
-  let digest =
-    let d = Digest.Manual.create () in
+  let d = Digest.Manual.create () in
+  try
     Digest.Manual.int d rule_digest_version;
     (* Update when changing the rule digest scheme. *)
     Digest.Manual.repr d Sandbox_mode.repr sandbox_mode;
@@ -301,8 +301,11 @@ let compute_rule_digest ~targets ~facts ~action ~sandbox_mode ~execution_paramet
     Digest.Manual.repr d Repr.(option Corrections.repr) corrections;
     Digest.Manual.digest d (Execution_parameters.digest execution_parameters);
     Digest.Manual.get d
-  in
-  digest
+  with
+  | exn ->
+    let exn = Exn_with_backtrace.capture exn in
+    Digest.Manual.reset d;
+    Exn_with_backtrace.reraise exn
 ;;
 
 let report_evaluated_rule_exn () =
@@ -684,18 +687,13 @@ and execute_rule_action
            the build directory. *)
         Rule_cache.Workspace_local.remove targets;
         let () =
-          let remove_target_dir dir =
-            let () = Rule_cache.Workspace_local.remove_subtree dir in
-            Path.rm_rf (Path.build dir)
-          in
           let remove_target_file path =
             match Fpath.unlink (Path.Build.to_string path) with
             | Success -> ()
             | Does_not_exist -> ()
             | Is_a_directory ->
-              (* If target changed from a directory to a file, delete
-                   in anyway. *)
-              remove_target_dir path
+              (* The target may have changed from a directory to a file. *)
+              Rule_cache.Workspace_local.delete_subtree path
             | Error exn ->
               Log.warn
                 "Error while removing target"
@@ -703,7 +701,10 @@ and execute_rule_action
                 ; "error", Dyn.string (Printexc.to_string exn)
                 ]
           in
-          Targets.Validated.iter targets ~file:remove_target_file ~dir:remove_target_dir
+          Targets.Validated.iter
+            targets
+            ~file:remove_target_file
+            ~dir:Rule_cache.Workspace_local.delete_subtree
         in
         let* produced_targets, dynamic_deps_stages =
           (* Step III. Try to restore artifacts from the shared cache. *)
@@ -1143,14 +1144,17 @@ let handle_final_exns exns =
        List.iter exns ~f:Dune_util.Report_error.report)
 ;;
 
-let complete_action_runner_build build =
-  match Process.Build.action_runner build with
-  | None -> Fiber.return ()
-  | Some action_runner ->
-    Action_runner.complete_build
-      action_runner
-      ~run_id:(Process.Build.run_id build)
-      ~cancellation:(Process.Build.cancellation build)
+let complete_build build =
+  Fiber.finalize
+    ~finally:(fun () -> Process.Build.complete_rule_plugins build)
+    (fun () ->
+       match Process.Build.action_runner build with
+       | None -> Fiber.return ()
+       | Some action_runner ->
+         Action_runner.complete_build
+           action_runner
+           ~run_id:(Process.Build.run_id build)
+           ~cancellation:(Process.Build.cancellation build))
 ;;
 
 let run_with_error_collection ?restart_started_at ~build_started_at ~build collect_errors =
@@ -1274,9 +1278,9 @@ let run_with_error_collection ?restart_started_at ~build_started_at ~build colle
         Option.iter timing_section ~f:Console.Status_line.remove_section)
   in
   Fiber.finalize
+    ~finally:(fun () -> complete_build build)
     (fun () ->
        Fiber.Mutex.with_lock State.build_mutex ~f:(fun () -> Process.Build.with_ build f))
-    ~finally:(fun () -> complete_action_runner_build build)
 ;;
 
 module Request = struct
@@ -1334,28 +1338,28 @@ let run_build_requests ?restart_started_at ~build_started_at ?build (request : R
     | Complete_goals, _ -> Request.Goal.complete goal outcome
   in
   let run_request goal =
-    Fiber.collect_errors (fun () ->
-      Memo.run_with_error_handler ~handle_error_no_raise:report_early_exn (fun () ->
-        Request.Goal.build goal
-        |> Action_builder.evaluate_and_collect_facts
-        |> Memo.map ~f:fst))
+    Memo.run_and_collect_errors (fun () ->
+      Request.Goal.build goal
+      |> Action_builder.evaluate_and_collect_facts
+      |> Memo.map ~f:fst)
     >>= function
     | Ok () ->
       let+ () = finish_request goal Success in
       Ok ()
-    | Error exns when List.for_all exns ~f:caused_by_cancellation ->
+    | Error exns when Memo.Exn_set.for_all exns ~f:caused_by_cancellation ->
       Fiber.return (Error exns)
     | Error exns ->
       let+ () = finish_request goal Failure in
       Error exns
   in
   run_with_error_collection ?restart_started_at ~build_started_at ~build (fun () ->
-    Request.goals request
-    |> Fiber.parallel_map ~f:run_request
-    >>| List.concat_map ~f:(function
-      | Ok () -> []
-      | Error exns -> exns)
-    >>| function
+    Memo.with_error_handler ~handle_error_no_raise:report_early_exn (fun () ->
+      Request.goals request |> Fiber.parallel_map ~f:run_request)
+    >>| List.filter_map ~f:(function
+      | Ok () -> None
+      | Error exns -> Some exns)
+    >>| fun exns ->
+    match Memo.Exn_set.(to_list (union_all exns)) with
     | [] -> Ok ()
     | exns -> Error exns)
 ;;

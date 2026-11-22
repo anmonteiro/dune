@@ -241,6 +241,12 @@ let define_all_alias ~dir ~project ~js_targets =
 ;;
 
 let gen_rules_for_stanzas sctx dir_contents cctxs expander ~dune_file ~dir:ctx_dir =
+  let gen_parser ~enabled_if ~for_ =
+    Expander.eval_blang expander enabled_if
+    >>= function
+    | false -> Memo.return ()
+    | true -> Parser_generator_rules.gen_rules sctx ~dir_contents ~dir:ctx_dir ~for_
+  in
   let src_dir = Dune_file.dir dune_file in
   let* stanzas = Dune_file.stanzas dune_file
   and* scope = Scope.DB.find_by_dir ctx_dir in
@@ -266,25 +272,9 @@ let gen_rules_for_stanzas sctx dir_contents cctxs expander ~dune_file ~dir:ctx_d
     Memo.parallel_iter stanzas ~f:(fun stanza ->
       match Stanza.repr stanza with
       | Parser_generators.Ocamllex.T ocamllex ->
-        Expander.eval_blang expander ocamllex.enabled_if
-        >>= (function
-         | false -> Memo.return ()
-         | true ->
-           Parser_generator_rules.gen_rules
-             sctx
-             ~dir_contents
-             ~dir:ctx_dir
-             ~for_:(Ocamllex ocamllex))
+        gen_parser ~enabled_if:ocamllex.enabled_if ~for_:(Ocamllex ocamllex)
       | Parser_generators.Ocamlyacc.T ocamlyacc ->
-        Expander.eval_blang expander ocamlyacc.enabled_if
-        >>= (function
-         | false -> Memo.return ()
-         | true ->
-           Parser_generator_rules.gen_rules
-             sctx
-             ~dir_contents
-             ~dir:ctx_dir
-             ~for_:(Ocamlyacc ocamlyacc))
+        gen_parser ~enabled_if:ocamlyacc.enabled_if ~for_:(Ocamlyacc ocamlyacc)
       | Menhir_stanza.T m ->
         Expander.eval_blang expander m.enabled_if
         >>= (function
@@ -614,29 +604,28 @@ let gen_rules_regular_directory (sctx : Super_context.t Memo.t) ~src_dir ~compon
           in
           fun rules ->
             let rules =
-              let* rules =
-                let+ automatic_subdir_rules =
-                  gen_automatic_subdir_rules sctx ~dir ~nearest_src_dir ~src_dir
-                and+ project_rules =
-                  match st_dir with
-                  | None -> Memo.return Rules.empty
-                  | Some st_dir -> gen_project_rules sctx st_dir
-                and+ rules = rules in
-                Rules.union (Rules.union project_rules automatic_subdir_rules) rules
-              in
-              let+ compile_commands_rules =
+              let+ automatic_subdir_rules =
+                gen_automatic_subdir_rules sctx ~dir ~nearest_src_dir ~src_dir
+              and+ project_rules =
+                match st_dir with
+                | None -> Memo.return Rules.empty
+                | Some st_dir -> gen_project_rules sctx st_dir
+              and+ compile_commands_rules =
                 (* Generate compile_commands.json only for the merlin
                    context at the context root *)
                 match components with
                 | [] ->
                   let* sctx = sctx in
                   if Context.merlin (Super_context.context sctx)
-                  then
-                    Rules.collect_unit (fun () -> Compile_commands.gen_rules sctx ~rules)
+                  then Rules.collect_unit (fun () -> Compile_commands.gen_rules sctx)
                   else Memo.return Rules.empty
                 | _ -> Memo.return Rules.empty
-              in
-              Rules.union rules compile_commands_rules
+              and+ rules = rules in
+              Rules.union
+                (Rules.union
+                   (Rules.union project_rules automatic_subdir_rules)
+                   compile_commands_rules)
+                rules
             in
             Gen_rules.Rules.create
               ~build_dir_only_sub_dirs:
@@ -744,10 +733,21 @@ let private_context ~dir components _ctx =
   analyze_private_context_path components
   >>= function
   | `Invalid_context -> Memo.return Gen_rules.Unknown_context
+  | `Valid (_, ".binaries" :: rest) -> Memo.return (Bin_layout.gen_rules ~dir rest)
+  | `Valid (ctx, ".packages" :: rest) -> Install_layout.gen_rules ctx ~dir rest
   | `Valid (ctx, components) ->
     let+ lock_rules = Lock_rules.setup_rules ~dir ~components
     and+ pkg_rules = Pkg_rules.setup_rules ctx ~dir ~components in
-    Gen_rules.combine lock_rules pkg_rules
+    let layout_roots =
+      match components with
+      | [] ->
+        Gen_rules.make_empty
+          ~dir
+          (Subdir_set.of_list
+             [ Filename.of_string_exn ".packages"; Filename.of_string_exn ".binaries" ])
+      | _ -> Gen_rules.no_rules
+    in
+    Gen_rules.combine layout_roots (Gen_rules.combine lock_rules pkg_rules)
   | `Root ->
     let+ contexts = Per_context.list () in
     let build_dir_only_sub_dirs =
@@ -807,33 +807,10 @@ let gen_rules ctx ~dir components =
         Gen_rules.Build_only_sub_dirs.singleton ~dir context_dirs
       in
       Gen_rules.make ~build_dir_only_sub_dirs (Memo.return Rules.empty)
-    | _ctx :: ".binaries" :: rest -> Bin_layout.gen_rules ~dir rest |> Memo.return
-    | ctx :: ".packages" :: rest ->
-      Install_layout.gen_rules (Context_name.of_string ctx) ~dir rest
-    | ctx :: rest ->
+    | ctx :: _ ->
       let ctx = Context_name.of_string ctx in
       with_context ctx ~f:(fun sctx ->
         let+ subdirs, rules = Install_rules.symlink_rules sctx ~dir in
-        let subdirs =
-          match rest with
-          | [] ->
-            (* Here we retain the extra subdirectories that we dispatched
-               above. *)
-            Subdir_set.union
-              subdirs
-              (* CR-someday Alizter: Sharing these directory names with the
-                 dispatch cases above would avoid duplicate strings, but
-                 dispatch and retention could still get out of sync.
-
-                 It would be better to have a structured [Gen_rules] API where
-                 registering a generated child dispatcher automatically retains
-                 that child. *)
-              (Subdir_set.of_list
-                 [ Filename.of_string_exn ".binaries"
-                 ; Filename.of_string_exn ".packages"
-                 ])
-          | _ :: _ -> subdirs
-        in
         let directory_targets = Rules.directory_targets rules in
         Gen_rules.make
           ~build_dir_only_sub_dirs:(Gen_rules.Build_only_sub_dirs.singleton ~dir subdirs)
@@ -842,8 +819,7 @@ let gen_rules ctx ~dir components =
   else if Context_name.equal ctx Private_context.t.name
   then private_context ~dir components ctx
   else if Context_name.equal ctx Fetch_rules.context.name
-  then
-    Fetch_rules.gen_rules ~dir ~components:(List.map components ~f:Filename.of_string_exn)
+  then Fetch_rules.gen_rules components
   else
     let* () = raise_on_lock_dir_out_of_sync ctx in
     let gen_pkg_alias_rule = Pkg_rules.setup_pkg_install_alias ~dir ctx in

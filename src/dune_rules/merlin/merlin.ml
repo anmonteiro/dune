@@ -12,6 +12,18 @@ let remove_extension file =
   Path.Build.relative dir basename
 ;;
 
+let source_extension ~for_ file =
+  match String.lsplit2 (Path.Build.basename file |> Filename.to_string) ~on:'.' with
+  | None -> ""
+  | Some (_, extension) ->
+    let extension =
+      match for_, String.lsplit2 extension ~on:'.' with
+      | Compilation_mode.Melange, Some ("melange", extension) -> extension
+      | (Ocaml | Melange), (Some _ | None) -> extension
+    in
+    "." ^ extension
+;;
+
 module Processed = struct
   (* The actual content of the merlin file as built by the [Unprocessed.process]
      function from the unprocessed info gathered through [gen_rules]. The first
@@ -71,6 +83,9 @@ module Processed = struct
     ; extensions : string option Ml_kind.Dict.t list
     ; indexes : Path.t list
     ; parameters : Module_name.t list
+    ; pp_deps : Path.Set.t option
+      (* [None] when the preprocessor dependencies cannot be expressed as a
+         set of files, in which case Merlin's PPX cache is disabled. *)
     }
 
   let path_set_repr = Repr.abstract Path.Set.to_dyn
@@ -100,7 +115,13 @@ module Processed = struct
           ~get:(fun t -> t.extensions)
       ; Repr.field "indexes" (Repr.list Path.repr) ~get:(fun t -> t.indexes)
       ; Repr.field "parameters" (Repr.list Module_name.repr) ~get:(fun t -> t.parameters)
+      ; Repr.field "pp_deps" (Repr.option path_set_repr) ~get:(fun t -> t.pp_deps)
       ]
+  ;;
+
+  let union_pp_deps pp_deps1 pp_deps2 =
+    Option.both pp_deps1 pp_deps2
+    |> Option.map ~f:(fun (pp_deps1, pp_deps2) -> Path.Set.union pp_deps1 pp_deps2)
   ;;
 
   type source =
@@ -233,7 +254,7 @@ module Processed = struct
 
     let name = "merlin-conf"
     let sharing = false
-    let version = 15
+    let version = 16
 
     let repr =
       Repr.view Repr.string ~to_:(fun _ -> "Use [dune ocaml dump-dot-merlin] instead")
@@ -260,11 +281,7 @@ module Processed = struct
           sources
           ~init
           ~f:(fun acc ({ path = src; kind; has_counterpart }, src_without_extension) ->
-            let reader =
-              String.Map.find
-                readers
-                (Filename.Extension.Or_empty.to_string (Path.Build.extension src))
-            in
+            let reader = String.Map.find readers (source_extension ~for_ src) in
             let config = { module_config; reader; kind = Some kind; has_counterpart } in
             (* Also index the path without its extension for preprocessed files. *)
             let fallback =
@@ -315,6 +332,7 @@ module Processed = struct
         ; extensions
         ; indexes
         ; parameters
+        ; pp_deps
         }
     =
     let make_directive tag value = Sexp.List [ Atom tag; value ] in
@@ -388,6 +406,15 @@ module Processed = struct
         ]
       | None -> []
     in
+    let ppx_cache =
+      match pp_deps with
+      | None -> []
+      | Some pp_deps ->
+        Path.Set.to_list_map
+          ~f:(fun pp_dep -> make_directive "PPX_DEPS" (Atom (serialize_path pp_dep)))
+          pp_deps
+        @ [ Sexp.List [ Atom "USE_PPX_CACHE" ] ]
+    in
     Sexp.List
       (List.concat
          [ index_files
@@ -403,6 +430,7 @@ module Processed = struct
          ; unit_name
          ; suffixes
          ; reader
+         ; ppx_cache
          ])
   ;;
 
@@ -423,6 +451,7 @@ module Processed = struct
         stdlib_dir
         source_root
         pp_configs
+        pp_deps
         flags
         obj_dirs
         cmt_dirs
@@ -449,6 +478,9 @@ module Processed = struct
     List.iter extensions ~f:(fun x ->
       Option.iter (get_ext x) ~f:(fun (impl, intf) ->
         printf "SUFFIX %s\n" (Printf.sprintf "%s %s" impl intf)));
+    Option.iter pp_deps ~f:(fun pp_deps ->
+      Path.Set.iter pp_deps ~f:(fun s -> printf "PPX_DEPS %s\n" (serialize_path s));
+      print "USE_PPX_CACHE\n");
     (* We print all FLG directives as comments *)
     List.iter
       pp_configs
@@ -494,7 +526,7 @@ module Processed = struct
     to_sexp ~unit_name ~opens ~pp ~reader config
   ;;
 
-  let get_configuration { per_file_config; _ } ~file ~allow_ambiguous =
+  let get_configuration { per_file_config; for_; _ } ~file ~allow_ambiguous =
     let open Option.O in
     let* match_kind, ({ kind; _ } as module_config) =
       let find file =
@@ -505,9 +537,19 @@ module Processed = struct
       match find file with
       | Some config -> Some (Exact_or_copy, config)
       | None ->
-        (match Copy_line_directive.DB.follow_while file ~f:find with
-         | Some config -> Some (Exact_or_copy, config)
-         | None ->
+        (match Copy_line_directive.DB.follow file |> List.filter_map ~f:find with
+         | config :: rest ->
+           let same_source { module_config; kind; _ } =
+             String.equal config.module_config.unit_name module_config.unit_name
+             &&
+             match config.kind, kind with
+             | None, None | Some Impl, Some Impl | Some Intf, Some Intf -> true
+             | _ -> false
+           in
+           if allow_ambiguous || List.for_all rest ~f:same_source
+           then Some (Exact_or_copy, config)
+           else None
+         | [] ->
            (* Fallback to handle preprocessed files (where the preprocessor has
               the file extensison changed).
 
@@ -519,14 +561,45 @@ module Processed = struct
            let+ ({ module_config = { sources; _ }; _ } as fallback) =
              Path.Build.Map.find per_file_config (remove_extension file)
            in
-           let extension =
-             Path.Build.extension file |> Filename.Extension.Or_empty.to_string
+           let basename = Path.Build.basename file |> Filename.to_string in
+           let _, matching_sources =
+             List.fold_left
+               sources
+               ~init:(0, [])
+               ~f:(fun ((length, matches) as acc) ({ path; _ } as source) ->
+                 let extension = source_extension ~for_ path in
+                 let extension =
+                   (* [Module.pped] inserts ".pp" before the final extension. *)
+                   match String.rsplit2 extension ~on:'.' with
+                   | None -> extension
+                   | Some (prefix, suffix) ->
+                     let preprocessed = prefix ^ ".pp." ^ suffix in
+                     if String.ends_with basename ~suffix:preprocessed
+                     then preprocessed
+                     else extension
+                 in
+                 if
+                   String.is_empty extension
+                   || not (String.ends_with basename ~suffix:extension)
+                 then acc
+                 else (
+                   let source_length = String.length extension in
+                   match Int.compare source_length length with
+                   | Lt -> acc
+                   | Eq -> length, source :: matches
+                   | Gt -> source_length, [ source ]))
            in
            let matching_sources =
-             List.filter sources ~f:(fun { path; _ } ->
-               String.equal
-                 extension
-                 (Path.Build.extension path |> Filename.Extension.Or_empty.to_string))
+             match matching_sources with
+             | _ :: _ -> matching_sources
+             | [] ->
+               let extension =
+                 Path.Build.extension file |> Filename.Extension.Or_empty.to_string
+               in
+               List.filter sources ~f:(fun { path; _ } ->
+                 String.equal
+                   extension
+                   (Path.Build.extension path |> Filename.Extension.Or_empty.to_string))
            in
            let config =
              match matching_sources with
@@ -683,7 +756,8 @@ module Processed = struct
           , hidden_src_dirs
           , flags
           , extensions
-          , indexes )
+          , indexes
+          , pp_deps )
         =
         (* We merge what is easy to merge and ignore the rest *)
         List.fold_left
@@ -697,7 +771,8 @@ module Processed = struct
             , init.config.hidden_src_dirs
             , [ init.config.flags ]
             , init.config.extensions
-            , init.config.indexes )
+            , init.config.indexes
+            , init.config.pp_deps )
           ~f:
             (fun
               ( acc_pp
@@ -708,7 +783,8 @@ module Processed = struct
               , acc_hidden_src
               , acc_flags
               , acc_ext
-              , acc_indexes )
+              , acc_indexes
+              , acc_pp_deps )
               { per_file_config = _
               ; pp_config
               ; for_ = _
@@ -724,6 +800,7 @@ module Processed = struct
                   ; extensions
                   ; indexes
                   ; parameters = _
+                  ; pp_deps
                   }
               }
             ->
@@ -735,7 +812,8 @@ module Processed = struct
             , Path.Set.union acc_hidden_src hidden_src_dirs
             , flags :: acc_flags
             , extensions @ acc_ext
-            , indexes @ acc_indexes ))
+            , indexes @ acc_indexes
+            , union_pp_deps pp_deps acc_pp_deps ))
       in
       Printf.printf
         "%s\n"
@@ -743,6 +821,7 @@ module Processed = struct
            init.config.stdlib_dir
            init.config.source_root
            pp_configs
+           pp_deps
            flags
            obj_dirs
            cmt_dirs
@@ -752,6 +831,49 @@ module Processed = struct
            extensions
            indexes
            init.config.parameters)
+  ;;
+end
+
+module Write = struct
+  module Spec = struct
+    type ('path, 'target) t = Processed.Unindexed.t Nonempty_list.t * Digest.t * 'target
+
+    let name = "write-merlin-conf"
+    let version = 1
+    let runs_process = false
+    let can_run_in_action_runner = false
+    let is_useful_to_memoize = true
+    let bimap (configurations, digest, target) _path f = configurations, digest, f target
+
+    let encode (_, digest, target) _path target_to_sexp : Sexp.t =
+      List [ target_to_sexp target; Atom (Digest.to_string digest) ]
+    ;;
+
+    let action (configurations, _, target) ~ectx:_ ~eenv:_ =
+      Processed.Persist.dump (Path.build target) configurations;
+      Fiber.return ()
+    ;;
+  end
+
+  module A = Action_ext.Make (Spec)
+
+  let action configurations_with_digests ~target =
+    let configurations = Nonempty_list.map configurations_with_digests ~f:fst in
+    let without_indexes =
+      Nonempty_list.map
+        configurations
+        ~f:(fun ({ Processed.Unindexed.config; _ } as configuration) ->
+          { configuration with config = { config with indexes = [] } })
+    in
+    let content = Processed.Persist.to_string without_indexes in
+    let index_digests = Nonempty_list.to_list_map configurations_with_digests ~f:snd in
+    let digest =
+      let d = Digest.Manual.create () in
+      Digest.Manual.string d content;
+      Digest.Manual.list d index_digests ~f:Digest.Manual.digest;
+      Digest.Manual.get d
+    in
+    A.action (configurations, digest, target)
   ;;
 end
 
@@ -767,8 +889,7 @@ let obj_dir_of_lib kind mode obj_dir =
 module Unprocessed = struct
   (* We store separate information for each "module". These information do not
      reflect the actual content of the Merlin configuration yet but are needed
-     for it's elaboration via the function [process : Unprocessed.t ... ->
-     Processed.Unindexed.t] *)
+     for its elaboration by [process]. *)
   type config =
     { stdlib_dir : Path.t
     ; requires_compile : Lib.t list Resolve.t
@@ -776,6 +897,7 @@ module Unprocessed = struct
     ; flags : string list Action_builder.t
     ; preprocess :
         Preprocess.Without_instrumentation.t Preprocess.t Module_reference.Per_item.t
+    ; preprocessor_deps : Dep_conf.t list
     ; libname : Lib_name.Local.t option
     ; objs_dirs : Path.Set.t
     ; extensions : string option Ml_kind.Dict.t list
@@ -796,6 +918,7 @@ module Unprocessed = struct
         ~stdlib_dir
         ~flags
         ~preprocess
+        ~preprocessor_deps
         ~libname
         ~modules
         ~obj_dir
@@ -823,6 +946,7 @@ module Unprocessed = struct
       ; requires_hidden
       ; flags
       ; preprocess
+      ; preprocessor_deps
       ; libname
       ; objs_dirs
       ; extensions
@@ -952,10 +1076,53 @@ module Unprocessed = struct
   module Per_item_action_builder =
     Module_reference.Per_item.Make_monad_traversals (Action_builder)
 
+  (* Evaluates [builder] and returns the files it depends on, to be given to
+     Merlin as [PPX_DEPS]. Returns [None] when some dependencies cannot be
+     expressed as files, in which case Merlin's PPX cache must be disabled. *)
+  let ppx_deps_of_builder builder =
+    Action_builder.dyn_memo_deps
+      (let open Memo.O in
+       let+ x, facts = Action_builder.evaluate_and_collect_facts builder in
+       let only_files =
+         Dep.Map.for_alli facts ~f:(fun dep _ ->
+           match (dep : Dep.t) with
+           | File _ | File_selector _ -> true
+           | Env _ | Alias _ | Universe -> false)
+       in
+       let pp_deps =
+         Option.some_if only_files (Dep.Facts.paths facts ~expand_aliases:false)
+       in
+       Dep.Map.map facts ~f:ignore, (x, pp_deps))
+  ;;
+
   let pp_config t ctx ~expander =
     Per_item_action_builder.map
       t.config.preprocess
       ~f:(pp_flags ctx ~for_:t.config.for_ ~expander t.config.libname)
+  ;;
+
+  (* Like [pp_config], but also returns the dependencies of the PPX rewriters
+     (see [ppx_deps_of_builder]). *)
+  let pp_config_and_deps t ctx ~expander =
+    let open Action_builder.O in
+    let+ pp_config_and_deps =
+      Per_item_action_builder.map t.config.preprocess ~f:(fun preprocess ->
+        let pp_flag =
+          pp_flags ctx ~for_:t.config.for_ ~expander t.config.libname preprocess
+        in
+        match preprocess with
+        | Pps _ -> ppx_deps_of_builder pp_flag
+        | No_preprocessing | Action _ | Future_syntax _ ->
+          (* Merlin never caches the output of [-pp] preprocessors, so their
+             dependencies are irrelevant to its PPX cache. *)
+          let+ pp_flag = pp_flag in
+          pp_flag, Some Path.Set.empty)
+    in
+    ( Module_reference.Per_item.map pp_config_and_deps ~f:fst
+    , Module_reference.Per_item.fold
+        pp_config_and_deps
+        ~init:(Some Path.Set.empty)
+        ~f:(fun (_, pp_deps) acc -> Processed.union_pp_deps pp_deps acc) )
   ;;
 
   let add_lib_dirs sctx ~for_ libs =
@@ -1011,6 +1178,7 @@ module Unprocessed = struct
              ; requires_compile
              ; requires_hidden
              ; preprocess = _
+             ; preprocessor_deps
              ; libname = _
              ; for_
              ; parameters
@@ -1023,7 +1191,26 @@ module Unprocessed = struct
     =
     let open Action_builder.O in
     let context = Super_context.context sctx in
-    let+ config =
+    let* pp_config, pp_config_deps = pp_config_and_deps t context ~expander in
+    let* (), preprocessor_deps =
+      let env, _sandbox =
+        Dep_conf_eval.unnamed
+          Sandbox_config.no_special_requirements
+          ~expander
+          preprocessor_deps
+      in
+      let* _, deps =
+        Action_builder.of_memo (Action_builder.evaluate_and_collect_deps env)
+      in
+      if
+        Dep.Set.for_all deps ~f:(function
+          | File _ | File_selector _ -> true
+          | Env _ | Alias _ | Universe -> false)
+      then ppx_deps_of_builder (Action_builder.ignore env)
+      else Action_builder.return ((), None)
+    in
+    let pp_deps = Processed.union_pp_deps pp_config_deps preprocessor_deps in
+    let+ config, indexes_digest =
       let* stdlib_dir =
         Action_builder.of_memo
         @@
@@ -1068,7 +1255,10 @@ module Unprocessed = struct
                List.concat [ requires_compile; libs ])
       in
       let+ flags = flags
-      and+ indexes = Ocaml_index.context_indexes context ~for_
+      and+ indexes, indexes_digest = Ocaml_index.context_indexes context ~for_
+      and+ use_hidden_includes =
+        let+ ocaml = Action_builder.of_memo (Context.ocaml context) in
+        Ocaml.Version.supports_hidden_includes ocaml.version
       and+ deps_src_dirs, deps_obj_dirs, deps_cmt_dirs =
         add_lib_dirs sctx ~for_ requires_compile
       and+ hidden_src_dirs, hidden_obj_dirs, hidden_cmt_dirs =
@@ -1081,20 +1271,26 @@ module Unprocessed = struct
       in
       let obj_dirs = Path.Set.union deps_obj_dirs objs_dirs in
       let cmt_dirs = Path.Set.union deps_cmt_dirs hidden_cmt_dirs in
+      let hidden_obj_dirs =
+        if use_hidden_includes
+        then Path.Set.union hidden_obj_dirs cmt_dirs
+        else hidden_obj_dirs
+      in
       let source_root = Path.Source.root |> Path.source in
-      { Processed.stdlib_dir
-      ; source_root
-      ; src_dirs
-      ; obj_dirs
-      ; cmt_dirs
-      ; hidden_src_dirs
-      ; hidden_obj_dirs
-      ; flags
-      ; extensions
-      ; indexes
-      ; parameters
-      }
-    and+ pp_config = pp_config t context ~expander
+      ( { Processed.stdlib_dir
+        ; source_root
+        ; src_dirs
+        ; obj_dirs
+        ; cmt_dirs
+        ; hidden_src_dirs
+        ; hidden_obj_dirs
+        ; flags
+        ; extensions
+        ; indexes
+        ; parameters
+        ; pp_deps
+        }
+      , indexes_digest )
     and+ source_dirs =
       Action_builder.of_memo
         (let open Memo.O in
@@ -1156,12 +1352,13 @@ module Unprocessed = struct
           let opens = Modules.With_vlib.local_open modules m in
           { Processed.opens; module_path; unit_name; sources } :: init)
     in
-    { Processed.Unindexed.config
-    ; modules = module_configs
-    ; pp_config
-    ; readers
-    ; for_ = t.config.for_
-    }
+    ( { Processed.Unindexed.config
+      ; modules = module_configs
+      ; pp_config
+      ; readers
+      ; for_ = t.config.for_
+      }
+    , indexes_digest )
   ;;
 end
 
@@ -1184,13 +1381,13 @@ let dot_merlin sctx ~dir ~more_src_dirs ~expander (default :: alternatives : gro
     in
     let+ default = process default
     and+ alternatives = List.map alternatives ~f:process |> Action_builder.all in
-    (default :: alternatives : Processed.Unindexed.t Nonempty_list.t)
+    (default :: alternatives : (Processed.Unindexed.t * Digest.t) Nonempty_list.t)
   in
   let action =
     configurations
-    |> Action_builder.map ~f:Processed.Persist.to_string
-    |> Action_builder.with_no_targets
-    |> Action_builder.With_targets.write_file_dyn merlin_file
+    |> Action_builder.map ~f:(fun configurations ->
+      Write.action configurations ~target:merlin_file |> Action.Full.make)
+    |> Action_builder.with_file_targets ~file_targets:[ merlin_file ]
   in
   Super_context.add_rule sctx ~dir action
 ;;

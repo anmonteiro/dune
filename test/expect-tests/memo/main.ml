@@ -452,85 +452,6 @@ let%expect_test "fib linked list" =
   |}]
 ;;
 
-module Function = struct
-  type 'a input =
-    | I : int Type_eq.Id.t * int -> int input
-    | S : string Type_eq.Id.t * string -> string input
-
-  type 'a output = 'a list
-
-  let name = "memo-poly"
-
-  let id (type a) (x : a input) : a Type_eq.Id.t =
-    match x with
-    | I (id, _) -> id
-    | S (id, _) -> id
-  ;;
-
-  let to_dyn _ = Dyn.Opaque
-
-  let eval (type a) (x : a input) : a output Memo.t =
-    match x with
-    | I (_, i) ->
-      let* () = Memo.return () in
-      printf "Evaluating %d\n" i;
-      Memo.return (List.init i ~f:(fun i -> i + 1))
-    | S (_, s) ->
-      let* () = Memo.return () in
-      printf "Evaluating %S\n" s;
-      Memo.return [ s ]
-  ;;
-
-  let get (type a) (x : a input) : a =
-    match x with
-    | I (_, x) -> x
-    | S (_, x) -> x
-  ;;
-end
-
-let%expect_test "Memo.Poly" =
-  let module M = Memo.Poly (Function) in
-  let (i1 : int Function.input) = I (Type_eq.Id.create (), 1) in
-  let (i2 : int Function.input) = I (Type_eq.Id.create (), 2) in
-  let (s1 : string Function.input) = S (Type_eq.Id.create (), "hi") in
-  let (s2 : string Function.input) = S (Type_eq.Id.create (), "hi again") in
-  let run_int i =
-    let res = run (M.eval i) in
-    Dyn.to_string (Dyn.list Dyn.int res)
-  in
-  let run_string s =
-    let res = run (M.eval s) in
-    Dyn.to_string (Dyn.list Dyn.string res)
-  in
-  printf "----- First-time calls -----\n";
-  printf "%d -> %s\n" (Function.get i1) (run_int i1);
-  printf "%S -> %s\n" (Function.get s1) (run_string s1);
-  printf "%d -> %s\n" (Function.get i2) (run_int i2);
-  printf "%S -> %s\n" (Function.get s2) (run_string s2);
-  printf "----- Repeated calls (memoized) -----\n";
-  printf "%d -> %s\n" (Function.get i1) (run_int i1);
-  printf "%S -> %s\n" (Function.get s1) (run_string s1);
-  printf "%d -> %s\n" (Function.get i2) (run_int i2);
-  printf "%S -> %s\n" (Function.get s2) (run_string s2);
-  [%expect
-    {|
-    ----- First-time calls -----
-    Evaluating 1
-    1 -> [ 1 ]
-    Evaluating "hi"
-    "hi" -> [ "hi" ]
-    Evaluating 2
-    2 -> [ 1; 2 ]
-    Evaluating "hi again"
-    "hi again" -> [ "hi again" ]
-    ----- Repeated calls (memoized) -----
-    1 -> [ 1 ]
-    "hi" -> [ "hi" ]
-    2 -> [ 1; 2 ]
-    "hi again" -> [ "hi again" ]
-    |}]
-;;
-
 let print_cycle_error cycle_error =
   let frames = Memo.Cycle_error.get cycle_error in
   printf "Dependency cycle detected:\n";
@@ -2618,4 +2539,56 @@ let%expect_test "on_event fires Live and Validated" =
   ignore (run_memo f 1 : int);
   print_events ();
   [%expect {| 1:live 1:validated |}]
+;;
+
+let%expect_test "node_staged creates independent lazy nodes" =
+  let calls = ref 0 in
+  let module Input = struct
+    type t = int
+
+    let to_dyn = Repr.to_dyn Repr.int
+  end
+  in
+  let create =
+    Memo.node_staged
+      ~name:"staged"
+      ~input:(module Input)
+      (fun input ->
+         incr calls;
+         Memo.return (input * 2))
+    |> Staged.unstage
+  in
+  let first = create 1 in
+  let second = create 1 in
+  let third = create 2 in
+  printf "calls before reading: %d\n" !calls;
+  let show node = printf "value: %d\n" (run (Memo.Node.read node)) in
+  List.iter [ first; second; third; first; second ] ~f:show;
+  printf "calls: %d\n" !calls;
+  [%expect
+    {|
+    calls before reading: 0
+    value: 2
+    value: 2
+    value: 4
+    value: 2
+    value: 2
+    calls: 3
+    |}];
+  Memo.reset (Memo.Node.invalidate ~reason:Test second);
+  show first;
+  printf "calls: %d\n" !calls;
+  show second;
+  printf "calls: %d\n" !calls;
+  show third;
+  printf "calls: %d\n" !calls;
+  [%expect
+    {|
+    value: 2
+    calls: 3
+    value: 2
+    calls: 4
+    value: 4
+    calls: 4
+    |}]
 ;;

@@ -31,6 +31,23 @@ We should only see the result of building "bar"
   $ build_pkg bar
   building bar
 
+Loading package rules must not resolve or expand unrelated packages, reject
+missing sources, or build dependencies needed by their exported environment.
+
+  $ make_lockpkg not-needed <<EOF
+  > (version dev)
+  > (build (run false))
+  > EOF
+  $ make_lockpkg unused <<EOF
+  > (version dev)
+  > (depends not-needed)
+  > (source (copy "$PWD/missing-source"))
+  > (exported_env (= UNUSED %{pkg:not-needed:version}))
+  > (build (run missing-program))
+  > EOF
+  $ build_pkg bar
+  $ test ! -e "$(get_build_pkg_dir not-needed)/target"
+
 Package build commands are not restricted by the shared-cache Landlock policy.
 
   $ export DUNE_CACHE_ROOT=$PWD/cache-root
@@ -42,3 +59,91 @@ Package build commands are not restricted by the shared-cache Landlock policy.
   $ build_pkg cache-writer
   $ test -e "$DUNE_CACHE_ROOT/db/package-marker" && echo wrote
   wrote
+
+Editing a lock input must rebuild the affected package.
+
+  $ make_lockpkg foo <<EOF
+  > (build (run echo rebuilt foo))
+  > (version dev)
+  > EOF
+  $ build_pkg foo
+  rebuilt foo
+
+Binary lock payloads reach the installed package byte-for-byte.
+
+  $ mkdir -p dune.lock/payload.files/sub
+  $ printf 'binary\000contents\n' > dune.lock/payload.files/sub/data
+  $ cat > dune.lock/payload.files/tool <<'EOF'
+  > #!/bin/sh
+  > echo payload-ok
+  > EOF
+  $ chmod +x dune.lock/payload.files/tool
+  $ make_lockpkg payload <<'EOF'
+  > (version dev)
+  > (build (run ./tool))
+  > (install (run cp sub/data %{pkg-self:share}/data))
+  > EOF
+  $ build_pkg payload
+  payload-ok
+  $ payload_dir=$(get_build_pkg_dir payload)
+  $ cmp dune.lock/payload.files/sub/data "$payload_dir/target/share/payload/data"
+  $ build_pkg payload
+
+Changing bytes after the NUL must invalidate the package without changing
+its metadata or the payload size.
+
+  $ printf 'binary\000modified\n' > dune.lock/payload.files/sub/data
+  $ build_pkg payload
+  payload-ok
+  $ payload_dir=$(get_build_pkg_dir payload)
+  $ cmp dune.lock/payload.files/sub/data "$payload_dir/target/share/payload/data"
+
+The build command is expanded before a missing source is reported, installing
+the dependency needed to expand its package variable.
+
+  $ make_lockpkg source-error-dep <<EOF
+  > (version dev)
+  > (build (run echo dependency-built))
+  > EOF
+  $ make_lockpkg source-error <<EOF
+  > (version dev)
+  > (depends source-error-dep)
+  > (source (copy "$PWD/missing-source"))
+  > (build (run echo %{pkg:source-error-dep:version}))
+  > EOF
+  $ build_pkg source-error > source-error.log 2>&1
+  [1]
+  $ grep -q 'does not exist' source-error.log
+  $ if test -d "$(get_build_pkg_dir source-error-dep)/target"; then
+  >   echo dependency-built-before-source-error
+  > else
+  >   echo source-rejected-first
+  > fi
+  dependency-built-before-source-error
+
+Eager rule collection for directory-target discovery traverses unrelated
+package sources. The looping symlink in the external source masks the usual
+directory-target diagnostic. Neither package should be built.
+
+  $ mkdir query-project query-source
+  $ ln -s loop query-source/loop
+  $ cd query-project
+  $ make_dune_project 3.25
+  $ make_lockdir
+  $ cat > dune-workspace <<EOF
+  > (lang dune 3.20)
+  > (pkg enabled)
+  > EOF
+  $ make_lockpkg requested <<EOF
+  > (version dev)
+  > (build (run false))
+  > EOF
+  $ make_lockpkg unrelated <<EOF
+  > (version dev)
+  > (source (copy "$PWD/../query-source"))
+  > EOF
+  $ target="$(get_build_pkg_dir requested)/target"
+  $ dune describe targets --context _private "$target" 2>&1 | censor
+  Error:
+  stat($PWD/../query-source/loop): Too many levels of symbolic links
+  $ test ! -d "$target"

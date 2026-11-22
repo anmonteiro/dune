@@ -332,9 +332,23 @@ let wrap_build_outcome_exn ~print_on_success build_outcome =
             errors, warnings + 1)
     in
     (match counts with
-     | 0, 0 ->
-       Code_error.raise
-         "Build via RPC failed, but the RPC server did not send an error message."
-         []
+     | 0, 0 -> raise Dune_util.Report_error.Already_reported
      | _ -> print_err_warn counts)
+;;
+
+let build_file ~config ~lock_held_by builder path =
+  let target =
+    Dune_lang.Dep_conf.File
+      (Dune_lang.String_with_vars.make_text Loc.none (Path.to_string path))
+  in
+  let open Fiber.O in
+  fire_request_with_progress
+    ~name:"build"
+    ~wait:false
+    ~lock_held_by
+    ~config
+    builder
+    Dune_rpc_impl.Decl.build
+    (prepare_targets [ target ])
+  >>| wrap_build_outcome_exn ~print_on_success:false
 ;;

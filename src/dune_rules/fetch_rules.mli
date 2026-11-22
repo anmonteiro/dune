@@ -5,13 +5,16 @@ open Import
 
 val context : Build_context.t
 
+module Kind : sig
+  type t =
+    | File
+    | Dir
+end
+
 val fetch
   :  target:Path.Build.t
-  -> [ `File | `Directory ]
+  -> Kind.t
   -> Dune_pkg.Source.t
   -> Action.Full.t With_targets.t
 
-val gen_rules
-  :  dir:Path.Build.t
-  -> components:Filename.t list
-  -> Build_config.Gen_rules.t Memo.t
+val gen_rules : string list -> Build_config.Gen_rules.t Memo.t

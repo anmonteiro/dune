@@ -143,6 +143,15 @@ end = struct
   ;;
 end
 
+let return_or_reraise = function
+  | Ok result -> Fiber.return result
+  | Error exns -> Fiber.reraise_all exns
+;;
+
+let run_without_collection k =
+  Fiber.collect_errors (fun () -> k None) >>= return_or_reraise
+;;
+
 (* Run [num_threads] parallel threads, collecting each thread's dependencies into its own
      sub-collector (via fiber-local storage) and recording them as a single parallel section
      in the caller's collector. [k] is called with [None] when dependency collection is
@@ -161,11 +170,7 @@ let run_parallel ~num_threads k =
     if is_inactive t
     then k None
     else if is_disabled t
-    then
-      Fiber.collect_errors (fun () -> k None)
-      >>= function
-      | Ok result -> Fiber.return result
-      | Error exns -> Fiber.reraise_all exns
+    then run_without_collection k
     else (
       let threads = Pool.acquire num_threads in
       let thread_index = ref 0 in
@@ -184,7 +189,30 @@ let run_parallel ~num_threads k =
       := Deps.Dynamic.append_par_init !t ~num_threads ~f:(fun i ->
            Deps.Dynamic.to_static !(Pool.get threads i));
       Pool.release threads;
-      match result with
-      | Ok res -> Fiber.return res
-      | Error exns -> Fiber.reraise_all exns)
+      return_or_reraise result)
+;;
+
+let run_parallel_dynamic k =
+  Fiber.Var.get var
+  >>= fun t ->
+  if is_inactive t
+  then k None
+  else if is_disabled t
+  then run_without_collection k
+  else (
+    let threads = ref [] in
+    let run_thread =
+      { run =
+          (fun ~f x ->
+            let thread = ref Deps.Dynamic.empty in
+            threads := thread :: !threads;
+            Fiber.Var.set_apply var thread f x)
+      }
+    in
+    let* result = Fiber.collect_errors (fun () -> k (Some run_thread)) in
+    let threads = Array.of_rev_list !threads in
+    t
+    := Deps.Dynamic.append_par_init !t ~num_threads:(Array.length threads) ~f:(fun i ->
+         Deps.Dynamic.to_static !(Array.get threads i));
+    return_or_reraise result)
 ;;

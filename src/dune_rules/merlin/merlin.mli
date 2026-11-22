@@ -53,8 +53,8 @@ module Processed : sig
 
   val get : t -> file:Path.Build.t -> Sexp.t option
 
-  (** Unlike [get], this omits matches whose source kind is ambiguous.
-      Counterparts refer only to files present in the source tree. *)
+  (** Unlike [get], this omits matches whose source kind or copy destination is
+      ambiguous. Counterparts refer only to files present in the source tree. *)
   val configurations : t -> file:Path.Build.t -> file_configuration Nonempty_list.t option
 end
 
@@ -65,6 +65,7 @@ val make
   -> flags:Ocaml_flags.t
   -> preprocess:
        Preprocess.Without_instrumentation.t Preprocess.t Module_reference.Per_item.t
+  -> preprocessor_deps:Dep_conf.t list
   -> libname:Lib_name.Local.t option
   -> modules:Modules.With_vlib.t
   -> obj_dir:Path.Build.t Obj_dir.t

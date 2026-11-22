@@ -63,24 +63,50 @@ module Sandbox = struct
   ;;
 end
 
-let limit_output output ~n =
-  let message = "TRUNCATED BY DUNE" in
-  let noutput = String.length output in
-  if noutput <= n
-  then output
-  else (
-    match
-      ( String.index_from output (n / 2) '\n'
-      , String.rindex_from output (noutput - 1 - (n / 2)) '\n' )
-    with
-    | Some i1, Some i2 when i1 < i2 ->
-      String.concat
-        ~sep:""
-        [ String.take output (i1 + 1); "..."; message; "..."; String.drop output i2 ]
-    | _ ->
-      let message = "\n..." ^ message ^ "...\n" in
-      let output = String.take output (n - String.length message |> max 0) in
-      output ^ message)
+let read_output path ~n =
+  match Stdune.Io.read_file_if_small path ~max_size:n |> Result.ok_exn with
+  | Some contents -> contents
+  | None ->
+    Stdune.Io.with_file_in path ~f:(fun ic ->
+      let length = Stdlib.LargeFile.in_channel_length ic in
+      let read pos length =
+        Stdlib.LargeFile.seek_in ic pos;
+        really_input_string ic (Int64.to_int length)
+      in
+      if Int64.compare length (Int64.of_int n) <= 0
+      then read 0L length
+      else (
+        let rec index_from pos char =
+          if Int64.compare pos length >= 0
+          then None
+          else (
+            let count = Int64.min 4096L (Int64.sub length pos) in
+            match String.index (read pos count) char with
+            | None -> index_from (Int64.add pos count) char
+            | Some index -> Some (Int64.add pos (Int64.of_int index)))
+        in
+        let rec rindex_from pos char =
+          if Int64.compare pos 0L < 0
+          then None
+          else (
+            let stop = Int64.succ pos in
+            let start = Int64.max 0L (Int64.sub stop 4096L) in
+            match String.rindex (read start (Int64.sub stop start)) char with
+            | None -> rindex_from (Int64.pred start) char
+            | Some index -> Some (Int64.add start (Int64.of_int index)))
+        in
+        let message = "...TRUNCATED BY DUNE..." in
+        match
+          let half = Int64.of_int (n / 2) in
+          index_from half '\n', rindex_from (Int64.sub (Int64.pred length) half) '\n'
+        with
+        | Some first, Some last when Int64.compare first last < 0 ->
+          String.concat
+            ~sep:""
+            [ read 0L (Int64.succ first); message; read last (Int64.sub length last) ]
+        | _ ->
+          let message = "\n" ^ message ^ "\n" in
+          read 0L (Int64.of_int (max 0 (n - String.length message))) ^ message))
 ;;
 
 module Failure_mode = struct
@@ -288,14 +314,37 @@ module Io = struct
 end
 
 module Build = struct
+  type rule_plugin =
+    { initialized : unit Rpc.Server.Session.t option Fiber.Ivar.t
+    ; exited : unit Fiber.Ivar.t
+    }
+
   type t =
     { run_id : Run_id.t
     ; cancellation : Fiber.Cancel.t
     ; action_runner : Action_runner.t option
+    ; mutable rule_plugins : rule_plugin list
     }
 
   let create ~action_runner ~run_id ~cancellation =
-    { run_id; cancellation; action_runner }
+    { run_id; cancellation; action_runner; rule_plugins = [] }
+  ;;
+
+  let register_rule_plugin t ~initialized ~exited =
+    t.rule_plugins <- { initialized; exited } :: t.rule_plugins
+  ;;
+
+  let complete_rule_plugins t =
+    let plugins = t.rule_plugins in
+    t.rule_plugins <- [];
+    Fiber.parallel_iter plugins ~f:(fun { initialized; exited } ->
+      let* session = Fiber.Ivar.read initialized in
+      let* () =
+        match session with
+        | None -> Fiber.return ()
+        | Some session -> Rpc.Server.Session.close session
+      in
+      Fiber.Ivar.read exited)
   ;;
 
   let run_id t = t.run_id
@@ -792,7 +841,7 @@ module Result = struct
       | No_capture -> ""
       | Read s -> s
       | File p ->
-        let contents = Stdune.Io.read_file_exn p |> limit_output ~n:t.limit in
+        let contents = read_output p ~n:t.limit in
         Temp.destroy File p;
         t.state <- Read contents;
         contents
@@ -1077,6 +1126,18 @@ let await ?cancellation ~timeout { response_file; pid; is_process_group_leader; 
   process_info, termination_reason
 ;;
 
+let actions_nice =
+  Config.make
+    ~name:"actions_nice"
+    ~of_string:(function
+      | "none" -> Ok None
+      | value ->
+        (match Option.bind (Int.of_string value) ~f:Spawn.Nice.of_int with
+         | Some nice -> Ok (Some nice)
+         | None -> Error "expected \"none\" or an integer between 0 and 19"))
+    ~default:(Spawn.Nice.of_int 5)
+;;
+
 let spawn
       ?dir
       ?(env = Env.initial)
@@ -1142,8 +1203,15 @@ let spawn
       | Some dir -> Spawn.Working_dir.path (Path.to_string dir)
     in
     let landlock = Option.bind sandbox ~f:Sandbox.to_landlock in
+    let { Process_metadata.purpose; _ } = metadata in
+    let nice =
+      match purpose with
+      | Internal_job -> None
+      | Build_job _ -> Config.get actions_nice
+    in
     Spawn.spawn
       ()
+      ~nice
       ~prog:prog_str
       ~argv0:prog_str
       ~args
@@ -1334,6 +1402,7 @@ let exec_locally
 ;;
 
 let run_internal
+      ~job_slot
       ?dir
       ~(display : Display.t)
       ?(stdout_to = Io.stdout)
@@ -1357,7 +1426,13 @@ let run_internal
   let cancellation =
     Option.map build ~f:(fun { Build.cancellation; _ } -> cancellation)
   in
-  Scheduler.with_job_slot ?cancellation ~job_slots:metadata.job_slots (fun () ->
+  let with_job_slot =
+    match job_slot, cancellation with
+    | None, _ -> Scheduler.with_job_slot ?cancellation ~job_slots:metadata.job_slots
+    | Some slot, Some cancellation -> Scheduler.Job_slot.run slot cancellation
+    | Some _, None -> Code_error.raise "Dynamic action outside a build" []
+  in
+  with_job_slot (fun () ->
     let queued = Time.diff (Time.now ()) start in
     let dir =
       match dir with
@@ -1404,7 +1479,9 @@ let run_internal
     let env = Option.value env ~default:Env.initial in
     let env =
       let { Process_metadata.purpose; _ } = metadata in
-      Dtemp.add_to_env env ~purpose
+      match purpose with
+      | Internal_job -> Dtemp.add_to_env env ~purpose
+      | Build_job _ -> env
     in
     let local () =
       let t =
@@ -1595,31 +1672,29 @@ let run_internal
          `Finished res, times))
 ;;
 
-let run
-      ?dir
+let run_with_job_slot
+      ~job_slot
+      ~dir
       ~display
-      ?stdout_to
-      ?stderr_to
-      ?stdin_from
-      ?env
-      ?metadata
-      ?build
-      ?sandbox
+      ~stdout_to
+      ~stderr_to
+      ~stdin_from
+      ~env
+      ~metadata
       fail_mode
       prog
       args
   =
   let+ run, _ =
     run_internal
-      ?dir
+      ~job_slot:(Some job_slot)
+      ~dir
       ~display
-      ?stdout_to
-      ?stderr_to
-      ?stdin_from
-      ?env
-      ?metadata
-      ?build
-      ?sandbox
+      ~stdout_to
+      ~stderr_to
+      ~stdin_from
+      ~env
+      ~metadata
       fail_mode
       prog
       (Array.Immutable.of_list args)
@@ -1643,6 +1718,7 @@ let run_with_array_args
   =
   let+ run, _ =
     run_internal
+      ~job_slot:None
       ?dir
       ~display
       ?stdout_to
@@ -1657,6 +1733,35 @@ let run_with_array_args
       args
   in
   Failure_mode.map_result fail_mode run ~f:ignore
+;;
+
+let run
+      ?dir
+      ~display
+      ?stdout_to
+      ?stderr_to
+      ?stdin_from
+      ?env
+      ?metadata
+      ?build
+      ?sandbox
+      fail_mode
+      prog
+      args
+  =
+  run_with_array_args
+    ?dir
+    ~display
+    ?stdout_to
+    ?stderr_to
+    ?stdin_from
+    ?env
+    ?metadata
+    ?build
+    ?sandbox
+    fail_mode
+    prog
+    (Array.Immutable.of_list args)
 ;;
 
 let run_with_times
@@ -1674,6 +1779,7 @@ let run_with_times
   =
   let+ code, times =
     run_internal
+      ~job_slot:None
       ?dir
       ~display
       ?stdout_to
@@ -1706,6 +1812,7 @@ let run_capture_gen
   let fn = Temp.create File ~prefix:"dune" ~suffix:"output" in
   let+ run, _ =
     run_internal
+      ~job_slot:None
       ?dir
       ~display
       ~stdout_to:(Io.file fn Io.Out)
@@ -1768,23 +1875,18 @@ let run_capture_line
           | Some dir -> sprintf "cd %s && %s" (Path.to_string dir) prog_display
         in
         let metadata = Option.value metadata ~default:Process_metadata.default in
-        let loc = metadata.Process_metadata.loc in
-        let compound = metadata.Process_metadata.compound in
-        (match l with
-         | [] ->
-           User_error.raise
-             ?loc
-             ~compound
-             [ Pp.textf "Command returned nothing: %s" cmdline ]
-         | _ ->
-           User_error.raise
-             ?loc
-             ~compound
-             [ Pp.textf "command returned too many lines: %s" cmdline
-             ; Pp.vbox
-                 (Pp.concat_map l ~sep:Pp.cut ~f:(fun line ->
-                    Pp.seq (Pp.verbatim "> ") (Pp.verbatim line)))
-             ]))
+        let { Process_metadata.loc; compound; _ } = metadata in
+        let paragraphs =
+          match l with
+          | [] -> [ Pp.textf "Command returned nothing: %s" cmdline ]
+          | _ ->
+            [ Pp.textf "command returned too many lines: %s" cmdline
+            ; Pp.vbox
+                (Pp.concat_map l ~sep:Pp.cut ~f:(fun line ->
+                   Pp.seq (Pp.verbatim "> ") (Pp.verbatim line)))
+            ]
+        in
+        User_error.raise ?loc ~compound paragraphs)
 ;;
 
 let run_inherit_std_in_out =
@@ -1794,6 +1896,7 @@ let run_inherit_std_in_out =
   in
   fun ?dir ?env prog args ->
     run_internal
+      ~job_slot:None
       ?dir
       ?env
       ~display:Display.Quiet
