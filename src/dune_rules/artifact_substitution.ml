@@ -90,28 +90,23 @@ module Conf = struct
   ;;
 
   let mac_codesign_hook ~codesign path =
-    let open Fiber.O in
-    let* is_mach_o = Scheduler.async_exn (fun () -> is_mach_o path) in
-    if not is_mach_o
-    then Fiber.return ()
-    else (
-      let stdout_to =
-        Process.Io.make_stdout
-          ~output_on_success:Swallow
-          ~output_limit:Execution_parameters.Action_output_limit.default
-      in
-      let stderr_to =
-        Process.Io.make_stderr
-          ~output_on_success:Swallow
-          ~output_limit:Execution_parameters.Action_output_limit.default
-      in
-      Process.run
-        ~stdout_to
-        ~stderr_to
-        ~display:Quiet
-        Strict
-        codesign
-        [ "-f"; "-s"; "-"; Path.to_string path ])
+    let stdout_to =
+      Process.Io.make_stdout
+        ~output_on_success:Swallow
+        ~output_limit:Execution_parameters.Action_output_limit.default
+    in
+    let stderr_to =
+      Process.Io.make_stderr
+        ~output_on_success:Swallow
+        ~output_limit:Execution_parameters.Action_output_limit.default
+    in
+    Process.run
+      ~stdout_to
+      ~stderr_to
+      ~display:Quiet
+      Strict
+      codesign
+      [ "-f"; "-s"; "-"; Path.to_string path ]
   ;;
 
   let sign_hook_of_context (context : Context.t) =
@@ -194,14 +189,15 @@ module Conf = struct
     | No_substitution -> Fiber.return ()
     | Some_substitution ->
       let open Fiber.O in
-      let* executable =
+      let* needs_signing =
         Scheduler.async_exn (fun () ->
           match Path.Untracked.stat file with
           | Error _ -> false
           | Ok { st_perm; _ } ->
-            Permissions.test_any Permissions.execute (Permissions.Mode.of_int st_perm))
+            Permissions.test_any Permissions.execute (Permissions.Mode.of_int st_perm)
+            && is_mach_o file)
       in
-      if executable
+      if needs_signing
       then
         Memo.run t.sign_hook
         |> Fiber.bind ~f:(function
