@@ -74,24 +74,44 @@ module Conf = struct
 
   let get_location t = t.get_location
 
+  let is_mach_o path =
+    Io.with_file_in path ~f:(fun ic ->
+      match really_input_string ic 4 with
+      | "\xfe\xed\xfa\xce"
+      | "\xce\xfa\xed\xfe"
+      | "\xfe\xed\xfa\xcf"
+      | "\xcf\xfa\xed\xfe"
+      | "\xca\xfe\xba\xbe"
+      | "\xbe\xba\xfe\xca"
+      | "\xca\xfe\xba\xbf"
+      | "\xbf\xba\xfe\xca" -> true
+      | _ -> false
+      | exception End_of_file -> false)
+  ;;
+
   let mac_codesign_hook ~codesign path =
-    let stdout_to =
-      Process.Io.make_stdout
-        ~output_on_success:Swallow
-        ~output_limit:Execution_parameters.Action_output_limit.default
-    in
-    let stderr_to =
-      Process.Io.make_stderr
-        ~output_on_success:Swallow
-        ~output_limit:Execution_parameters.Action_output_limit.default
-    in
-    Process.run
-      ~stdout_to
-      ~stderr_to
-      ~display:Quiet
-      Strict
-      codesign
-      [ "-f"; "-s"; "-"; Path.to_string path ]
+    let open Fiber.O in
+    let* is_mach_o = Scheduler.async_exn (fun () -> is_mach_o path) in
+    if not is_mach_o
+    then Fiber.return ()
+    else (
+      let stdout_to =
+        Process.Io.make_stdout
+          ~output_on_success:Swallow
+          ~output_limit:Execution_parameters.Action_output_limit.default
+      in
+      let stderr_to =
+        Process.Io.make_stderr
+          ~output_on_success:Swallow
+          ~output_limit:Execution_parameters.Action_output_limit.default
+      in
+      Process.run
+        ~stdout_to
+        ~stderr_to
+        ~display:Quiet
+        Strict
+        codesign
+        [ "-f"; "-s"; "-"; Path.to_string path ])
   ;;
 
   let sign_hook_of_context (context : Context.t) =
