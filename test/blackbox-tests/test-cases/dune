@@ -103,6 +103,14 @@
    (= %{system} macosx))))
 
 (cram
+ (applies_to artifact-signing.t)
+ (enabled_if
+  (and
+   (= %{system} macosx)
+   (= %{architecture} arm64)))
+ (deps %{bin:cc} %{bin:codesign}))
+
+(cram
  (applies_to symlink-scan-cycle-github764.t)
  (enabled_if
   (<> %{ocaml-config:system} win)))
