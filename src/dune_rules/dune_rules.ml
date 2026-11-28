@@ -35,6 +35,7 @@ module Module = Module
 module Dune_file = Dune_file
 module Rule_plugin_runner = Rule_plugin_runner
 module Artifact_substitution = Artifact_substitution
+module Mach_o = Mach_o
 module Dune_load = Dune_load
 module Opam_create = Opam_create
 module Link_mode = Link_mode

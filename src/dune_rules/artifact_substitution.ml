@@ -75,23 +75,30 @@ module Conf = struct
   let get_location t = t.get_location
 
   let mac_codesign_hook ~codesign path =
-    let stdout_to =
-      Process.Io.make_stdout
-        ~output_on_success:Swallow
-        ~output_limit:Execution_parameters.Action_output_limit.default
+    let open Fiber.O in
+    let* needs_signature =
+      Scheduler.async_exn (fun () -> Mach_o.requires_signature path)
     in
-    let stderr_to =
-      Process.Io.make_stderr
-        ~output_on_success:Swallow
-        ~output_limit:Execution_parameters.Action_output_limit.default
-    in
-    Process.run
-      ~stdout_to
-      ~stderr_to
-      ~display:Quiet
-      Strict
-      codesign
-      [ "-f"; "-s"; "-"; Path.to_string path ]
+    if needs_signature
+    then (
+      let stdout_to =
+        Process.Io.make_stdout
+          ~output_on_success:Swallow
+          ~output_limit:Execution_parameters.Action_output_limit.default
+      in
+      let stderr_to =
+        Process.Io.make_stderr
+          ~output_on_success:Swallow
+          ~output_limit:Execution_parameters.Action_output_limit.default
+      in
+      Process.run
+        ~stdout_to
+        ~stderr_to
+        ~display:Quiet
+        Strict
+        codesign
+        [ "-f"; "-s"; "-"; Path.to_string path ])
+    else Fiber.return ()
   ;;
 
   let sign_hook_of_context (context : Context.t) =
