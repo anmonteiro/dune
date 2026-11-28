@@ -74,39 +74,31 @@ module Conf = struct
 
   let get_location t = t.get_location
 
-  let is_mach_o path =
-    Io.with_file_in path ~f:(fun ic ->
-      match really_input_string ic 4 with
-      | "\xfe\xed\xfa\xce"
-      | "\xce\xfa\xed\xfe"
-      | "\xfe\xed\xfa\xcf"
-      | "\xcf\xfa\xed\xfe"
-      | "\xca\xfe\xba\xbe"
-      | "\xbe\xba\xfe\xca"
-      | "\xca\xfe\xba\xbf"
-      | "\xbf\xba\xfe\xca" -> true
-      | _ -> false
-      | exception End_of_file -> false)
-  ;;
-
   let mac_codesign_hook ~codesign path =
-    let stdout_to =
-      Process.Io.make_stdout
-        ~output_on_success:Swallow
-        ~output_limit:Execution_parameters.Action_output_limit.default
+    let open Fiber.O in
+    let* needs_signature =
+      Scheduler.async_exn (fun () -> Mach_o.requires_signature path)
     in
-    let stderr_to =
-      Process.Io.make_stderr
-        ~output_on_success:Swallow
-        ~output_limit:Execution_parameters.Action_output_limit.default
-    in
-    Process.run
-      ~stdout_to
-      ~stderr_to
-      ~display:Quiet
-      Strict
-      codesign
-      [ "-f"; "-s"; "-"; Path.to_string path ]
+    if needs_signature
+    then (
+      let stdout_to =
+        Process.Io.make_stdout
+          ~output_on_success:Swallow
+          ~output_limit:Execution_parameters.Action_output_limit.default
+      in
+      let stderr_to =
+        Process.Io.make_stderr
+          ~output_on_success:Swallow
+          ~output_limit:Execution_parameters.Action_output_limit.default
+      in
+      Process.run
+        ~stdout_to
+        ~stderr_to
+        ~display:Quiet
+        Strict
+        codesign
+        [ "-f"; "-s"; "-"; Path.to_string path ])
+    else Fiber.return ()
   ;;
 
   let sign_hook_of_context (context : Context.t) =
@@ -189,15 +181,14 @@ module Conf = struct
     | No_substitution -> Fiber.return ()
     | Some_substitution ->
       let open Fiber.O in
-      let* needs_signing =
+      let* executable =
         Scheduler.async_exn (fun () ->
           match Path.Untracked.stat file with
           | Error _ -> false
           | Ok { st_perm; _ } ->
-            Permissions.test_any Permissions.execute (Permissions.Mode.of_int st_perm)
-            && is_mach_o file)
+            Permissions.test_any Permissions.execute (Permissions.Mode.of_int st_perm))
       in
-      if needs_signing
+      if executable
       then
         Memo.run t.sign_hook
         |> Fiber.bind ~f:(function

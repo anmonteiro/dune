@@ -77,11 +77,14 @@ All three contain a substitution, and are both promoted and installed.
   $ _install/bin/script
   script
 
-The magic-only check incorrectly signs both object files.
+Only linked images are signed. This includes bytecode with an embedded runtime,
+and excludes ordinary bytecode, scripts, and relocatable objects.
 
-  $ grep '\.o\.dune-temp$' signed | sort -u
-  .#object.o.dune-temp
-  .#promoted.o.dune-temp
+  $ sed -n '/\.dune-temp$/p' signed | sort -u
+  .#custom.dune-temp
+  .#main.bc.exe.dune-temp
+  .#main.exe.dune-temp
+  .#native.dune-temp
 
 Signing failures for linked images must still fail installation.
 
