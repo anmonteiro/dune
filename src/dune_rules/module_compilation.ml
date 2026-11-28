@@ -599,9 +599,7 @@ let build_module ?force_write_cmi ?precompiled_cmi cctx m =
   | Melange -> melange_all_alias cctx
 ;;
 
-let build_module_rules cctx m =
-  build_module_rules ~defer_action:(Compilation_context.for_ cctx = Ocaml) cctx m
-;;
+let build_module_rules cctx m = build_module_rules ~defer_action:true cctx m
 
 let build_inference_alias cctx ~name ~aliases =
   let sctx = Compilation_context.super_context cctx in

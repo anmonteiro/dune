@@ -17,7 +17,14 @@ libraries.
   > let x = 42
   > EOF
 
-The Melange compiler produces all four module artifacts.
+Requesting an interface artifact does not compile the implementation.
+
+  $ dune build .foo.objs/melange/foo.cmti
+  $ ls _build/default/.foo.objs/melange/foo.* | sort
+  _build/default/.foo.objs/melange/foo.cmi
+  _build/default/.foo.objs/melange/foo.cmti
+
+The remaining module artifacts can still be requested directly.
 
   $ dune build .foo.objs/melange/foo.{cmi,cmj,cmt,cmti}
   $ ls _build/default/.foo.objs/melange/foo.* | sort
