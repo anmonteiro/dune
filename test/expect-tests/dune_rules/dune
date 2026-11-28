@@ -6,6 +6,7 @@
   dune_digest
   dune_engine
   dune_rules
+  targets
   dune_tests_common
   fiber
   memo
